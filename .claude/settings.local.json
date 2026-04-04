@@ -15,7 +15,10 @@
       "Bash(rustup update:*)",
       "Read(//c/code/**)",
       "Bash(find /c -maxdepth 3 -name \"erasure-healing*\" -o -name \"heal-*\")",
-      "Bash(tasklist /fo csv /nh)"
+      "Bash(tasklist /fo csv /nh)",
+      "Bash(taskkill //f //im ollama.exe)",
+      "Bash(taskkill //f //im \"ollama app.exe\")",
+      "Bash(wmic process:*)"
     ]
   }
 }

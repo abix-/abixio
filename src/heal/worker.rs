@@ -365,6 +365,7 @@ mod tests {
         set.make_bucket(bucket).unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
+            ..Default::default()
         };
         set.put_object(bucket, key, payload, opts).unwrap();
     }

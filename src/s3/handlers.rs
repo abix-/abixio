@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use http_body_util::{BodyExt, Full};
@@ -6,7 +7,9 @@ use hyper::{Method, Request, Response, StatusCode};
 use quick_xml::se::to_string as xml_to_string;
 
 use super::auth::{AuthConfig, verify_sig_v4};
-use super::errors::{ERR_ACCESS_DENIED, ERR_METHOD_NOT_ALLOWED, S3Error, error_to_xml, map_error};
+use super::errors::{
+    ERR_ACCESS_DENIED, ERR_INVALID_RANGE, ERR_METHOD_NOT_ALLOWED, S3Error, error_to_xml, map_error,
+};
 use super::response::*;
 use crate::admin::handlers::AdminHandler;
 use crate::query::parse_query;
@@ -101,7 +104,7 @@ impl S3Handler {
                 self.delete_objects(b, req).await
             }
             (b, k, &Method::PUT) => self.put_object(b, k, req).await,
-            (b, k, &Method::GET) => self.get_object(b, k).await,
+            (b, k, &Method::GET) => self.get_object(b, k, &req).await,
             (b, k, &Method::HEAD) => self.head_object(b, k).await,
             (b, k, &Method::DELETE) => self.delete_object(b, k).await,
             _ => error_response(&ERR_METHOD_NOT_ALLOWED),
@@ -270,12 +273,25 @@ impl S3Handler {
             .unwrap_or("application/octet-stream")
             .to_string();
 
+        let mut user_metadata = HashMap::new();
+        for (name, value) in req.headers() {
+            let name_lower = name.as_str().to_lowercase();
+            if name_lower.starts_with("x-amz-meta-") {
+                if let Ok(v) = value.to_str() {
+                    user_metadata.insert(name_lower, v.to_string());
+                }
+            }
+        }
+
         let body = match req.collect().await {
             Ok(b) => b.to_bytes(),
             Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
         };
 
-        let opts = PutOptions { content_type };
+        let opts = PutOptions {
+            content_type,
+            user_metadata,
+        };
         match self.store.put_object(bucket, key, &body, opts) {
             Ok(info) => Response::builder()
                 .status(StatusCode::OK)
@@ -286,30 +302,72 @@ impl S3Handler {
         }
     }
 
-    async fn get_object(&self, bucket: &str, key: &str) -> Response<BoxBody> {
-        match self.store.get_object(bucket, key) {
-            Ok((data, info)) => Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", &info.content_type)
-                .header("Content-Length", info.size.to_string())
-                .header("ETag", format!("\"{}\"", info.etag))
-                .header("Last-Modified", format_http_date(info.created_at))
-                .body(Full::new(Bytes::from(data)))
-                .unwrap(),
-            Err(e) => error_response(&map_error(&e)),
+    async fn get_object(
+        &self,
+        bucket: &str,
+        key: &str,
+        req: &Request<Incoming>,
+    ) -> Response<BoxBody> {
+        let (data, info) = match self.store.get_object(bucket, key) {
+            Ok(r) => r,
+            Err(e) => return error_response(&map_error(&e)),
+        };
+
+        let total_size = data.len() as u64;
+        let range_header = req
+            .headers()
+            .get("range")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        let (status, body_bytes, content_range) = if range_header.is_empty() {
+            (StatusCode::OK, data, None)
+        } else {
+            match parse_range(range_header, total_size) {
+                Some((start, end)) => {
+                    let slice = data[start as usize..=end as usize].to_vec();
+                    let cr = format!("bytes {}-{}/{}", start, end, total_size);
+                    (StatusCode::PARTIAL_CONTENT, slice, Some(cr))
+                }
+                None => return error_response(&ERR_INVALID_RANGE),
+            }
+        };
+
+        let mut builder = Response::builder()
+            .status(status)
+            .header("Content-Type", &info.content_type)
+            .header("Content-Length", body_bytes.len().to_string())
+            .header("ETag", format!("\"{}\"", info.etag))
+            .header("Last-Modified", format_http_date(info.created_at))
+            .header("Accept-Ranges", "bytes");
+
+        if let Some(cr) = content_range {
+            builder = builder.header("Content-Range", cr);
         }
+        for (k, v) in &info.user_metadata {
+            builder = builder.header(k.as_str(), v.as_str());
+        }
+
+        builder.body(Full::new(Bytes::from(body_bytes))).unwrap()
     }
 
     async fn head_object(&self, bucket: &str, key: &str) -> Response<BoxBody> {
         match self.store.head_object(bucket, key) {
-            Ok(info) => Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", &info.content_type)
-                .header("Content-Length", info.size.to_string())
-                .header("ETag", format!("\"{}\"", info.etag))
-                .header("Last-Modified", format_http_date(info.created_at))
-                .body(Full::new(Bytes::new()))
-                .unwrap(),
+            Ok(info) => {
+                let mut builder = Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", &info.content_type)
+                    .header("Content-Length", info.size.to_string())
+                    .header("ETag", format!("\"{}\"", info.etag))
+                    .header("Last-Modified", format_http_date(info.created_at))
+                    .header("Accept-Ranges", "bytes");
+
+                for (k, v) in &info.user_metadata {
+                    builder = builder.header(k.as_str(), v.as_str());
+                }
+
+                builder.body(Full::new(Bytes::new())).unwrap()
+            }
             Err(e) => error_response(&map_error(&e)),
         }
     }
@@ -392,9 +450,10 @@ impl S3Handler {
             Err(e) => return error_response(&map_error(&e)),
         };
 
-        // write to destination
+        // write to destination, preserving source metadata
         let opts = PutOptions {
             content_type: src_info.content_type.clone(),
+            user_metadata: src_info.user_metadata,
         };
         let dst_info = match self.store.put_object(dst_bucket, dst_key, &data, opts) {
             Ok(info) => info,
@@ -409,6 +468,51 @@ impl S3Handler {
             Ok(xml) => ok_body(xml.into_bytes()),
             Err(_) => error_response(&super::errors::ERR_INTERNAL),
         }
+    }
+}
+
+/// Parse HTTP Range header. Returns (start, end) inclusive byte offsets.
+/// Supports: bytes=start-end, bytes=start-, bytes=-suffix
+/// Returns None for invalid or unsatisfiable ranges.
+fn parse_range(range_header: &str, total_size: u64) -> Option<(u64, u64)> {
+    let spec = range_header.strip_prefix("bytes=")?;
+    let dash = spec.find('-')?;
+    let left = &spec[..dash];
+    let right = &spec[dash + 1..];
+
+    if total_size == 0 {
+        return None;
+    }
+
+    match (left.is_empty(), right.is_empty()) {
+        // bytes=-N (suffix)
+        (true, false) => {
+            let suffix_len: u64 = right.parse().ok()?;
+            if suffix_len == 0 {
+                return None;
+            }
+            let start = total_size.saturating_sub(suffix_len);
+            Some((start, total_size - 1))
+        }
+        // bytes=N- (from offset to end)
+        (false, true) => {
+            let start: u64 = left.parse().ok()?;
+            if start >= total_size {
+                return None;
+            }
+            Some((start, total_size - 1))
+        }
+        // bytes=N-M (explicit range)
+        (false, false) => {
+            let start: u64 = left.parse().ok()?;
+            let end: u64 = right.parse().ok()?;
+            if start > end || start >= total_size {
+                return None;
+            }
+            Some((start, end.min(total_size - 1)))
+        }
+        // bytes=- (invalid)
+        (true, true) => None,
     }
 }
 

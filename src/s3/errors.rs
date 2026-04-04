@@ -46,6 +46,12 @@ pub const ERR_METHOD_NOT_ALLOWED: S3Error = S3Error {
     http_status: 405,
 };
 
+pub const ERR_INVALID_RANGE: S3Error = S3Error {
+    code: "InvalidRange",
+    message: "The requested range is not satisfiable",
+    http_status: 416,
+};
+
 pub const ERR_BUCKET_NOT_EMPTY: S3Error = S3Error {
     code: "BucketNotEmpty",
     message: "The bucket you tried to delete is not empty",

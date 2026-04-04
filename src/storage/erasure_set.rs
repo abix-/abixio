@@ -98,6 +98,7 @@ impl Store for ErasureSet {
                 etag: meta.etag,
                 content_type: meta.content_type,
                 created_at: meta.created_at,
+                user_metadata: meta.user_metadata,
             },
         ))
     }
@@ -114,6 +115,7 @@ impl Store for ErasureSet {
                         etag: meta.etag,
                         content_type: meta.content_type,
                         created_at: meta.created_at,
+                        user_metadata: meta.user_metadata,
                     });
                 }
                 Err(_) => continue,
@@ -354,6 +356,7 @@ mod tests {
             let payload = b"the quick brown fox jumps over the lazy dog";
             let opts = PutOptions {
                 content_type: "text/plain".to_string(),
+                ..Default::default()
             };
             let info = set.put_object("test", "fox.txt", payload, opts).unwrap();
 
@@ -384,6 +387,7 @@ mod tests {
             let payload = b"head test data";
             let opts = PutOptions {
                 content_type: "application/json".to_string(),
+                ..Default::default()
             };
             set.put_object("test", "obj", payload, opts).unwrap();
 
@@ -406,6 +410,7 @@ mod tests {
             let payload = b"resilience test data that should survive disk failures";
             let opts = PutOptions {
                 content_type: "text/plain".to_string(),
+                ..Default::default()
             };
             set.put_object("test", "key", payload, opts).unwrap();
 
@@ -437,6 +442,7 @@ mod tests {
             let payload = b"this should fail";
             let opts = PutOptions {
                 content_type: "text/plain".to_string(),
+                ..Default::default()
             };
             set.put_object("test", "key", payload, opts).unwrap();
 
@@ -472,6 +478,7 @@ mod tests {
         let payload = b"bitrot test data";
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
+            ..Default::default()
         };
         set.put_object("test", "key", payload, opts).unwrap();
 
@@ -494,6 +501,7 @@ mod tests {
         let payload = b"bitrot fail test";
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
+            ..Default::default()
         };
         set.put_object("test", "key", payload, opts).unwrap();
 
@@ -551,6 +559,7 @@ mod tests {
         set.make_bucket("test").unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
+            ..Default::default()
         };
         set.put_object("test", "key", b"data", opts).unwrap();
         set.delete_object("test", "key").unwrap();
@@ -570,6 +579,7 @@ mod tests {
         set.make_bucket("test").unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
+            ..Default::default()
         };
         set.put_object("test", "aaa", b"1", opts.clone()).unwrap();
         set.put_object("test", "bbb", b"2", opts.clone()).unwrap();
@@ -589,6 +599,7 @@ mod tests {
         set.make_bucket("test").unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
+            ..Default::default()
         };
         set.put_object("test", "logs/a", b"1", opts.clone())
             .unwrap();
@@ -615,6 +626,7 @@ mod tests {
         set.make_bucket("test").unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
+            ..Default::default()
         };
         set.put_object("test", "a/1", b"1", opts.clone()).unwrap();
         set.put_object("test", "a/2", b"2", opts.clone()).unwrap();
@@ -651,6 +663,7 @@ mod tests {
 
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
+            ..Default::default()
         };
         let result = set.put_object("test", "key", b"data", opts);
         assert!(result.is_err());
@@ -666,6 +679,7 @@ mod tests {
 
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
+            ..Default::default()
         };
         assert!(set.put_object("test", "key", b"data", opts).is_err());
     }

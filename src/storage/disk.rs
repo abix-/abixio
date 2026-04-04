@@ -263,6 +263,7 @@ mod tests {
                 distribution: vec![0, 1, 2, 3],
             },
             checksum: "deadbeef".to_string(),
+            user_metadata: std::collections::HashMap::new(),
         }
     }
 

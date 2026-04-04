@@ -1,8 +1,10 @@
-use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::Path;
 use std::time::SystemTime;
+
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ObjectMeta {
@@ -12,6 +14,8 @@ pub struct ObjectMeta {
     pub created_at: u64, // unix timestamp seconds
     pub erasure: ErasureMeta,
     pub checksum: String, // SHA256 hex of THIS shard
+    #[serde(default)]
+    pub user_metadata: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -30,6 +34,7 @@ pub struct ObjectInfo {
     pub etag: String,
     pub content_type: String,
     pub created_at: u64,
+    pub user_metadata: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +63,7 @@ pub struct ListResult {
 #[derive(Debug, Clone, Default)]
 pub struct PutOptions {
     pub content_type: String,
+    pub user_metadata: HashMap<String, String>,
 }
 
 impl ObjectMeta {
@@ -71,6 +77,7 @@ impl ObjectMeta {
             && self.erasure.data == other.erasure.data
             && self.erasure.parity == other.erasure.parity
             && self.erasure.distribution == other.erasure.distribution
+            && self.user_metadata == other.user_metadata
     }
 }
 
@@ -111,6 +118,7 @@ mod tests {
                 distribution: vec![2, 0, 3, 1],
             },
             checksum: "abc123".to_string(),
+            user_metadata: HashMap::new(),
         };
         let json = serde_json::to_string(&meta).unwrap();
         let decoded: ObjectMeta = serde_json::from_str(&json).unwrap();
@@ -133,6 +141,7 @@ mod tests {
                 distribution: vec![0, 1, 2, 3],
             },
             checksum: "def456".to_string(),
+            user_metadata: HashMap::new(),
         };
         write_meta(&path, &meta).unwrap();
         let loaded = read_meta(&path).unwrap();
@@ -160,6 +169,7 @@ mod tests {
                 distribution: vec![2, 0, 3, 1],
             },
             checksum: "checksum_shard_0".to_string(),
+            user_metadata: HashMap::new(),
         };
         let meta_b = ObjectMeta {
             size: 100,
@@ -173,6 +183,7 @@ mod tests {
                 distribution: vec![2, 0, 3, 1],
             },
             checksum: "checksum_shard_3".to_string(),
+            user_metadata: HashMap::new(),
         };
         assert!(meta_a.quorum_eq(&meta_b));
     }
@@ -191,6 +202,7 @@ mod tests {
                 distribution: vec![0, 1, 2, 3],
             },
             checksum: "x".to_string(),
+            user_metadata: HashMap::new(),
         };
         let meta_b = ObjectMeta {
             size: 200,
