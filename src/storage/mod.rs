@@ -34,6 +34,8 @@ pub trait Backend: Send + Sync {
 
     fn make_bucket(&self, bucket: &str) -> Result<(), StorageError>;
 
+    fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError>;
+
     fn bucket_exists(&self, bucket: &str) -> bool;
 
     fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError>;
@@ -69,6 +71,8 @@ pub trait Store: Send + Sync {
 
     fn make_bucket(&self, bucket: &str) -> Result<(), StorageError>;
 
+    fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError>;
+
     fn head_bucket(&self, bucket: &str) -> Result<bool, StorageError>;
 
     fn list_buckets(&self) -> Result<Vec<BucketInfo>, StorageError>;
@@ -86,6 +90,9 @@ pub enum StorageError {
 
     #[error("bucket already exists")]
     BucketExists,
+
+    #[error("bucket not empty")]
+    BucketNotEmpty,
 
     #[error("write quorum not met")]
     WriteQuorum,

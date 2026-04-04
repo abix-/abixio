@@ -95,7 +95,11 @@ impl S3Handler {
             ("", _, &Method::GET) => self.list_buckets().await,
             (b, "", &Method::PUT) => self.create_bucket(b).await,
             (b, "", &Method::HEAD) => self.head_bucket(b).await,
+            (b, "", &Method::DELETE) => self.delete_bucket_handler(b).await,
             (b, "", &Method::GET) => self.list_objects_handler(b, &req).await,
+            (b, "", &Method::POST) if query.contains("delete") => {
+                self.delete_objects(b, req).await
+            }
             (b, k, &Method::PUT) => self.put_object(b, k, req).await,
             (b, k, &Method::GET) => self.get_object(b, k).await,
             (b, k, &Method::HEAD) => self.head_object(b, k).await,
@@ -249,6 +253,16 @@ impl S3Handler {
         key: &str,
         req: Request<Incoming>,
     ) -> Response<BoxBody> {
+        // CopyObject: PUT with x-amz-copy-source header
+        if let Some(source) = req.headers().get("x-amz-copy-source") {
+            let source = source.to_str().unwrap_or("");
+            let decoded = form_urlencoded::parse(source.as_bytes())
+                .map(|(k, _)| k.into_owned())
+                .next()
+                .unwrap_or_else(|| source.to_string());
+            return self.copy_object(bucket, key, &decoded).await;
+        }
+
         let content_type = req
             .headers()
             .get("content-type")
@@ -304,6 +318,96 @@ impl S3Handler {
         match self.store.delete_object(bucket, key) {
             Ok(()) => empty_response(StatusCode::NO_CONTENT),
             Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    async fn delete_bucket_handler(&self, bucket: &str) -> Response<BoxBody> {
+        match self.store.delete_bucket(bucket) {
+            Ok(()) => empty_response(StatusCode::NO_CONTENT),
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    async fn delete_objects(&self, bucket: &str, req: Request<Incoming>) -> Response<BoxBody> {
+        let body = match req.collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+        let body_str = match std::str::from_utf8(&body) {
+            Ok(s) => s,
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+
+        let delete_req: DeleteRequest = match quick_xml::de::from_str(body_str) {
+            Ok(r) => r,
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+
+        let mut deleted = Vec::new();
+        let mut errors = Vec::new();
+
+        for obj in &delete_req.objects {
+            match self.store.delete_object(bucket, &obj.key) {
+                Ok(()) => deleted.push(DeletedXml {
+                    key: obj.key.clone(),
+                }),
+                Err(e) => {
+                    let s3err = map_error(&e);
+                    errors.push(DeleteErrorXml {
+                        key: obj.key.clone(),
+                        code: s3err.code.to_string(),
+                        message: s3err.message.to_string(),
+                    });
+                }
+            }
+        }
+
+        let result = DeleteResult {
+            xmlns: S3_XMLNS.to_string(),
+            deleted,
+            errors,
+        };
+        match xml_to_string(&result) {
+            Ok(xml) => ok_body(xml.into_bytes()),
+            Err(_) => error_response(&super::errors::ERR_INTERNAL),
+        }
+    }
+
+    async fn copy_object(
+        &self,
+        dst_bucket: &str,
+        dst_key: &str,
+        copy_source: &str,
+    ) -> Response<BoxBody> {
+        // parse source: /bucket/key or bucket/key
+        let source = copy_source.trim_start_matches('/');
+        let (src_bucket, src_key) = match source.find('/') {
+            Some(pos) => (&source[..pos], &source[pos + 1..]),
+            None => return error_response(&super::errors::ERR_NO_SUCH_KEY),
+        };
+
+        // read source object
+        let (data, src_info) = match self.store.get_object(src_bucket, src_key) {
+            Ok(r) => r,
+            Err(e) => return error_response(&map_error(&e)),
+        };
+
+        // write to destination
+        let opts = PutOptions {
+            content_type: src_info.content_type.clone(),
+        };
+        let dst_info = match self.store.put_object(dst_bucket, dst_key, &data, opts) {
+            Ok(info) => info,
+            Err(e) => return error_response(&map_error(&e)),
+        };
+
+        let result = CopyObjectResultXml {
+            etag: format!("\"{}\"", dst_info.etag),
+            last_modified: format_timestamp(dst_info.created_at),
+        };
+        match xml_to_string(&result) {
+            Ok(xml) => ok_body(xml.into_bytes()),
+            Err(_) => error_response(&super::errors::ERR_INTERNAL),
         }
     }
 }

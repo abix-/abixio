@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize)]
 #[serde(rename = "ListAllMyBucketsResult")]
@@ -77,6 +77,59 @@ pub struct ObjectXml {
 pub struct PrefixXml {
     #[serde(rename = "Prefix")]
     pub prefix: String,
+}
+
+// -- DeleteObjects request/response types --
+
+#[derive(Debug, Deserialize)]
+#[serde(rename = "Delete")]
+pub struct DeleteRequest {
+    #[serde(rename = "Object")]
+    pub objects: Vec<DeleteObjectEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteObjectEntry {
+    #[serde(rename = "Key")]
+    pub key: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename = "DeleteResult")]
+pub struct DeleteResult {
+    #[serde(rename = "@xmlns")]
+    pub xmlns: String,
+    #[serde(rename = "Deleted", skip_serializing_if = "Vec::is_empty")]
+    pub deleted: Vec<DeletedXml>,
+    #[serde(rename = "Error", skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<DeleteErrorXml>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeletedXml {
+    #[serde(rename = "Key")]
+    pub key: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeleteErrorXml {
+    #[serde(rename = "Key")]
+    pub key: String,
+    #[serde(rename = "Code")]
+    pub code: String,
+    #[serde(rename = "Message")]
+    pub message: String,
+}
+
+// -- CopyObject response --
+
+#[derive(Debug, Serialize)]
+#[serde(rename = "CopyObjectResult")]
+pub struct CopyObjectResultXml {
+    #[serde(rename = "ETag")]
+    pub etag: String,
+    #[serde(rename = "LastModified")]
+    pub last_modified: String,
 }
 
 pub const S3_XMLNS: &str = "http://s3.amazonaws.com/doc/2006-03-01/";

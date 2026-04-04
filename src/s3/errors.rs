@@ -46,6 +46,12 @@ pub const ERR_METHOD_NOT_ALLOWED: S3Error = S3Error {
     http_status: 405,
 };
 
+pub const ERR_BUCKET_NOT_EMPTY: S3Error = S3Error {
+    code: "BucketNotEmpty",
+    message: "The bucket you tried to delete is not empty",
+    http_status: 409,
+};
+
 pub const ERR_ACCESS_DENIED: S3Error = S3Error {
     code: "AccessDenied",
     message: "Access Denied",
@@ -80,6 +86,7 @@ pub fn map_error(err: &StorageError) -> S3Error {
         StorageError::BucketNotFound => ERR_NO_SUCH_BUCKET,
         StorageError::ObjectNotFound => ERR_NO_SUCH_KEY,
         StorageError::BucketExists => ERR_BUCKET_EXISTS,
+        StorageError::BucketNotEmpty => ERR_BUCKET_NOT_EMPTY,
         StorageError::WriteQuorum => ERR_INTERNAL,
         StorageError::ReadQuorum => ERR_INTERNAL,
         StorageError::Bitrot => ERR_INTERNAL,

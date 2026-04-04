@@ -163,6 +163,22 @@ impl Backend for LocalDisk {
         Ok(())
     }
 
+    fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+        let path = self.root.join(bucket);
+        if !path.is_dir() {
+            return Err(StorageError::BucketNotFound);
+        }
+        fs::remove_dir(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::DirectoryNotEmpty
+                || e.to_string().contains("not empty")
+            {
+                StorageError::BucketNotEmpty
+            } else {
+                StorageError::Io(e)
+            }
+        })
+    }
+
     fn bucket_exists(&self, bucket: &str) -> bool {
         self.root.join(bucket).is_dir()
     }

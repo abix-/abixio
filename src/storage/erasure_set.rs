@@ -169,6 +169,25 @@ impl Store for ErasureSet {
         Ok(())
     }
 
+    fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        // check if bucket has objects (from any disk)
+        for disk in &self.disks {
+            if let Ok(keys) = disk.list_objects(bucket, "")
+                && !keys.is_empty()
+            {
+                return Err(StorageError::BucketNotEmpty);
+            }
+        }
+        // delete from all disks
+        for disk in &self.disks {
+            let _ = disk.delete_bucket(bucket);
+        }
+        Ok(())
+    }
+
     fn head_bucket(&self, bucket: &str) -> Result<bool, StorageError> {
         let count = self
             .disks
