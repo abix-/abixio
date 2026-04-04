@@ -1,15 +1,18 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use super::disk::DiskStorage;
 use super::erasure_decode::read_and_decode;
-use super::erasure_encode::encode_and_write;
+use super::erasure_encode::encode_and_write_with_mrf;
 use super::metadata::{BucketInfo, ListOptions, ListResult, ObjectInfo, PutOptions};
 use super::{StorageError, Store};
+use crate::heal::mrf::MrfQueue;
 
 pub struct ErasureSet {
     disks: Vec<DiskStorage>,
     data_n: usize,
     parity_n: usize,
+    mrf: Option<Arc<MrfQueue>>,
 }
 
 impl ErasureSet {
@@ -37,6 +40,7 @@ impl ErasureSet {
             disks,
             data_n,
             parity_n,
+            mrf: None,
         })
     }
 
@@ -50,6 +54,10 @@ impl ErasureSet {
 
     pub fn parity_n(&self) -> usize {
         self.parity_n
+    }
+
+    pub fn set_mrf(&mut self, mrf: Arc<MrfQueue>) {
+        self.mrf = Some(mrf);
     }
 }
 
@@ -65,7 +73,7 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
-        encode_and_write(
+        encode_and_write_with_mrf(
             &self.disks,
             self.data_n,
             self.parity_n,
@@ -73,6 +81,7 @@ impl Store for ErasureSet {
             key,
             data,
             opts,
+            self.mrf.as_ref(),
         )
     }
 

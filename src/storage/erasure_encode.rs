@@ -1,9 +1,12 @@
+use std::sync::Arc;
+
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
 use super::StorageError;
 use super::bitrot::{md5_hex, sha256_hex};
 use super::disk::DiskStorage;
 use super::metadata::{ErasureMeta, ObjectInfo, ObjectMeta, PutOptions, unix_timestamp_secs};
+use crate::heal::mrf::{MrfEntry, MrfQueue};
 
 /// Compute a hash-based permutation of disk indices for a given key.
 /// Same key always produces the same permutation.
@@ -49,6 +52,20 @@ pub fn encode_and_write(
     key: &str,
     data: &[u8],
     opts: PutOptions,
+) -> Result<ObjectInfo, StorageError> {
+    encode_and_write_with_mrf(disks, data_n, parity_n, bucket, key, data, opts, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn encode_and_write_with_mrf(
+    disks: &[DiskStorage],
+    data_n: usize,
+    parity_n: usize,
+    bucket: &str,
+    key: &str,
+    data: &[u8],
+    opts: PutOptions,
+    mrf: Option<&Arc<MrfQueue>>,
 ) -> Result<ObjectInfo, StorageError> {
     let total = data_n + parity_n;
     let etag = md5_hex(data);
@@ -115,6 +132,16 @@ pub fn encode_and_write(
             }
         }
         return Err(StorageError::WriteQuorum);
+    }
+
+    // enqueue to MRF if quorum met but some shards failed
+    if successes < total
+        && let Some(mrf) = mrf
+    {
+        let _ = mrf.enqueue(MrfEntry {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+        });
     }
 
     Ok(ObjectInfo {

@@ -1,6 +1,6 @@
 # AbixIO
 
-**Status: alpha -- server functional, 93 tests passing, healing not yet wired**
+**Status: alpha -- server functional with background healing, 101 tests passing**
 
 S3-compatible object store with erasure coding. Single Rust binary.
 
@@ -16,7 +16,8 @@ AbixIO spreads your data across disks using erasure coding and exposes it via th
 - Shards are distributed across disks with hash-based permutation
 - Metadata is replicated to every disk (not erasure-coded)
 - Per-shard SHA256 checksums detect bitrot automatically
-- Failed/corrupt shards are reconstructed from remaining good shards
+- Failed/corrupt shards are automatically reconstructed from remaining good shards
+- Background healing via MRF queue (reactive) and integrity scanner (proactive)
 
 ## Configuration
 
@@ -75,17 +76,16 @@ cargo build --release
 - S3 API: PUT/GET/HEAD/DELETE objects, create/list buckets, list objects with prefix/delimiter
 - Erasure coding across 1-N disks with configurable data/parity shards
 - Bitrot detection via per-shard SHA256 checksums
+- Background healing: MRF auto-enqueue on partial writes + periodic integrity scanner
 - AWS Signature V4 authentication (or --no-auth for local use)
 - Hash-based shard distribution across disks
-- 93 tests (80 unit + 13 integration), 0 clippy warnings
-- 2.1 MB release binary
+- Graceful shutdown (ctrl-c drains workers)
+- 101 tests (88 unit + 13 integration), 0 clippy warnings
 
 **Not done:**
-- Background healing (MRF queue + integrity scanner primitives exist, not wired to workers)
 - Multipart upload
 - Object versioning
 - Bucket replication
-- Graceful shutdown
 
 See [PLAN.md](PLAN.md) for full architecture and progress (~85% complete).
 

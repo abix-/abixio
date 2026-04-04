@@ -100,13 +100,67 @@ Each disk's meta.json:
 
 ### Healing
 
-**MRF queue** -- reactive. When put_object succeeds with quorum but fails on some
-disks, immediately enqueue (bucket, key) for repair. In-memory bounded channel,
-deduplicated.
+Two paths work together to keep all shards healthy. Adapted from MinIO's
+three-path architecture (MRF + background workers + global scanner), simplified
+for single-process local storage.
 
-**Integrity scanner** -- proactive. Background loop walks all objects. Per-object
-cooldown: skips objects checked within `heal_interval`. Verifies shard presence +
-checksum on every disk. Reconstructs/repairs when quorum available.
+#### Path 1: MRF (Most Recently Failed) -- Reactive
+
+When `put_object` succeeds with quorum but fails on some disks, the partial
+failure is immediately enqueued to the MRF queue (`heal/mrf.rs`). A background
+tokio task drains the queue and calls `heal_object()` for each entry.
+
+- Bounded channel (1000 entries), deduplicated by (bucket, key)
+- On overflow: silently dropped (scanner catches it later)
+- Single drain worker reads entries and heals them
+- After healing, `mark_done()` removes from dedup set
+
+#### Path 2: Integrity Scanner -- Proactive
+
+Background tokio task runs on `--scan-interval` (default 10m). Walks all
+buckets and objects on disk 0, checks shard integrity across ALL disks.
+
+- Per-object cooldown via `ScanState` (`heal/scanner.rs`): skips objects
+  checked within `--heal-interval` (default 24h)
+- For each object: reads meta from all disks, verifies `shard.dat` checksum
+  against `meta.json` checksum on every disk
+- If any shard is missing or corrupt, enqueues to MRF for repair
+
+#### heal_object() -- The Core Function
+
+`heal/worker.rs:heal_object()` does the actual repair:
+
+```
+1. Read meta.json + shard.dat from ALL disks
+2. Find consensus metadata:
+   - Group by quorum_eq() (same size, etag, content_type, created_at,
+     erasure config, distribution -- ignoring per-shard index/checksum)
+   - Pick the group with the most members (must >= data_n)
+3. Classify each shard position via the distribution map:
+   - Good: meta matches consensus AND shard checksum matches
+   - NeedsRepair: meta missing, doesn't match, or checksum mismatch
+4. If good_count < data_n: return Unrecoverable (can't heal)
+5. Reed-Solomon reconstruct missing shards from good ones
+6. Write repaired shards atomically (tmp dir + rename)
+```
+
+#### Design decisions
+
+| Decision | Rationale |
+|---|---|
+| Heal to tmp, then rename | Atomicity -- partial heal won't corrupt state |
+| Bounded MRF channel, drop on overflow | Best-effort; scanner catches anything missed |
+| Single MRF receiver/worker | Simple, sufficient for single-process use |
+| Per-object scan cooldown | Don't re-check recently verified objects |
+| No namespace locking during heal | Single process; concurrent write would just re-heal |
+| No MRF persistence to disk | Scanner catches anything lost on restart |
+| Consensus by quorum_eq majority | Detects stale/outdated metadata without extra state |
+
+#### Graceful shutdown
+
+Ctrl-C triggers `tokio::sync::watch` channel. Scanner and MRF worker check
+the channel between iterations and exit cleanly. HTTP server stops accepting
+new connections via `tokio::select!`.
 
 ## Project structure
 
@@ -134,6 +188,7 @@ src/
     mod.rs
     mrf.rs                # MRF queue (bounded channel, dedup)
     scanner.rs            # Per-object scan cooldown tracking
+    worker.rs             # heal_object(), MRF drain worker, scanner loop
 ```
 
 ## Dependencies
@@ -156,7 +211,7 @@ Reed-Solomon entirely -- data is split into shards without encoding.
 
 ## Current status
 
-### Done (93 tests passing, 0 clippy warnings, 2.1 MB release binary)
+### Done (101 tests passing, 0 clippy warnings)
 
 | Component | File | Status | Tests |
 |-----------|------|--------|-------|
@@ -173,6 +228,7 @@ Reed-Solomon entirely -- data is split into shards without encoding.
 | S3 responses | `s3/response.rs` | DONE | 3 |
 | MRF queue | `heal/mrf.rs` | DONE | 4 |
 | Scanner state | `heal/scanner.rs` | DONE | 4 |
+| Heal worker | `heal/worker.rs` | DONE | 8 |
 | HTTP router | `s3/router.rs` | DONE | -- (tested via integration) |
 | HTTP handlers | `s3/handlers.rs` | DONE | -- (tested via integration) |
 | main.rs wiring | `main.rs` | DONE | -- |
@@ -182,23 +238,25 @@ Reed-Solomon entirely -- data is split into shards without encoding.
 
 | Component | File | Status | What's needed |
 |-----------|------|--------|---------------|
-| Heal workers | `heal/` | PRIMITIVES ONLY | drain MRF queue, run scanner loop, repair shards |
-| MRF auto-enqueue | `storage/erasure_encode.rs` | NOT WIRED | enqueue on partial write failure |
+| Heal workers | `heal/worker.rs` | DONE | drain MRF queue, run scanner loop, repair shards |
+| MRF auto-enqueue | `storage/erasure_encode.rs` | DONE | enqueue on partial write failure |
 | Replication | -- | NOT STARTED | async site-to-site (post-MVP) |
-| Graceful shutdown | `main.rs` | NOT STARTED | ctrl-c handler, drain in-flight |
+| Graceful shutdown | `main.rs` | DONE | ctrl-c handler, drain workers |
 | Multipart upload | -- | NOT STARTED | post-MVP |
 
-### Progress: ~85%
+### Progress: ~95%
 
-The server is fully functional. Verified with live smoke test on 2026-04-04:
+The server is fully functional with background healing. Verified with live
+smoke test on 2026-04-04:
 - Create bucket, put/get/head/delete objects -- all working
 - Erasure resilience confirmed: deleted 2 of 4 disk shards, data recovered
 - S3 XML responses (ListBuckets, ListObjects) working
-- 93 tests (80 unit + 13 integration), 0 clippy warnings
+- Background healing: MRF auto-enqueue on partial writes, scanner loop,
+  heal_object() reconstructs missing/corrupt shards
+- Graceful shutdown via ctrl-c
+- 101 tests (88 unit + 13 integration), 0 clippy warnings
 
-What remains is background healing (the MRF queue and scanner primitives exist
-but aren't wired into background tasks yet) and post-MVP features (replication,
-multipart upload, graceful shutdown).
+What remains is post-MVP features (replication, multipart upload, versioning).
 
 ## Build & test
 
