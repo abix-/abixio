@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo init:*)",
+      "Bash(cargo doc:*)",
+      "Bash(cargo test:*)",
+      "Bash(cargo clippy:*)",
+      "Bash(C:/code/endless/rust/target/release/abixio.exe:*)",
+      "Bash(curl:*)"
+    ]
+  }
+}
