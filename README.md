@@ -102,6 +102,8 @@ cargo build --release
 - Object listing: ListObjectsV2 with prefix, delimiter, pagination
 - Range requests: GET with Range header returns 206 Partial Content
 - Custom metadata: x-amz-meta-* headers stored on PUT, returned on HEAD/GET
+- Last-Modified in RFC 7231 HTTP-date format (matches MinIO/AWS behavior)
+- Real bucket creation dates from filesystem (not hardcoded)
 - Erasure coding across 1-N backends with configurable data/parity shards
 - Pluggable storage backends via `Backend` trait (local disk today, cloud later)
 - Bitrot detection via per-shard SHA256 checksums

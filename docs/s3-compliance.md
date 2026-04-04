@@ -13,13 +13,13 @@ These are routed in `src/s3/handlers.rs` dispatch table.
 
 | S3 API | HTTP | Route | Rating | Assessment |
 |---|---|---|---|---|
-| ListBuckets | `GET /` | `list_buckets` | 7/10 | Works. Returns XML with bucket names. Creation dates are hardcoded to 2024-01-01. |
+| ListBuckets | `GET /` | `list_buckets` | 8/10 | Works. Returns XML with bucket names and real creation dates from filesystem. |
 | CreateBucket | `PUT /{bucket}` | `create_bucket` | 7/10 | Works. No region, ACL, or object lock configuration support. |
 | HeadBucket | `HEAD /{bucket}` | `head_bucket` | 8/10 | Works. Returns 200 or 404. |
 | ListObjectsV2 | `GET /{bucket}` | `list_objects_handler` | 7/10 | Supports prefix, delimiter, max-keys. Has pagination (continuation token). Missing: list-type=2 query validation, encoding-type, start-after, fetch-owner. |
-| PutObject | `PUT /{bucket}/{key}` | `put_object` | 7/10 | Reads full body, stores with content-type. Returns ETag. Missing: content-MD5 validation, metadata headers, storage class, tagging headers. |
-| GetObject | `GET /{bucket}/{key}` | `get_object` | 7/10 | Returns body with Content-Type, Content-Length, ETag, Last-Modified. Missing: Range requests, If-Match/If-None-Match conditionals, response content overrides. |
-| HeadObject | `HEAD /{bucket}/{key}` | `head_object` | 7/10 | Returns Content-Type, Content-Length, ETag, Last-Modified. Missing: metadata headers, storage class, version ID, encryption info. |
+| PutObject | `PUT /{bucket}/{key}` | `put_object` | 8/10 | Reads full body, stores with content-type and custom metadata (x-amz-meta-*). Returns ETag. Missing: content-MD5 validation, storage class, tagging headers. |
+| GetObject | `GET /{bucket}/{key}` | `get_object` | 8/10 | Returns body with Content-Type, Content-Length, ETag, Last-Modified (RFC 7231), Accept-Ranges, custom metadata. Supports Range requests (206 Partial Content). Missing: If-Match/If-None-Match conditionals. |
+| HeadObject | `HEAD /{bucket}/{key}` | `head_object` | 8/10 | Returns Content-Type, Content-Length, ETag, Last-Modified (RFC 7231), Accept-Ranges, custom metadata. Missing: storage class, version ID, encryption info. |
 | DeleteObject | `DELETE /{bucket}/{key}` | `delete_object` | 8/10 | Returns 204 No Content. Missing: version ID support, MFA delete. |
 | DeleteBucket | `DELETE /{bucket}` | `delete_bucket_handler` | 8/10 | Returns 204 No Content. Only deletes empty buckets (returns 409 BucketNotEmpty otherwise). Matches S3 spec. |
 | DeleteObjects (batch) | `POST /{bucket}?delete` | `delete_objects` | 8/10 | Parses XML request body, deletes each key, returns XML with deleted/error results. Up to 1000 keys per request. |
@@ -72,7 +72,7 @@ How complete our responses are compared to what S3 clients expect.
 | Field | S3 spec | abixio returns | Gap |
 |---|---|---|---|
 | `Buckets.Bucket.Name` | bucket name | yes | -- |
-| `Buckets.Bucket.CreationDate` | actual creation time | hardcoded `2024-01-01T00:00:00.000Z` | should store and return real creation time |
+| `Buckets.Bucket.CreationDate` | actual creation time | yes (filesystem mtime, ISO 8601) | -- |
 | `Owner.ID` | account ID | hardcoded | cosmetic |
 | `Owner.DisplayName` | account name | hardcoded | cosmetic |
 
@@ -104,9 +104,9 @@ How complete our responses are compared to what S3 clients expect.
 | `Content-Type` | object content type | yes | -- |
 | `Content-Length` | object size | yes | -- |
 | `ETag` | entity tag | yes | -- |
-| `Last-Modified` | modification time | yes | format is non-standard (ISO-ish, not HTTP-date) |
-| `Accept-Ranges` | `bytes` | not returned | blocks range request detection |
-| `x-amz-meta-*` | custom metadata | not returned | metadata not stored |
+| `Last-Modified` | modification time | yes (RFC 7231 HTTP-date) | -- |
+| `Accept-Ranges` | `bytes` | yes | -- |
+| `x-amz-meta-*` | custom metadata | yes | stored on PUT, returned on HEAD/GET |
 | `x-amz-storage-class` | storage class | not returned | cosmetic |
 | `x-amz-version-id` | version ID | not returned | no versioning |
 | `x-amz-server-side-encryption` | encryption | not returned | no encryption |
@@ -134,20 +134,18 @@ How complete our responses are compared to what S3 clients expect.
 
 ## Summary
 
-### Overall S3 compliance: 5/10
+### Overall S3 compliance: 6/10
 
 abixio implements 11 of ~100 S3 API operations. The 11 it implements cover
-the core object CRUD path including batch delete, server-side copy, and
-bucket lifecycle. Everything else returns 405.
+the core object CRUD path including batch delete, server-side copy, range
+requests, custom metadata, and bucket lifecycle. Response headers follow
+RFC 7231 (HTTP-date format). Everything else returns 405.
 
 ### Next priorities for server-side compliance
 
 | Priority | What | Why |
 |---|---|---|
-| **Should** | Custom metadata storage and return | Store x-amz-meta-* on put, return on head/get. |
-| **Should** | Range requests (GetObject with Range header) | Required for large file partial downloads and resume. |
-| **Should** | Last-Modified in HTTP-date format | Current format is non-standard. Some clients may not parse it. |
-| **Should** | Real bucket creation dates | Currently hardcoded. |
+| **Should** | Structured error responses | Return S3 error codes (AccessDenied, NoSuchBucket, etc.) with RequestId and Resource fields. |
 | **Later** | Object tagging | Tags for lifecycle/billing/access. |
 | **Later** | Versioning | Version browser support. |
 | **Later** | Multipart upload | Required for files >5GB. |
