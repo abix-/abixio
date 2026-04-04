@@ -94,25 +94,28 @@ cargo build --release
 
 ## What works / what doesn't
 
-**Working:**
-- S3 API: PUT/GET/HEAD/DELETE objects, create/list buckets, list objects with prefix/delimiter
-- Pluggable storage backends via `Backend` trait. Local disk ships today, cloud backends can be added without touching core logic
+**Working (11 of ~100 S3 API operations):**
+- Object CRUD: PUT, GET, HEAD, DELETE single objects
+- Batch delete: POST /{bucket}?delete (DeleteObjects, up to 1000 keys/call)
+- Server-side copy: PUT with x-amz-copy-source header (CopyObject)
+- Bucket lifecycle: create, delete (empty only), head, list
+- Object listing: ListObjectsV2 with prefix, delimiter, pagination
+- Range requests: GET with Range header returns 206 Partial Content
+- Custom metadata: x-amz-meta-* headers stored on PUT, returned on HEAD/GET
 - Erasure coding across 1-N backends with configurable data/parity shards
+- Pluggable storage backends via `Backend` trait (local disk today, cloud later)
 - Bitrot detection via per-shard SHA256 checksums
 - Background healing: MRF auto-enqueue on partial writes + periodic integrity scanner
 - AWS Signature V4 authentication (or --no-auth for local use)
 - Admin API: server status, backend health, healing status, object inspection, manual heal
-- Hash-based shard distribution across backends
-- Graceful shutdown (ctrl-c drains workers)
-- 117 tests (90 unit + 27 integration), 0 clippy warnings
 
 **Not done:**
-- Cloud storage backends (Google Drive, OneDrive, etc.). The Backend trait is ready, implementations are not
-- Multipart upload
-- Object versioning
+- Object tagging, versioning, bucket policies, lifecycle rules
+- Multipart upload (required for files >5GB)
 - Bucket replication
+- Cloud storage backends (Backend trait is ready, implementations are not)
 
-See [PLAN.md](PLAN.md) for full architecture and progress (~95% complete).
+See [docs/s3-compliance.md](docs/s3-compliance.md) for full S3 API compliance audit (5/10 overall).
 
 ## License
 
