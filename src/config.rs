@@ -7,7 +7,7 @@ use clap::Parser;
 #[command(name = "abixio", about = "S3-compatible erasure-coded object store")]
 pub struct Config {
     /// Listen address
-    #[arg(long, default_value = ":9000")]
+    #[arg(long, default_value = ":10000")]
     pub listen: String,
 
     /// Comma-separated disk paths

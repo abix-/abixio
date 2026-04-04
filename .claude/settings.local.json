@@ -6,7 +6,16 @@
       "Bash(cargo test:*)",
       "Bash(cargo clippy:*)",
       "Bash(C:/code/endless/rust/target/release/abixio.exe:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(cargo info:*)",
+      "Bash(cargo search:*)",
+      "Bash(cargo build:*)",
+      "Bash(rustup show:*)",
+      "Bash(rustc --version)",
+      "Bash(rustup update:*)",
+      "Read(//c/code/**)",
+      "Bash(find /c -maxdepth 3 -name \"erasure-healing*\" -o -name \"heal-*\")",
+      "Bash(tasklist /fo csv /nh)"
     ]
   }
 }

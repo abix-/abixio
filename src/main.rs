@@ -3,6 +3,8 @@ use std::sync::Arc;
 
 use clap::Parser;
 
+use abixio::admin::HealStats;
+use abixio::admin::handlers::{AdminConfig, AdminHandler};
 use abixio::config::Config;
 use abixio::heal::mrf::MrfQueue;
 use abixio::heal::scanner::ScanState;
@@ -79,7 +81,20 @@ async fn main() {
         no_auth: cfg.no_auth,
     };
 
-    let handler = Arc::new(S3Handler::new(set, auth));
+    let heal_stats = Arc::new(HealStats::new());
+
+    let admin_config = AdminConfig::from_config(&cfg);
+    let admin = Arc::new(AdminHandler::new(
+        Arc::clone(&set),
+        Arc::clone(&heal_disks),
+        Arc::clone(&mrf),
+        Arc::clone(&heal_stats),
+        admin_config,
+    ));
+
+    let mut handler = S3Handler::new(set, auth);
+    handler.set_admin(admin);
+    let handler = Arc::new(handler);
     let addr = parse_listen_addr(&cfg.listen);
 
     // run server with graceful shutdown

@@ -8,6 +8,7 @@ use quick_xml::se::to_string as xml_to_string;
 use super::auth::{AuthConfig, verify_sig_v4};
 use super::errors::{ERR_ACCESS_DENIED, ERR_METHOD_NOT_ALLOWED, S3Error, error_to_xml, map_error};
 use super::response::*;
+use crate::admin::handlers::AdminHandler;
 use crate::storage::Store;
 use crate::storage::erasure_set::ErasureSet;
 use crate::storage::metadata::{ListOptions, PutOptions};
@@ -15,6 +16,7 @@ use crate::storage::metadata::{ListOptions, PutOptions};
 pub struct S3Handler {
     store: Arc<ErasureSet>,
     auth: AuthConfig,
+    admin: Option<Arc<AdminHandler>>,
 }
 
 type BoxBody = Full<Bytes>;
@@ -45,7 +47,15 @@ fn empty_response(status: StatusCode) -> Response<BoxBody> {
 
 impl S3Handler {
     pub fn new(store: Arc<ErasureSet>, auth: AuthConfig) -> Self {
-        Self { store, auth }
+        Self {
+            store,
+            auth,
+            admin: None,
+        }
+    }
+
+    pub fn set_admin(&mut self, admin: Arc<AdminHandler>) {
+        self.admin = Some(admin);
     }
 
     pub async fn dispatch(&self, req: Request<Incoming>) -> Response<BoxBody> {
@@ -58,7 +68,23 @@ impl S3Handler {
 
         let method = req.method().clone();
         let path = req.uri().path().to_string();
+        let query = req.uri().query().unwrap_or("").to_string();
         let path = path.trim_start_matches('/');
+
+        // admin API: /_admin/<endpoint>
+        if let Some(admin_path) = path.strip_prefix("_admin/") {
+            if let Some(admin) = &self.admin {
+                return admin.dispatch(admin_path, &method, &query);
+            } else {
+                return error_response(&ERR_METHOD_NOT_ALLOWED);
+            }
+        }
+        if path == "_admin" {
+            if let Some(admin) = &self.admin {
+                return admin.dispatch("status", &method, &query);
+            }
+        }
+
         let (bucket, key) = match path.find('/') {
             Some(pos) => (&path[..pos], &path[pos + 1..]),
             None => (path, ""),
