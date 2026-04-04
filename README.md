@@ -67,9 +67,27 @@ cargo build --release
 # produces target/release/abixio (~2 MB)
 ```
 
-## Status
+## Status: alpha (actively developed)
 
-Working MVP. 93 tests passing. See [PLAN.md](PLAN.md) for full architecture and progress.
+The server is functional and tested but not production-ready.
+
+**Working now:**
+- S3 API: PUT/GET/HEAD/DELETE objects, create/list buckets, list objects with prefix/delimiter
+- Erasure coding across 1-N disks with configurable data/parity shards
+- Bitrot detection via per-shard SHA256 checksums
+- AWS Signature V4 authentication (or --no-auth for local use)
+- Hash-based shard distribution across disks
+- 93 tests (80 unit + 13 integration), 0 clippy warnings
+- 2.1 MB release binary
+
+**Not yet implemented:**
+- Background healing (MRF queue + integrity scanner primitives exist, not wired to workers)
+- Multipart upload
+- Object versioning
+- Bucket replication
+- Graceful shutdown
+
+See [PLAN.md](PLAN.md) for full architecture and progress (~85% complete).
 
 ## License
 
