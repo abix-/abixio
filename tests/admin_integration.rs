@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 
 use abixio::admin::HealStats;
@@ -7,7 +6,8 @@ use abixio::admin::handlers::{AdminConfig, AdminHandler};
 use abixio::heal::mrf::MrfQueue;
 use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
-use abixio::storage::disk::DiskStorage;
+use abixio::storage::Backend;
+use abixio::storage::disk::LocalDisk;
 use abixio::storage::erasure_set::ErasureSet;
 use tempfile::TempDir;
 
@@ -23,16 +23,21 @@ fn setup() -> (TempDir, Vec<std::path::PathBuf>) {
 }
 
 async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
-    let mut set = ErasureSet::new(&refs, 2, 2).unwrap();
+    let backends: Vec<Box<dyn Backend>> = paths
+        .iter()
+        .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
+        .collect();
+    let mut set = ErasureSet::new(backends, 2, 2).unwrap();
 
     let mrf = Arc::new(MrfQueue::new(1000));
     set.set_mrf(Arc::clone(&mrf));
     let set = Arc::new(set);
 
-    let heal_disks: Arc<Vec<DiskStorage>> = Arc::new(
-        refs.iter()
-            .filter_map(|p| DiskStorage::new(p).ok())
+    let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
+        paths
+            .iter()
+            .filter_map(|p| LocalDisk::new(p.as_path()).ok())
+            .map(|d| Box::new(d) as Box<dyn Backend>)
             .collect(),
     );
 

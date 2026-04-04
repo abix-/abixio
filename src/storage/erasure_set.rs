@@ -1,7 +1,6 @@
-use std::path::Path;
 use std::sync::Arc;
 
-use super::disk::DiskStorage;
+use super::Backend;
 use super::erasure_decode::read_and_decode;
 use super::erasure_encode::encode_and_write_with_mrf;
 use super::metadata::{BucketInfo, ListOptions, ListResult, ObjectInfo, PutOptions};
@@ -9,32 +8,32 @@ use super::{StorageError, Store};
 use crate::heal::mrf::MrfQueue;
 
 pub struct ErasureSet {
-    disks: Vec<DiskStorage>,
+    disks: Vec<Box<dyn Backend>>,
     data_n: usize,
     parity_n: usize,
     mrf: Option<Arc<MrfQueue>>,
 }
 
 impl ErasureSet {
-    pub fn new(disk_paths: &[&Path], data_n: usize, parity_n: usize) -> Result<Self, StorageError> {
+    pub fn new(
+        disks: Vec<Box<dyn Backend>>,
+        data_n: usize,
+        parity_n: usize,
+    ) -> Result<Self, StorageError> {
         let total = data_n + parity_n;
-        if disk_paths.len() != total {
+        if disks.len() != total {
             return Err(StorageError::InvalidConfig(format!(
                 "need {} disks (data={} + parity={}), got {}",
                 total,
                 data_n,
                 parity_n,
-                disk_paths.len()
+                disks.len()
             )));
         }
         if data_n == 0 {
             return Err(StorageError::InvalidConfig(
                 "data shards must be >= 1".to_string(),
             ));
-        }
-        let mut disks = Vec::with_capacity(total);
-        for path in disk_paths {
-            disks.push(DiskStorage::new(path)?);
         }
         Ok(Self {
             disks,
@@ -44,7 +43,7 @@ impl ErasureSet {
         })
     }
 
-    pub fn disks(&self) -> &[DiskStorage] {
+    pub fn disks(&self) -> &[Box<dyn Backend>] {
         &self.disks
     }
 
@@ -260,6 +259,7 @@ impl Store for ErasureSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::disk::LocalDisk;
     use tempfile::TempDir;
 
     fn make_disk_dirs(n: usize) -> (TempDir, Vec<std::path::PathBuf>) {
@@ -273,9 +273,15 @@ mod tests {
         (base, paths)
     }
 
+    fn make_backends(paths: &[std::path::PathBuf]) -> Vec<Box<dyn Backend>> {
+        paths
+            .iter()
+            .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
+            .collect()
+    }
+
     fn make_set(paths: &[std::path::PathBuf], data: usize, parity: usize) -> ErasureSet {
-        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
-        ErasureSet::new(&refs, data, parity).unwrap()
+        ErasureSet::new(make_backends(paths), data, parity).unwrap()
     }
 
     // -- construction tests --
@@ -299,8 +305,8 @@ mod tests {
     #[test]
     fn new_mismatched_disk_count() {
         let (_base, paths) = make_disk_dirs(3);
-        let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
-        assert!(ErasureSet::new(&refs, 2, 2).is_err());
+        let backends = make_backends(&paths);
+        assert!(ErasureSet::new(backends, 2, 2).is_err());
     }
 
     // -- put + get round-trip across configs --
@@ -620,7 +626,6 @@ mod tests {
         set.make_bucket("test").unwrap();
 
         // remove ALL disk root directories to guarantee all writes fail
-        // (hash distribution is a permutation so each disk gets one shard)
         for path in &paths {
             std::fs::remove_dir_all(path).unwrap();
         }

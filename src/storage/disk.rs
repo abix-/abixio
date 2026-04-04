@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::StorageError;
+use super::{Backend, BackendInfo, StorageError};
 use super::metadata::{ObjectMeta, read_meta, write_meta};
 
-pub struct DiskStorage {
+pub struct LocalDisk {
     root: PathBuf,
 }
 
@@ -12,7 +12,7 @@ const TMP_DIR: &str = ".abixio.tmp";
 const SHARD_FILE: &str = "shard.dat";
 const META_FILE: &str = "meta.json";
 
-impl DiskStorage {
+impl LocalDisk {
     pub fn new(root: &Path) -> Result<Self, StorageError> {
         if !root.is_dir() {
             return Err(StorageError::InvalidConfig(format!(
@@ -30,103 +30,6 @@ impl DiskStorage {
 
     pub fn root(&self) -> &Path {
         &self.root
-    }
-
-    pub fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
-        let path = self.root.join(bucket);
-        if path.is_dir() {
-            return Err(StorageError::BucketExists);
-        }
-        fs::create_dir_all(&path)?;
-        Ok(())
-    }
-
-    pub fn bucket_exists(&self, bucket: &str) -> bool {
-        self.root.join(bucket).is_dir()
-    }
-
-    pub fn list_buckets(&self) -> Result<Vec<String>, StorageError> {
-        let mut buckets = Vec::new();
-        for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.starts_with('.') {
-                continue;
-            }
-            if entry.file_type()?.is_dir() {
-                buckets.push(name);
-            }
-        }
-        buckets.sort();
-        Ok(buckets)
-    }
-
-    pub fn write_shard(
-        &self,
-        bucket: &str,
-        key: &str,
-        data: &[u8],
-        meta: &ObjectMeta,
-    ) -> Result<(), StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
-        let tmp_id = uuid::Uuid::new_v4().to_string();
-        let tmp_dir = self.root.join(TMP_DIR).join(&tmp_id);
-
-        fs::create_dir_all(&tmp_dir)?;
-
-        // write shard data to tmp
-        fs::write(tmp_dir.join(SHARD_FILE), data)?;
-
-        // write metadata to tmp
-        write_meta(&tmp_dir.join(META_FILE), meta).map_err(StorageError::Io)?;
-
-        // ensure parent of final destination exists
-        if let Some(parent) = obj_dir.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // atomic rename (same filesystem)
-        // on Windows, target must not exist for rename to succeed
-        if obj_dir.exists() {
-            fs::remove_dir_all(&obj_dir)?;
-        }
-        fs::rename(&tmp_dir, &obj_dir)?;
-
-        Ok(())
-    }
-
-    pub fn read_shard(
-        &self,
-        bucket: &str,
-        key: &str,
-    ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
-        if !obj_dir.is_dir() {
-            return Err(StorageError::ObjectNotFound);
-        }
-        let data = fs::read(obj_dir.join(SHARD_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
-        let meta = read_meta(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
-        Ok((data, meta))
-    }
-
-    pub fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
-        if !obj_dir.is_dir() {
-            return Err(StorageError::ObjectNotFound);
-        }
-        fs::remove_dir_all(&obj_dir)?;
-        Ok(())
-    }
-
-    pub fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError> {
-        let bucket_dir = self.root.join(bucket);
-        if !bucket_dir.is_dir() {
-            return Err(StorageError::BucketNotFound);
-        }
-        let mut keys = Vec::new();
-        self.walk_keys(&bucket_dir, &bucket_dir, prefix, &mut keys)?;
-        keys.sort();
-        Ok(keys)
     }
 
     fn walk_keys(
@@ -164,13 +67,164 @@ impl DiskStorage {
         }
         Ok(())
     }
+}
 
-    pub fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
+impl Backend for LocalDisk {
+    fn write_shard(
+        &self,
+        bucket: &str,
+        key: &str,
+        data: &[u8],
+        meta: &ObjectMeta,
+    ) -> Result<(), StorageError> {
+        let obj_dir = self.root.join(bucket).join(key);
+        let tmp_id = uuid::Uuid::new_v4().to_string();
+        let tmp_dir = self.root.join(TMP_DIR).join(&tmp_id);
+
+        fs::create_dir_all(&tmp_dir)?;
+
+        // write shard data to tmp
+        fs::write(tmp_dir.join(SHARD_FILE), data)?;
+
+        // write metadata to tmp
+        write_meta(&tmp_dir.join(META_FILE), meta).map_err(StorageError::Io)?;
+
+        // ensure parent of final destination exists
+        if let Some(parent) = obj_dir.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // atomic rename (same filesystem)
+        // on Windows, target must not exist for rename to succeed
+        if obj_dir.exists() {
+            fs::remove_dir_all(&obj_dir)?;
+        }
+        fs::rename(&tmp_dir, &obj_dir)?;
+
+        Ok(())
+    }
+
+    fn read_shard(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
+        let obj_dir = self.root.join(bucket).join(key);
+        if !obj_dir.is_dir() {
+            return Err(StorageError::ObjectNotFound);
+        }
+        let data = fs::read(obj_dir.join(SHARD_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
+        let meta = read_meta(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
+        Ok((data, meta))
+    }
+
+    fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+        let obj_dir = self.root.join(bucket).join(key);
+        if !obj_dir.is_dir() {
+            return Err(StorageError::ObjectNotFound);
+        }
+        fs::remove_dir_all(&obj_dir)?;
+        Ok(())
+    }
+
+    fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError> {
+        let bucket_dir = self.root.join(bucket);
+        if !bucket_dir.is_dir() {
+            return Err(StorageError::BucketNotFound);
+        }
+        let mut keys = Vec::new();
+        self.walk_keys(&bucket_dir, &bucket_dir, prefix, &mut keys)?;
+        keys.sort();
+        Ok(keys)
+    }
+
+    fn list_buckets(&self) -> Result<Vec<String>, StorageError> {
+        let mut buckets = Vec::new();
+        for entry in fs::read_dir(&self.root)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                buckets.push(name);
+            }
+        }
+        buckets.sort();
+        Ok(buckets)
+    }
+
+    fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+        let path = self.root.join(bucket);
+        if path.is_dir() {
+            return Err(StorageError::BucketExists);
+        }
+        fs::create_dir_all(&path)?;
+        Ok(())
+    }
+
+    fn bucket_exists(&self, bucket: &str) -> bool {
+        self.root.join(bucket).is_dir()
+    }
+
+    fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
         let obj_dir = self.root.join(bucket).join(key);
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
         read_meta(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)
+    }
+
+    fn info(&self) -> BackendInfo {
+        let (total_bytes, free_bytes) = disk_space(&self.root);
+        let used_bytes = total_bytes.saturating_sub(free_bytes);
+        BackendInfo {
+            label: format!("local:{}", self.root.display()),
+            backend_type: "local".to_string(),
+            total_bytes: Some(total_bytes),
+            used_bytes: Some(used_bytes),
+            free_bytes: Some(free_bytes),
+        }
+    }
+}
+
+fn disk_space(path: &Path) -> (u64, u64) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let mut free_available: u64 = 0;
+        let mut total: u64 = 0;
+        let mut _total_free: u64 = 0;
+        unsafe {
+            windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
+                wide.as_ptr(),
+                &mut free_available as *mut u64 as *mut _,
+                &mut total as *mut u64 as *mut _,
+                &mut _total_free as *mut u64 as *mut _,
+            );
+        }
+        (total, free_available)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        let c_path = match CString::new(path.as_os_str().as_bytes()) {
+            Ok(p) => p,
+            Err(_) => return (0, 0),
+        };
+        unsafe {
+            let mut stat: libc::statvfs = std::mem::zeroed();
+            if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
+                let total = stat.f_blocks as u64 * stat.f_frsize as u64;
+                let free = stat.f_bavail as u64 * stat.f_frsize as u64;
+                (total, free)
+            } else {
+                (0, 0)
+            }
+        }
     }
 }
 
@@ -199,19 +253,19 @@ mod tests {
     #[test]
     fn new_valid_dir() {
         let dir = TempDir::new().unwrap();
-        assert!(DiskStorage::new(dir.path()).is_ok());
+        assert!(LocalDisk::new(dir.path()).is_ok());
     }
 
     #[test]
     fn new_nonexistent_dir() {
         let path = PathBuf::from("/tmp/abixio_does_not_exist_12345");
-        assert!(DiskStorage::new(&path).is_err());
+        assert!(LocalDisk::new(&path).is_err());
     }
 
     #[test]
     fn make_bucket_and_exists() {
         let dir = TempDir::new().unwrap();
-        let disk = DiskStorage::new(dir.path()).unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
         assert!(!disk.bucket_exists("test"));
         disk.make_bucket("test").unwrap();
         assert!(disk.bucket_exists("test"));
@@ -220,7 +274,7 @@ mod tests {
     #[test]
     fn make_bucket_twice_errors() {
         let dir = TempDir::new().unwrap();
-        let disk = DiskStorage::new(dir.path()).unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         assert!(matches!(
             disk.make_bucket("test"),
@@ -231,14 +285,14 @@ mod tests {
     #[test]
     fn bucket_exists_missing() {
         let dir = TempDir::new().unwrap();
-        let disk = DiskStorage::new(dir.path()).unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
         assert!(!disk.bucket_exists("nope"));
     }
 
     #[test]
     fn list_buckets_ignores_tmp() {
         let dir = TempDir::new().unwrap();
-        let disk = DiskStorage::new(dir.path()).unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
         disk.make_bucket("alpha").unwrap();
         disk.make_bucket("beta").unwrap();
         let buckets = disk.list_buckets().unwrap();
@@ -249,7 +303,7 @@ mod tests {
     #[test]
     fn write_read_shard_round_trip() {
         let dir = TempDir::new().unwrap();
-        let disk = DiskStorage::new(dir.path()).unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         let data = b"hello world";
@@ -262,7 +316,7 @@ mod tests {
     #[test]
     fn write_shard_nested_key() {
         let dir = TempDir::new().unwrap();
-        let disk = DiskStorage::new(dir.path()).unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         disk.write_shard("test", "a/b/c", b"nested", &meta).unwrap();
@@ -273,7 +327,7 @@ mod tests {
     #[test]
     fn read_shard_missing_returns_error() {
         let dir = TempDir::new().unwrap();
-        let disk = DiskStorage::new(dir.path()).unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         assert!(matches!(
             disk.read_shard("test", "nope"),
@@ -284,7 +338,7 @@ mod tests {
     #[test]
     fn delete_object_then_read_fails() {
         let dir = TempDir::new().unwrap();
-        let disk = DiskStorage::new(dir.path()).unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         disk.write_shard("test", "key", b"data", &meta).unwrap();
@@ -298,7 +352,7 @@ mod tests {
     #[test]
     fn list_objects_returns_written_keys() {
         let dir = TempDir::new().unwrap();
-        let disk = DiskStorage::new(dir.path()).unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         disk.write_shard("test", "aaa", b"1", &meta).unwrap();
@@ -310,7 +364,7 @@ mod tests {
     #[test]
     fn list_objects_with_prefix() {
         let dir = TempDir::new().unwrap();
-        let disk = DiskStorage::new(dir.path()).unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         disk.write_shard("test", "logs/a", b"1", &meta).unwrap();
@@ -323,11 +377,20 @@ mod tests {
     #[test]
     fn stat_object_returns_meta() {
         let dir = TempDir::new().unwrap();
-        let disk = DiskStorage::new(dir.path()).unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         disk.write_shard("test", "key", b"data", &meta).unwrap();
         let loaded = disk.stat_object("test", "key").unwrap();
         assert_eq!(loaded, meta);
+    }
+
+    #[test]
+    fn info_returns_local_backend() {
+        let dir = TempDir::new().unwrap();
+        let disk = LocalDisk::new(dir.path()).unwrap();
+        let info = disk.info();
+        assert_eq!(info.backend_type, "local");
+        assert!(info.label.starts_with("local:"));
     }
 }

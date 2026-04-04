@@ -1,8 +1,8 @@
 pub mod handlers;
 pub mod types;
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 /// Shared heal/scan statistics, updated by the scanner and MRF workers.

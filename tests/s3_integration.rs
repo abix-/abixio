@@ -1,9 +1,10 @@
 use std::net::SocketAddr;
-use std::path::Path;
 use std::sync::Arc;
 
 use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
+use abixio::storage::Backend;
+use abixio::storage::disk::LocalDisk;
 use abixio::storage::erasure_set::ErasureSet;
 use tempfile::TempDir;
 
@@ -19,8 +20,11 @@ fn setup() -> (TempDir, Vec<std::path::PathBuf>) {
 }
 
 async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task::JoinHandle<()>) {
-    let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
-    let set = Arc::new(ErasureSet::new(&refs, 2, 2).unwrap());
+    let backends: Vec<Box<dyn Backend>> = paths
+        .iter()
+        .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
+        .collect();
+    let set = Arc::new(ErasureSet::new(backends, 2, 2).unwrap());
     let auth = AuthConfig {
         access_key: String::new(),
         secret_key: String::new(),

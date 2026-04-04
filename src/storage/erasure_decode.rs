@@ -2,11 +2,11 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 
 use super::StorageError;
 use super::bitrot::sha256_hex;
-use super::disk::DiskStorage;
+use super::Backend;
 use super::metadata::ObjectMeta;
 
 pub fn read_and_decode(
-    disks: &[DiskStorage],
+    disks: &[Box<dyn Backend>],
     data_n: usize,
     parity_n: usize,
     bucket: &str,

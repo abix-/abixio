@@ -7,7 +7,49 @@ pub mod metadata;
 
 use std::io;
 
-use metadata::{BucketInfo, ListOptions, ListResult, ObjectInfo, PutOptions};
+use metadata::{BucketInfo, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions};
+
+/// Backend is the per-disk storage interface. Each erasure "disk" implements
+/// this -- whether it is a local directory, a cloud drive, or anything else.
+pub trait Backend: Send + Sync {
+    fn write_shard(
+        &self,
+        bucket: &str,
+        key: &str,
+        data: &[u8],
+        meta: &ObjectMeta,
+    ) -> Result<(), StorageError>;
+
+    fn read_shard(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(Vec<u8>, ObjectMeta), StorageError>;
+
+    fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
+
+    fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError>;
+
+    fn list_buckets(&self) -> Result<Vec<String>, StorageError>;
+
+    fn make_bucket(&self, bucket: &str) -> Result<(), StorageError>;
+
+    fn bucket_exists(&self, bucket: &str) -> bool;
+
+    fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError>;
+
+    fn info(&self) -> BackendInfo;
+}
+
+/// Metadata about a storage backend, used for admin reporting.
+#[derive(Debug, Clone)]
+pub struct BackendInfo {
+    pub label: String,
+    pub backend_type: String,
+    pub total_bytes: Option<u64>,
+    pub used_bytes: Option<u64>,
+    pub free_bytes: Option<u64>,
+}
 
 /// Store is the primary storage interface. ErasureSet implements this.
 pub trait Store: Send + Sync {

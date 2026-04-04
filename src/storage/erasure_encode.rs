@@ -4,7 +4,7 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 
 use super::StorageError;
 use super::bitrot::{md5_hex, sha256_hex};
-use super::disk::DiskStorage;
+use super::Backend;
 use super::metadata::{ErasureMeta, ObjectInfo, ObjectMeta, PutOptions, unix_timestamp_secs};
 use crate::heal::mrf::{MrfEntry, MrfQueue};
 
@@ -45,7 +45,7 @@ fn split_data(data: &[u8], count: usize) -> Vec<Vec<u8>> {
 }
 
 pub fn encode_and_write(
-    disks: &[DiskStorage],
+    disks: &[Box<dyn Backend>],
     data_n: usize,
     parity_n: usize,
     bucket: &str,
@@ -58,7 +58,7 @@ pub fn encode_and_write(
 
 #[allow(clippy::too_many_arguments)]
 pub fn encode_and_write_with_mrf(
-    disks: &[DiskStorage],
+    disks: &[Box<dyn Backend>],
     data_n: usize,
     parity_n: usize,
     bucket: &str,

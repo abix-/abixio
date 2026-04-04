@@ -12,7 +12,8 @@ use abixio::heal::worker::{mrf_drain_worker, scanner_loop};
 use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
 use abixio::s3::router;
-use abixio::storage::disk::DiskStorage;
+use abixio::storage::Backend;
+use abixio::storage::disk::LocalDisk;
 use abixio::storage::erasure_set::ErasureSet;
 
 #[tokio::main]
@@ -25,8 +26,19 @@ async fn main() {
         std::process::exit(1);
     }
 
-    let disk_paths: Vec<&std::path::Path> = cfg.disks.iter().map(|p| p.as_path()).collect();
-    let mut set = match ErasureSet::new(&disk_paths, cfg.data, cfg.parity) {
+    let backends: Vec<Box<dyn Backend>> = match cfg
+        .disks
+        .iter()
+        .map(|p| LocalDisk::new(p.as_path()).map(|d| Box::new(d) as Box<dyn Backend>))
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {}", e);
+            std::process::exit(1);
+        }
+    };
+    let mut set = match ErasureSet::new(backends, cfg.data, cfg.parity) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {}", e);
@@ -45,10 +57,11 @@ async fn main() {
     let set = Arc::new(set);
 
     // build disk list for heal workers (separate from ErasureSet's disks)
-    let heal_disks: Arc<Vec<DiskStorage>> = Arc::new(
-        disk_paths
+    let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
+        cfg.disks
             .iter()
-            .filter_map(|p| DiskStorage::new(p).ok())
+            .filter_map(|p| LocalDisk::new(p.as_path()).ok())
+            .map(|d| Box::new(d) as Box<dyn Backend>)
             .collect(),
     );
 

@@ -11,7 +11,7 @@ use crate::heal::mrf::MrfQueue;
 use crate::heal::worker::{HealResult, heal_object};
 use crate::query::parse_query;
 use crate::storage::bitrot::sha256_hex;
-use crate::storage::disk::DiskStorage;
+use crate::storage::Backend;
 use crate::storage::erasure_set::ErasureSet;
 
 type BoxBody = Full<Bytes>;
@@ -36,7 +36,7 @@ fn error_json(status: StatusCode, msg: &str) -> Response<BoxBody> {
 
 pub struct AdminHandler {
     store: Arc<ErasureSet>,
-    heal_disks: Arc<Vec<DiskStorage>>,
+    heal_disks: Arc<Vec<Box<dyn Backend>>>,
     mrf: Arc<MrfQueue>,
     stats: Arc<HealStats>,
     config: AdminConfig,
@@ -72,7 +72,7 @@ impl AdminConfig {
 impl AdminHandler {
     pub fn new(
         store: Arc<ErasureSet>,
-        heal_disks: Arc<Vec<DiskStorage>>,
+        heal_disks: Arc<Vec<Box<dyn Backend>>>,
         mrf: Arc<MrfQueue>,
         stats: Arc<HealStats>,
         config: AdminConfig,
@@ -116,25 +116,22 @@ impl AdminHandler {
     fn disks(&self) -> Response<BoxBody> {
         let mut disks = Vec::new();
         for (i, disk) in self.store.disks().iter().enumerate() {
-            let root = disk.root();
-            let online = root.is_dir();
-
-            let (total_bytes, free_bytes) = disk_space(root);
-            let used_bytes = total_bytes.saturating_sub(free_bytes);
+            let backend_info = disk.info();
+            let online = backend_info.total_bytes.is_some();
 
             let (bucket_count, object_count) = if online {
-                count_buckets_and_objects(disk)
+                count_buckets_and_objects(disk.as_ref())
             } else {
                 (0, 0)
             };
 
             disks.push(DiskInfo {
                 index: i,
-                path: root.display().to_string(),
+                path: backend_info.label,
                 online,
-                total_bytes,
-                used_bytes,
-                free_bytes,
+                total_bytes: backend_info.total_bytes.unwrap_or(0),
+                used_bytes: backend_info.used_bytes.unwrap_or(0),
+                free_bytes: backend_info.free_bytes.unwrap_or(0),
                 bucket_count,
                 object_count,
             });
@@ -297,68 +294,17 @@ impl AdminHandler {
 }
 
 /// Get total and free bytes for a filesystem path.
-/// Returns (0, 0) on error.
-fn disk_space(path: &std::path::Path) -> (u64, u64) {
-    #[cfg(target_os = "windows")]
-    {
-        // use GetDiskFreeSpaceExW
-        use std::os::windows::ffi::OsStrExt;
-        let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        let mut free_available: u64 = 0;
-        let mut total: u64 = 0;
-        let mut _total_free: u64 = 0;
-        unsafe {
-            windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(
-                wide.as_ptr(),
-                &mut free_available as *mut u64 as *mut _,
-                &mut total as *mut u64 as *mut _,
-                &mut _total_free as *mut u64 as *mut _,
-            );
-        }
-        (total, free_available)
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        // use libc statvfs
-        use std::ffi::CString;
-        use std::os::unix::ffi::OsStrExt;
-        let c_path = match CString::new(path.as_os_str().as_bytes()) {
-            Ok(p) => p,
-            Err(_) => return (0, 0),
-        };
-        unsafe {
-            let mut stat: libc::statvfs = std::mem::zeroed();
-            if libc::statvfs(c_path.as_ptr(), &mut stat) == 0 {
-                let total = stat.f_blocks as u64 * stat.f_frsize as u64;
-                let free = stat.f_bavail as u64 * stat.f_frsize as u64;
-                (total, free)
-            } else {
-                (0, 0)
-            }
-        }
-    }
-}
-
-fn count_buckets_and_objects(disk: &DiskStorage) -> (usize, usize) {
-    let mut object_count = 0;
-
+fn count_buckets_and_objects(disk: &dyn Backend) -> (usize, usize) {
     let buckets = match disk.list_buckets() {
         Ok(b) => b,
         Err(_) => return (0, 0),
     };
 
     let bucket_count = buckets.len();
+    let mut object_count = 0;
     for bucket in &buckets {
-        if let Ok(entries) = std::fs::read_dir(disk.root().join(bucket)) {
-            for entry in entries.flatten() {
-                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if !name.starts_with('.') {
-                        object_count += 1;
-                    }
-                }
-            }
+        if let Ok(keys) = disk.list_objects(bucket, "") {
+            object_count += keys.len();
         }
     }
 
