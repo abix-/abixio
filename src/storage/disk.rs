@@ -183,6 +183,16 @@ impl Backend for LocalDisk {
         self.root.join(bucket).is_dir()
     }
 
+    fn bucket_created_at(&self, bucket: &str) -> u64 {
+        let path = self.root.join(bucket);
+        fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    }
+
     fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
         let obj_dir = self.root.join(bucket).join(key);
         if !obj_dir.is_dir() {

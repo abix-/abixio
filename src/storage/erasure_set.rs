@@ -206,9 +206,9 @@ impl Store for ErasureSet {
                 Ok(names) => {
                     return Ok(names
                         .into_iter()
-                        .map(|name| BucketInfo {
-                            name,
-                            created_at: 0, // TODO: track creation time
+                        .map(|name| {
+                            let created_at = disk.bucket_created_at(&name);
+                            BucketInfo { name, created_at }
                         })
                         .collect());
                 }

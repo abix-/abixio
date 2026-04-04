@@ -163,8 +163,8 @@ impl S3Handler {
                         bucket: buckets
                             .into_iter()
                             .map(|b| BucketXml {
+                                creation_date: format_timestamp(b.created_at),
                                 name: b.name,
-                                creation_date: "2024-01-01T00:00:00.000Z".to_string(),
                             })
                             .collect(),
                     },
@@ -562,9 +562,57 @@ fn format_timestamp(unix_secs: u64) -> String {
     )
 }
 
+/// Format unix timestamp as RFC 7231 HTTP-date: `Thu, 01 Jan 2024 00:00:00 GMT`
 fn format_http_date(unix_secs: u64) -> String {
-    // HTTP date format: Thu, 01 Jan 2024 00:00:00 GMT
-    let ts = format_timestamp(unix_secs);
-    // reuse timestamp, approximate
-    format!("{} GMT", &ts[..19].replace('T', " "))
+    const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+
+    let secs_per_day = 86400u64;
+    let days = unix_secs / secs_per_day;
+    let remaining = unix_secs % secs_per_day;
+    let hour = remaining / 3600;
+    let min = (remaining % 3600) / 60;
+    let sec = remaining % 60;
+
+    // day of week: Jan 1 1970 was Thursday (index 0)
+    let dow = DAYS[(days % 7) as usize];
+
+    let mut year = 1970u64;
+    let mut rem_days = days;
+    loop {
+        let days_in_year =
+            if year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400)) {
+                366
+            } else {
+                365
+            };
+        if rem_days < days_in_year {
+            break;
+        }
+        rem_days -= days_in_year;
+        year += 1;
+    }
+    let leap = year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400));
+    let month_lengths: [u64; 12] = if leap {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    let mut month_idx = 0usize;
+    for &ml in &month_lengths {
+        if rem_days < ml {
+            break;
+        }
+        rem_days -= ml;
+        month_idx += 1;
+    }
+    let day = rem_days + 1;
+    let month_name = MONTHS[month_idx.min(11)];
+
+    format!(
+        "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
+        dow, day, month_name, year, hour, min, sec
+    )
 }

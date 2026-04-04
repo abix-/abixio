@@ -38,6 +38,8 @@ pub trait Backend: Send + Sync {
 
     fn bucket_exists(&self, bucket: &str) -> bool;
 
+    fn bucket_created_at(&self, bucket: &str) -> u64;
+
     fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError>;
 
     fn info(&self) -> BackendInfo;
