@@ -1,0 +1,458 @@
+use std::net::SocketAddr;
+use std::path::Path;
+use std::sync::Arc;
+
+use abixio::admin::HealStats;
+use abixio::admin::handlers::{AdminConfig, AdminHandler};
+use abixio::heal::mrf::MrfQueue;
+use abixio::s3::auth::AuthConfig;
+use abixio::s3::handlers::S3Handler;
+use abixio::storage::disk::DiskStorage;
+use abixio::storage::erasure_set::ErasureSet;
+use tempfile::TempDir;
+
+fn setup() -> (TempDir, Vec<std::path::PathBuf>) {
+    let base = TempDir::new().unwrap();
+    let mut paths = Vec::new();
+    for i in 0..4 {
+        let p = base.path().join(format!("d{}", i));
+        std::fs::create_dir_all(&p).unwrap();
+        paths.push(p);
+    }
+    (base, paths)
+}
+
+async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+    let mut set = ErasureSet::new(&refs, 2, 2).unwrap();
+
+    let mrf = Arc::new(MrfQueue::new(1000));
+    set.set_mrf(Arc::clone(&mrf));
+    let set = Arc::new(set);
+
+    let heal_disks: Arc<Vec<DiskStorage>> = Arc::new(
+        refs.iter()
+            .filter_map(|p| DiskStorage::new(p).ok())
+            .collect(),
+    );
+
+    let heal_stats = Arc::new(HealStats::new());
+
+    let admin_config = AdminConfig {
+        listen: ":0".to_string(),
+        data_shards: 2,
+        parity_shards: 2,
+        total_disks: 4,
+        auth_enabled: false,
+        scan_interval: "10m".to_string(),
+        heal_interval: "24h".to_string(),
+        mrf_workers: 2,
+    };
+
+    let admin = Arc::new(AdminHandler::new(
+        Arc::clone(&set),
+        heal_disks,
+        mrf,
+        heal_stats,
+        admin_config,
+    ));
+
+    let auth = AuthConfig {
+        access_key: String::new(),
+        secret_key: String::new(),
+        no_auth: true,
+    };
+    let mut handler = S3Handler::new(set, auth);
+    handler.set_admin(admin);
+    let handler = Arc::new(handler);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let service = hyper::service::service_fn(move |req| {
+                    let handler = handler.clone();
+                    async move { Ok::<_, hyper::Error>(handler.dispatch(req).await) }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    (addr, handle)
+}
+
+fn url(addr: &SocketAddr, path: &str) -> String {
+    format!("http://{}{}", addr, path)
+}
+
+// -- status endpoint --
+
+#[tokio::test]
+async fn admin_status_returns_json() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(url(&addr, "/_admin/status"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["server"], "abixio");
+    assert_eq!(body["data_shards"], 2);
+    assert_eq!(body["parity_shards"], 2);
+    assert_eq!(body["total_disks"], 4);
+    assert_eq!(body["auth_enabled"], false);
+}
+
+#[tokio::test]
+async fn admin_status_has_uptime() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let body: serde_json::Value = client
+        .get(url(&addr, "/_admin/status"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(body["uptime_secs"].as_u64().is_some());
+    assert!(body["version"].as_str().is_some());
+}
+
+// -- disks endpoint --
+
+#[tokio::test]
+async fn admin_disks_returns_all_disks() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let body: serde_json::Value = client
+        .get(url(&addr, "/_admin/disks"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let disks = body["disks"].as_array().unwrap();
+    assert_eq!(disks.len(), 4);
+
+    for (i, disk) in disks.iter().enumerate() {
+        assert_eq!(disk["index"], i);
+        assert_eq!(disk["online"], true);
+        assert!(disk["path"].as_str().is_some());
+        assert!(disk["total_bytes"].as_u64().unwrap() > 0);
+    }
+}
+
+#[tokio::test]
+async fn admin_disks_counts_buckets_and_objects() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    // create bucket and objects
+    client.put(url(&addr, "/testbucket")).send().await.unwrap();
+    client
+        .put(url(&addr, "/testbucket/obj1"))
+        .body("data1")
+        .send()
+        .await
+        .unwrap();
+    client
+        .put(url(&addr, "/testbucket/obj2"))
+        .body("data2")
+        .send()
+        .await
+        .unwrap();
+
+    let body: serde_json::Value = client
+        .get(url(&addr, "/_admin/disks"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let disks = body["disks"].as_array().unwrap();
+    // every disk should have at least 1 bucket
+    for disk in disks {
+        assert!(disk["bucket_count"].as_u64().unwrap() >= 1);
+    }
+}
+
+// -- heal status endpoint --
+
+#[tokio::test]
+async fn admin_heal_status_returns_scanner_info() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let body: serde_json::Value = client
+        .get(url(&addr, "/_admin/heal"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(body["mrf_pending"], 0);
+    assert_eq!(body["mrf_workers"], 2);
+    assert!(body["scanner"]["scan_interval"].as_str().is_some());
+    assert!(body["scanner"]["heal_interval"].as_str().is_some());
+}
+
+// -- object inspect endpoint --
+
+#[tokio::test]
+async fn admin_inspect_object_shows_all_shards() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/testbucket")).send().await.unwrap();
+    client
+        .put(url(&addr, "/testbucket/hello.txt"))
+        .body("hello world")
+        .send()
+        .await
+        .unwrap();
+
+    let body: serde_json::Value = client
+        .get(url(&addr, "/_admin/object?bucket=testbucket&key=hello.txt"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(body["bucket"], "testbucket");
+    assert_eq!(body["key"], "hello.txt");
+    assert_eq!(body["size"], 11);
+    assert_eq!(body["erasure"]["data"], 2);
+    assert_eq!(body["erasure"]["parity"], 2);
+
+    let shards = body["shards"].as_array().unwrap();
+    assert_eq!(shards.len(), 4);
+    for shard in shards {
+        assert_eq!(shard["status"], "ok");
+        assert!(shard["checksum"].as_str().is_some());
+    }
+}
+
+#[tokio::test]
+async fn admin_inspect_missing_object_returns_404() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/testbucket")).send().await.unwrap();
+
+    let resp = client
+        .get(url(&addr, "/_admin/object?bucket=testbucket&key=nonexistent"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn admin_inspect_missing_params_returns_400() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(url(&addr, "/_admin/object"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    let resp = client
+        .get(url(&addr, "/_admin/object?bucket=test"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+// -- manual heal endpoint --
+
+#[tokio::test]
+async fn admin_heal_healthy_object_returns_healthy() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/testbucket")).send().await.unwrap();
+    client
+        .put(url(&addr, "/testbucket/hello.txt"))
+        .body("hello")
+        .send()
+        .await
+        .unwrap();
+
+    let body: serde_json::Value = client
+        .post(url(&addr, "/_admin/heal?bucket=testbucket&key=hello.txt"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(body["result"], "healthy");
+}
+
+#[tokio::test]
+async fn admin_heal_missing_shards_repairs() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/testbucket")).send().await.unwrap();
+    client
+        .put(url(&addr, "/testbucket/fixme.txt"))
+        .body("repair this")
+        .send()
+        .await
+        .unwrap();
+
+    // inspect to find shard distribution
+    let inspect: serde_json::Value = client
+        .get(url(&addr, "/_admin/object?bucket=testbucket&key=fixme.txt"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    // delete shards from 2 disks (within parity tolerance)
+    let shards = inspect["shards"].as_array().unwrap();
+    let disk0 = shards[0]["disk"].as_u64().unwrap() as usize;
+    let disk1 = shards[1]["disk"].as_u64().unwrap() as usize;
+    let obj_dir0 = paths[disk0].join("testbucket").join("fixme.txt");
+    let obj_dir1 = paths[disk1].join("testbucket").join("fixme.txt");
+    let _ = std::fs::remove_dir_all(&obj_dir0);
+    let _ = std::fs::remove_dir_all(&obj_dir1);
+
+    // verify shards missing
+    let inspect2: serde_json::Value = client
+        .get(url(&addr, "/_admin/object?bucket=testbucket&key=fixme.txt"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let missing_count = inspect2["shards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|s| s["status"] == "missing")
+        .count();
+    assert!(missing_count >= 1, "expected missing shards after deletion");
+
+    // data still readable (erasure resilience)
+    let resp = client
+        .get(url(&addr, "/testbucket/fixme.txt"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "repair this");
+
+    // trigger heal
+    let heal_resp: serde_json::Value = client
+        .post(url(&addr, "/_admin/heal?bucket=testbucket&key=fixme.txt"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(heal_resp["result"], "repaired");
+    assert!(heal_resp["shards_fixed"].as_u64().unwrap() >= 1);
+
+    // verify all shards restored
+    let inspect3: serde_json::Value = client
+        .get(url(&addr, "/_admin/object?bucket=testbucket&key=fixme.txt"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    for shard in inspect3["shards"].as_array().unwrap() {
+        assert_eq!(shard["status"], "ok", "shard {} not ok after heal", shard["index"]);
+    }
+}
+
+// -- unknown admin endpoint --
+
+#[tokio::test]
+async fn admin_unknown_endpoint_returns_404() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(url(&addr, "/_admin/nonexistent"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+// -- admin endpoints don't break S3 --
+
+#[tokio::test]
+async fn s3_still_works_with_admin_enabled() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    // S3 operations
+    client.put(url(&addr, "/mybucket")).send().await.unwrap();
+    client
+        .put(url(&addr, "/mybucket/test"))
+        .body("works")
+        .send()
+        .await
+        .unwrap();
+    let resp = client.get(url(&addr, "/mybucket/test")).send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "works");
+
+    // admin also works
+    let resp = client.get(url(&addr, "/_admin/status")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // S3 listing still works
+    let resp = client.get(url(&addr, "/")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("mybucket"));
+}
