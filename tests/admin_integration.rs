@@ -93,6 +93,12 @@ fn url(addr: &SocketAddr, path: &str) -> String {
     format!("http://{}{}", addr, path)
 }
 
+fn url_with_query(addr: &SocketAddr, path: &str, params: &[(&str, &str)]) -> reqwest::Url {
+    let mut url = reqwest::Url::parse(&url(addr, path)).unwrap();
+    url.query_pairs_mut().extend_pairs(params);
+    url
+}
+
 // -- status endpoint --
 
 #[tokio::test]
@@ -270,7 +276,10 @@ async fn admin_inspect_missing_object_returns_404() {
     client.put(url(&addr, "/testbucket")).send().await.unwrap();
 
     let resp = client
-        .get(url(&addr, "/_admin/object?bucket=testbucket&key=nonexistent"))
+        .get(url(
+            &addr,
+            "/_admin/object?bucket=testbucket&key=nonexistent",
+        ))
         .send()
         .await
         .unwrap();
@@ -407,8 +416,58 @@ async fn admin_heal_missing_shards_repairs() {
         .await
         .unwrap();
     for shard in inspect3["shards"].as_array().unwrap() {
-        assert_eq!(shard["status"], "ok", "shard {} not ok after heal", shard["index"]);
+        assert_eq!(
+            shard["status"], "ok",
+            "shard {} not ok after heal",
+            shard["index"]
+        );
     }
+}
+
+#[tokio::test]
+async fn admin_endpoints_accept_encoded_bucket_and_key() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    let key = "dir-one/inspect-me.txt";
+
+    client.put(url(&addr, "/testbucket")).send().await.unwrap();
+    client
+        .put(url(&addr, "/testbucket/dir-one/inspect-me.txt"))
+        .body("encoded admin object")
+        .send()
+        .await
+        .unwrap();
+
+    let inspect: serde_json::Value = client
+        .get(url_with_query(
+            &addr,
+            "/_admin/object",
+            &[("bucket", "testbucket"), ("key", key)],
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(inspect["bucket"], "testbucket");
+    assert_eq!(inspect["key"], key);
+    assert_eq!(inspect["size"], "encoded admin object".len() as u64);
+
+    let heal: serde_json::Value = client
+        .post(url_with_query(
+            &addr,
+            "/_admin/heal",
+            &[("bucket", "testbucket"), ("key", key)],
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(heal["result"], "healthy");
 }
 
 // -- unknown admin endpoint --
@@ -443,11 +502,19 @@ async fn s3_still_works_with_admin_enabled() {
         .send()
         .await
         .unwrap();
-    let resp = client.get(url(&addr, "/mybucket/test")).send().await.unwrap();
+    let resp = client
+        .get(url(&addr, "/mybucket/test"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.text().await.unwrap(), "works");
 
     // admin also works
-    let resp = client.get(url(&addr, "/_admin/status")).send().await.unwrap();
+    let resp = client
+        .get(url(&addr, "/_admin/status"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 200);
 
     // S3 listing still works

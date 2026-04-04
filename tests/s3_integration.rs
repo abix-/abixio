@@ -56,6 +56,12 @@ fn url(addr: &SocketAddr, path: &str) -> String {
     format!("http://{}{}", addr, path)
 }
 
+fn url_with_query(addr: &SocketAddr, path: &str, params: &[(&str, &str)]) -> reqwest::Url {
+    let mut url = reqwest::Url::parse(&url(addr, path)).unwrap();
+    url.query_pairs_mut().extend_pairs(params);
+    url
+}
+
 #[tokio::test]
 async fn create_bucket() {
     let (_base, paths) = setup();
@@ -307,6 +313,62 @@ async fn list_objects_with_delimiter() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("CommonPrefixes"));
     assert!(body.contains("root"));
+}
+
+#[tokio::test]
+async fn list_objects_with_encoded_delimiter_and_prefix() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/testbucket")).send().await.unwrap();
+    client
+        .put(url(&addr, "/testbucket/docs/readme.txt"))
+        .body("readme")
+        .send()
+        .await
+        .unwrap();
+    client
+        .put(url(&addr, "/testbucket/docs/guide.txt"))
+        .body("guide")
+        .send()
+        .await
+        .unwrap();
+    client
+        .put(url(&addr, "/testbucket/photos/cat.jpg"))
+        .body("cat")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(url_with_query(
+            &addr,
+            "/testbucket",
+            &[("list-type", "2"), ("delimiter", "/")],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Prefix>docs/</Prefix>"));
+    assert!(body.contains("<Prefix>photos/</Prefix>"));
+
+    let resp = client
+        .get(url_with_query(
+            &addr,
+            "/testbucket",
+            &[("list-type", "2"), ("prefix", "docs/")],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("docs/readme.txt"));
+    assert!(body.contains("docs/guide.txt"));
+    assert!(!body.contains("photos/cat.jpg"));
 }
 
 #[tokio::test]

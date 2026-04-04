@@ -9,6 +9,7 @@ use super::auth::{AuthConfig, verify_sig_v4};
 use super::errors::{ERR_ACCESS_DENIED, ERR_METHOD_NOT_ALLOWED, S3Error, error_to_xml, map_error};
 use super::response::*;
 use crate::admin::handlers::AdminHandler;
+use crate::query::parse_query;
 use crate::storage::Store;
 use crate::storage::erasure_set::ErasureSet;
 use crate::storage::metadata::{ListOptions, PutOptions};
@@ -305,16 +306,6 @@ impl S3Handler {
             Err(e) => error_response(&map_error(&e)),
         }
     }
-}
-
-fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            map.insert(k.to_string(), v.to_string());
-        }
-    }
-    map
 }
 
 fn format_timestamp(unix_secs: u64) -> String {

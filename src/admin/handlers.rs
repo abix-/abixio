@@ -4,11 +4,12 @@ use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper::{Response, StatusCode};
 
-use super::types::*;
 use super::HealStats;
+use super::types::*;
 use crate::config::Config;
 use crate::heal::mrf::MrfQueue;
 use crate::heal::worker::{HealResult, heal_object};
+use crate::query::parse_query;
 use crate::storage::bitrot::sha256_hex;
 use crate::storage::disk::DiskStorage;
 use crate::storage::erasure_set::ErasureSet;
@@ -149,8 +150,14 @@ impl AdminHandler {
                 running: true,
                 scan_interval: self.config.scan_interval.clone(),
                 heal_interval: self.config.heal_interval.clone(),
-                objects_scanned: self.stats.objects_scanned.load(std::sync::atomic::Ordering::Relaxed),
-                objects_healed: self.stats.objects_healed.load(std::sync::atomic::Ordering::Relaxed),
+                objects_scanned: self
+                    .stats
+                    .objects_scanned
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                objects_healed: self
+                    .stats
+                    .objects_healed
+                    .load(std::sync::atomic::Ordering::Relaxed),
                 last_scan_started: self.stats.last_scan_started_secs_ago().unwrap_or(0),
                 last_scan_duration_secs: self.stats.last_scan_duration_secs(),
             },
@@ -178,7 +185,8 @@ impl AdminHandler {
         let mut shards = Vec::with_capacity(total);
 
         // first pass: find consensus metadata
-        let mut all_reads: Vec<Option<(Vec<u8>, crate::storage::metadata::ObjectMeta)>> = Vec::new();
+        let mut all_reads: Vec<Option<(Vec<u8>, crate::storage::metadata::ObjectMeta)>> =
+            Vec::new();
         for disk in disks {
             match disk.read_shard(bucket, key) {
                 Ok(pair) => all_reads.push(Some(pair)),
@@ -286,16 +294,6 @@ impl AdminHandler {
             Err(e) => error_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
         }
     }
-}
-
-fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            map.insert(k.to_string(), v.to_string());
-        }
-    }
-    map
 }
 
 /// Get total and free bytes for a filesystem path.

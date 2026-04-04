@@ -8,6 +8,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "form_urlencoded",
  "hex",
  "hmac",
  "http-body-util",
