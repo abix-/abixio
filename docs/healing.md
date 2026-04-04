@@ -8,14 +8,14 @@ the missing data from the remaining shards using Reed-Solomon erasure coding.
 
 With `--data 2 --parity 2` across 4 disks, each object is split into 2 data
 shards and 2 parity shards. You can lose any 2 shards and still recover the
-original data. But the lost shards need to be rebuilt -- otherwise the next
+original data. But the lost shards need to be rebuilt, otherwise the next
 failure could be fatal.
 
 Healing is what rebuilds those shards.
 
 ## Two Healing Paths
 
-### Path 1: MRF (Most Recently Failed) -- Reactive
+### Path 1: MRF (Most Recently Failed), Reactive
 
 When a PUT succeeds with quorum but fails on some disks, the object is
 immediately enqueued for repair.
@@ -41,7 +41,7 @@ disk 2.
   will catch it later)
 - Triggered within milliseconds of the partial failure
 
-### Path 2: Integrity Scanner -- Proactive
+### Path 2: Integrity Scanner, Proactive
 
 A background task runs every `--scan-interval` (default 10 minutes). It walks
 every object on every bucket and verifies shard integrity across all disks.
@@ -79,7 +79,7 @@ Some disks may return errors (missing files, IO errors).
 
 ### Step 2: Find Consensus Metadata
 
-Group the metadata by `quorum_eq()` -- two metadata records are
+Group the metadata by `quorum_eq()`. Two metadata records are
 quorum-compatible if they match on all fields except the per-shard `index`
 and `checksum` (which are different for every shard by design).
 

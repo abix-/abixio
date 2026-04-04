@@ -7,7 +7,7 @@ S3-compatible erasure-coded object store. Rust. Single binary.
 Hard drives die. All of them, eventually. Your data should not die with them.
 
 MinIO solved this elegantly: spread data across disks using erasure coding, expose
-it via S3. But MinIO targets enterprise -- it requires a minimum of 4 disks, assumes
+it via S3. But MinIO targets enterprise. It requires a minimum of 4 disks, assumes
 uniform hardware, and optimizes for throughput at scale.
 
 AbixIO takes the same core idea but targets home and personal use:
@@ -16,8 +16,9 @@ AbixIO takes the same core idea but targets home and personal use:
   disks and parity later as your setup grows.
 - **Fully configurable data/parity split.** Each disk is either data or parity,
   entirely up to the user. `--data 1 --parity 0` is valid. So is `--data 3 --parity 5`.
-- **A disk is just a path.** Could be a mount point, a folder on the same volume,
-  an NFS share, a USB drive. AbixIO does not care -- it writes to directories.
+- **A disk is just a storage backend.** Could be a local directory, an NFS mount,
+  a USB drive, or a cloud storage service. AbixIO defines a `Backend` trait --
+  any type that implements it can serve as an erasure "disk".
 - **Assume every disk is fallible.** Any disk can fail at any time. Parity shards
   let you survive failures up to the parity count.
 
@@ -56,20 +57,26 @@ Original Rust implementation.
 
 ### Design principles
 
-1. **Data is erasure-coded, metadata is replicated.** Every disk gets identical
-   `meta.json` (only `erasure.index` and `checksum` vary per disk). Data shards
+1. **Data is erasure-coded, metadata is replicated.** Every backend gets identical
+   `meta.json` (only `erasure.index` and `checksum` vary per shard). Data shards
    are Reed-Solomon encoded.
 
-2. **Hash-based shard distribution.** Each object's key is hashed to produce a
-   permutation of disk indices. Different objects spread I/O across disks.
+2. **Pluggable storage backends.** The `Backend` trait defines the per-disk storage
+   interface. `LocalDisk` implements it for local directories. Any storage service
+   that can read/write blobs by key can implement `Backend` and plug into the
+   erasure set without changing the core logic.
+
+3. **Hash-based shard distribution.** Each object's key is hashed to produce a
+   permutation of backend indices. Different objects spread I/O across backends.
    Distribution stored in `meta.json` for reconstruction.
 
-3. **Quorum rules.** Write quorum = data_n+1 (or data_n when parity==0).
+4. **Quorum rules.** Write quorum = data_n+1 (or data_n when parity==0).
    Read quorum = data_n. Delete quorum = data_n+1 (or data_n when parity==0).
 
-4. **Atomic writes.** Write to `.abixio.tmp/<uuid>/`, rename to final location.
+5. **Atomic writes.** Write to `.abixio.tmp/<uuid>/`, rename to final location
+   (for local backends; other backends handle atomicity in their own way).
 
-5. **Bitrot detection.** Per-shard SHA256 checksum in metadata. Bad checksums
+6. **Bitrot detection.** Per-shard SHA256 checksum in metadata. Bad checksums
    treated as missing shards, reconstructed via Reed-Solomon.
 
 ### Comparison with MinIO
@@ -104,7 +111,7 @@ Two paths work together to keep all shards healthy. Adapted from MinIO's
 three-path architecture (MRF + background workers + global scanner), simplified
 for single-process local storage.
 
-#### Path 1: MRF (Most Recently Failed) -- Reactive
+#### Path 1: MRF (Most Recently Failed), Reactive
 
 When `put_object` succeeds with quorum but fails on some disks, the partial
 failure is immediately enqueued to the MRF queue (`heal/mrf.rs`). A background
@@ -115,7 +122,7 @@ tokio task drains the queue and calls `heal_object()` for each entry.
 - Single drain worker reads entries and heals them
 - After healing, `mark_done()` removes from dedup set
 
-#### Path 2: Integrity Scanner -- Proactive
+#### Path 2: Integrity Scanner, Proactive
 
 Background tokio task runs on `--scan-interval` (default 10m). Walks all
 buckets and objects on disk 0, checks shard integrity across ALL disks.
@@ -126,7 +133,7 @@ buckets and objects on disk 0, checks shard integrity across ALL disks.
   against `meta.json` checksum on every disk
 - If any shard is missing or corrupt, enqueues to MRF for repair
 
-#### heal_object() -- The Core Function
+#### heal_object(), the core function
 
 `heal/worker.rs:heal_object()` does the actual repair:
 
@@ -134,7 +141,7 @@ buckets and objects on disk 0, checks shard integrity across ALL disks.
 1. Read meta.json + shard.dat from ALL disks
 2. Find consensus metadata:
    - Group by quorum_eq() (same size, etag, content_type, created_at,
-     erasure config, distribution -- ignoring per-shard index/checksum)
+     erasure config, distribution, ignoring per-shard index/checksum)
    - Pick the group with the most members (must >= data_n)
 3. Classify each shard position via the distribution map:
    - Good: meta matches consensus AND shard checksum matches
@@ -148,7 +155,7 @@ buckets and objects on disk 0, checks shard integrity across ALL disks.
 
 | Decision | Rationale |
 |---|---|
-| Heal to tmp, then rename | Atomicity -- partial heal won't corrupt state |
+| Heal to tmp, then rename | Atomicity. Partial heal won't corrupt state |
 | Bounded MRF channel, drop on overflow | Best-effort; scanner catches anything missed |
 | Single MRF receiver/worker | Simple, sufficient for single-process use |
 | Per-object scan cooldown | Don't re-check recently verified objects |
@@ -170,13 +177,13 @@ src/
   lib.rs                  # module re-exports
   config.rs               # Config struct (clap derive) + validation
   storage/
-    mod.rs                # Store trait, StorageError enum
+    mod.rs                # Backend trait, Store trait, StorageError, BackendInfo
     metadata.rs           # ObjectMeta, ObjectInfo, BucketInfo, ListResult
     bitrot.rs             # sha256_hex(), md5_hex()
-    disk.rs               # DiskStorage: single-disk I/O, atomic writes
-    erasure_set.rs        # ErasureSet: Store impl, quorum logic
-    erasure_encode.rs     # split_data + reed-solomon encode + parallel write
-    erasure_decode.rs     # parallel read + bitrot check + reconstruct
+    disk.rs               # LocalDisk: Backend impl for local directories
+    erasure_set.rs        # ErasureSet: Store impl over Vec<Box<dyn Backend>>
+    erasure_encode.rs     # split_data + reed-solomon encode + write to backends
+    erasure_decode.rs     # read from backends + bitrot check + reconstruct
   s3/
     mod.rs
     router.rs             # HTTP server + request dispatch
@@ -207,21 +214,22 @@ subtle                        # constant-time compare (auth)
 ```
 
 Note: `reed-solomon-erasure` requires `parity >= 1`. The 0-parity path bypasses
-Reed-Solomon entirely -- data is split into shards without encoding.
+Reed-Solomon entirely. Data is split into shards without encoding.
 
 ## Current status
 
-### Done (101 tests passing, 0 clippy warnings)
+### Done (117 tests passing, 0 clippy warnings)
 
 | Component | File | Status | Tests |
 |-----------|------|--------|-------|
 | Config | `config.rs` | DONE | 10 |
-| Store trait | `storage/mod.rs` | DONE | -- |
+| Backend trait | `storage/mod.rs` | DONE | (used by all storage tests) |
+| Store trait | `storage/mod.rs` | DONE | (used by ErasureSet tests) |
 | Metadata | `storage/metadata.rs` | DONE | 5 |
 | Bitrot | `storage/bitrot.rs` | DONE | 4 |
-| Disk I/O | `storage/disk.rs` | DONE | 12 |
+| LocalDisk backend | `storage/disk.rs` | DONE | 13 |
 | Erasure encode | `storage/erasure_encode.rs` | DONE | 8 |
-| Erasure decode | `storage/erasure_decode.rs` | DONE | -- (tested via erasure_set) |
+| Erasure decode | `storage/erasure_decode.rs` | DONE | (tested via erasure_set) |
 | ErasureSet | `storage/erasure_set.rs` | DONE | 17 |
 | S3 auth (Sig V4) | `s3/auth.rs` | DONE | 4 |
 | S3 errors | `s3/errors.rs` | DONE | 5 |
@@ -229,10 +237,11 @@ Reed-Solomon entirely -- data is split into shards without encoding.
 | MRF queue | `heal/mrf.rs` | DONE | 4 |
 | Scanner state | `heal/scanner.rs` | DONE | 4 |
 | Heal worker | `heal/worker.rs` | DONE | 8 |
-| HTTP router | `s3/router.rs` | DONE | -- (tested via integration) |
-| HTTP handlers | `s3/handlers.rs` | DONE | -- (tested via integration) |
-| main.rs wiring | `main.rs` | DONE | -- |
-| Integration tests | `tests/s3_integration.rs` | DONE | 13 |
+| HTTP router | `s3/router.rs` | DONE | (tested via integration) |
+| HTTP handlers | `s3/handlers.rs` | DONE | (tested via integration) |
+| main.rs wiring | `main.rs` | DONE | (tested via integration) |
+| S3 integration | `tests/s3_integration.rs` | DONE | 14 |
+| Admin integration | `tests/admin_integration.rs` | DONE | 13 |
 
 ### Remaining
 
@@ -240,23 +249,26 @@ Reed-Solomon entirely -- data is split into shards without encoding.
 |-----------|------|--------|---------------|
 | Heal workers | `heal/worker.rs` | DONE | drain MRF queue, run scanner loop, repair shards |
 | MRF auto-enqueue | `storage/erasure_encode.rs` | DONE | enqueue on partial write failure |
-| Replication | -- | NOT STARTED | async site-to-site (post-MVP) |
+| Cloud backends | `storage/` | NOT STARTED | Google Drive, OneDrive, etc. Backend trait is ready. |
+| Replication | | NOT STARTED | async site-to-site (post-MVP) |
 | Graceful shutdown | `main.rs` | DONE | ctrl-c handler, drain workers |
-| Multipart upload | -- | NOT STARTED | post-MVP |
+| Multipart upload | | NOT STARTED | post-MVP |
 
 ### Progress: ~95%
 
-The server is fully functional with background healing. Verified with live
-smoke test on 2026-04-04:
-- Create bucket, put/get/head/delete objects -- all working
+The server is fully functional with background healing and pluggable storage
+backends. Verified with live smoke test on 2026-04-04:
+- Create bucket, put/get/head/delete objects, all working
 - Erasure resilience confirmed: deleted 2 of 4 disk shards, data recovered
 - S3 XML responses (ListBuckets, ListObjects) working
 - Background healing: MRF auto-enqueue on partial writes, scanner loop,
   heal_object() reconstructs missing/corrupt shards
+- Backend trait extracted: storage layer is generic over any backend type
 - Graceful shutdown via ctrl-c
-- 101 tests (88 unit + 13 integration), 0 clippy warnings
+- 117 tests (90 unit + 27 integration), 0 clippy warnings
 
-What remains is post-MVP features (replication, multipart upload, versioning).
+What remains is cloud storage backends and post-MVP features (replication,
+multipart upload, versioning).
 
 ## Build & test
 
@@ -290,10 +302,13 @@ aws s3 cp s3://test/hello.txt - --endpoint-url http://localhost:9000 --no-sign-r
 ## Notes
 
 - MVP reads entire object into memory (no streaming). Fine for objects < 1GB.
-- Keys with `/` create nested directories -- matches S3 behavior.
+- Keys with `/` create nested directories, matching S3 behavior.
 - No multipart upload in MVP.
 - No object versioning.
-- A "disk" is just a directory path. User is responsible for placing disks on
-  separate physical media if they want actual fault tolerance.
-- Encryption decision deferred -- see `docs/encryption.md`. Leaning toward
+- A "disk" is any type implementing the `Backend` trait. Currently only
+  `LocalDisk` (local directory) exists. Cloud backends (Google Drive, OneDrive,
+  etc.) can be added by implementing `Backend` without changing core logic.
+  User is responsible for placing backends on separate media/services if they
+  want actual fault tolerance.
+- Encryption decision deferred. See `docs/encryption.md`. Leaning toward
   external (FDE + client-side age encryption, no AbixIO code changes).

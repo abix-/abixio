@@ -1,8 +1,8 @@
 # AbixIO
 
-**Status: alpha -- server functional with background healing, admin API, 101 tests passing**
+**Status: alpha. Server functional with background healing, admin API, pluggable storage backends, 117 tests passing.**
 
-S3-compatible object store with erasure coding. Single Rust binary.
+S3-compatible object store with erasure coding and pluggable storage backends. Single Rust binary.
 
 ## Problem
 
@@ -13,8 +13,9 @@ AbixIO spreads your data across disks using erasure coding and exposes it via th
 ## How it works
 
 - Data is split into shards using Reed-Solomon erasure coding
-- Shards are distributed across disks with hash-based permutation
-- Metadata is replicated to every disk (not erasure-coded)
+- Shards are distributed across storage backends with hash-based permutation
+- Each "disk" is a pluggable storage backend. Local directory today, cloud storage tomorrow
+- Metadata is replicated to every backend (not erasure-coded)
 - Per-shard SHA256 checksums detect bitrot automatically
 - Failed/corrupt shards are automatically reconstructed from remaining good shards
 - Background healing via MRF queue (reactive) and integrity scanner (proactive)
@@ -37,7 +38,7 @@ abixio --listen 0.0.0.0:10000 \
 Rules:
 - `data >= 1`, `parity >= 0`
 - Number of disks must equal `data + parity`
-- A disk is just a directory path -- same volume, different volume, NFS, USB, whatever
+- A disk is a storage backend: local directory, NFS mount, USB drive, or (future) cloud storage
 
 ## Usage
 
@@ -95,16 +96,18 @@ cargo build --release
 
 **Working:**
 - S3 API: PUT/GET/HEAD/DELETE objects, create/list buckets, list objects with prefix/delimiter
-- Erasure coding across 1-N disks with configurable data/parity shards
+- Pluggable storage backends via `Backend` trait. Local disk ships today, cloud backends can be added without touching core logic
+- Erasure coding across 1-N backends with configurable data/parity shards
 - Bitrot detection via per-shard SHA256 checksums
 - Background healing: MRF auto-enqueue on partial writes + periodic integrity scanner
 - AWS Signature V4 authentication (or --no-auth for local use)
-- Admin API: server status, disk health, healing status, object inspection, manual heal
-- Hash-based shard distribution across disks
+- Admin API: server status, backend health, healing status, object inspection, manual heal
+- Hash-based shard distribution across backends
 - Graceful shutdown (ctrl-c drains workers)
-- 101 tests (88 unit + 13 integration), 0 clippy warnings
+- 117 tests (90 unit + 27 integration), 0 clippy warnings
 
 **Not done:**
+- Cloud storage backends (Google Drive, OneDrive, etc.). The Backend trait is ready, implementations are not
 - Multipart upload
 - Object versioning
 - Bucket replication
