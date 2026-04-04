@@ -1,6 +1,6 @@
 # AbixIO
 
-**Status: alpha -- server functional with background healing, 101 tests passing**
+**Status: alpha -- server functional with background healing, admin API, 101 tests passing**
 
 S3-compatible object store with erasure coding. Single Rust binary.
 
@@ -22,7 +22,7 @@ AbixIO spreads your data across disks using erasure coding and exposes it via th
 ## Configuration
 
 ```
-abixio --listen 0.0.0.0:9000 \
+abixio --listen 0.0.0.0:10000 \
   --disks /mnt/d1,/mnt/d2,/mnt/d3,/mnt/d4 \
   --data 2 --parity 2 --no-auth
 ```
@@ -43,31 +43,52 @@ Rules:
 
 ```bash
 # create bucket
-curl -X PUT http://localhost:9000/mybucket
+curl -X PUT http://localhost:10000/mybucket
 
 # upload
-curl -X PUT -d "hello world" http://localhost:9000/mybucket/hello.txt
+curl -X PUT -d "hello world" http://localhost:10000/mybucket/hello.txt
 
 # download
-curl http://localhost:9000/mybucket/hello.txt
+curl http://localhost:10000/mybucket/hello.txt
 
 # list buckets
-curl http://localhost:9000/
+curl http://localhost:10000/
 
 # list objects
-curl "http://localhost:9000/mybucket?list-type=2"
+curl "http://localhost:10000/mybucket?list-type=2"
 
 # delete
-curl -X DELETE http://localhost:9000/mybucket/hello.txt
+curl -X DELETE http://localhost:10000/mybucket/hello.txt
 ```
 
 Works with any S3 client: AWS CLI, rclone, s3cmd, boto3, etc.
+
+## Admin API
+
+Management endpoints at `/_admin/*` (JSON responses). Used by [abixio-ui](https://github.com/abix-/abixio-ui) for server management. Same Sig V4 auth as S3 (or open with `--no-auth`).
+
+```bash
+# server status
+curl http://localhost:10000/_admin/status
+
+# disk health (per-disk space, status, object counts)
+curl http://localhost:10000/_admin/disks
+
+# healing status (MRF queue, scanner stats)
+curl http://localhost:10000/_admin/heal
+
+# inspect object shards (per-disk shard status)
+curl "http://localhost:10000/_admin/object?bucket=mybucket&key=hello.txt"
+
+# trigger manual heal
+curl -X POST "http://localhost:10000/_admin/heal?bucket=mybucket&key=hello.txt"
+```
 
 ## Build
 
 ```bash
 cargo build --release
-# produces target/release/abixio (~2 MB)
+# produces target/release/abixio (~2.3 MB)
 ```
 
 ## What works / what doesn't
@@ -78,6 +99,7 @@ cargo build --release
 - Bitrot detection via per-shard SHA256 checksums
 - Background healing: MRF auto-enqueue on partial writes + periodic integrity scanner
 - AWS Signature V4 authentication (or --no-auth for local use)
+- Admin API: server status, disk health, healing status, object inspection, manual heal
 - Hash-based shard distribution across disks
 - Graceful shutdown (ctrl-c drains workers)
 - 101 tests (88 unit + 13 integration), 0 clippy warnings
@@ -87,7 +109,7 @@ cargo build --release
 - Object versioning
 - Bucket replication
 
-See [PLAN.md](PLAN.md) for full architecture and progress (~85% complete).
+See [PLAN.md](PLAN.md) for full architecture and progress (~95% complete).
 
 ## License
 
