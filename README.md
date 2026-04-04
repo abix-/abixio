@@ -1,5 +1,7 @@
 # AbixIO
 
+**Status: alpha -- server functional, 93 tests passing, healing not yet wired**
+
 S3-compatible object store with erasure coding. Single Rust binary.
 
 ## Problem
@@ -67,11 +69,9 @@ cargo build --release
 # produces target/release/abixio (~2 MB)
 ```
 
-## Status: alpha (actively developed)
+## What works / what doesn't
 
-The server is functional and tested but not production-ready.
-
-**Working now:**
+**Working:**
 - S3 API: PUT/GET/HEAD/DELETE objects, create/list buckets, list objects with prefix/delimiter
 - Erasure coding across 1-N disks with configurable data/parity shards
 - Bitrot detection via per-shard SHA256 checksums
@@ -80,7 +80,7 @@ The server is functional and tested but not production-ready.
 - 93 tests (80 unit + 13 integration), 0 clippy warnings
 - 2.1 MB release binary
 
-**Not yet implemented:**
+**Not done:**
 - Background healing (MRF queue + integrity scanner primitives exist, not wired to workers)
 - Multipart upload
 - Object versioning
