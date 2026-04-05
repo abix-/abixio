@@ -1,5 +1,5 @@
 pub mod bitrot;
-pub mod disk;
+pub mod local_volume;
 pub mod erasure_decode;
 pub mod erasure_encode;
 pub mod erasure_set;

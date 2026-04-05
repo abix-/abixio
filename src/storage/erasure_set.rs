@@ -656,7 +656,7 @@ impl Store for ErasureSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::disk::LocalDisk;
+    use crate::storage::local_volume::LocalVolume;
     use tempfile::TempDir;
 
     fn make_disk_dirs(n: usize) -> (TempDir, Vec<std::path::PathBuf>) {
@@ -673,7 +673,7 @@ mod tests {
     fn make_backends(paths: &[std::path::PathBuf]) -> Vec<Box<dyn Backend>> {
         paths
             .iter()
-            .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
+            .map(|p| Box::new(LocalVolume::new(p.as_path()).unwrap()) as Box<dyn Backend>)
             .collect()
     }
 

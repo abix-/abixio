@@ -15,7 +15,7 @@ use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
 use abixio::s3::router;
 use abixio::storage::Backend;
-use abixio::storage::disk::LocalDisk;
+use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::erasure_set::{ErasureSet, default_ec};
 
 #[tokio::main]
@@ -52,7 +52,7 @@ async fn main() {
 
     let backends: Vec<Box<dyn Backend>> = match volume_paths
         .iter()
-        .map(|p| LocalDisk::new(p.as_path()).map(|d| Box::new(d) as Box<dyn Backend>))
+        .map(|p| LocalVolume::new(p.as_path()).map(|d| Box::new(d) as Box<dyn Backend>))
         .collect::<Result<Vec<_>, _>>()
     {
         Ok(b) => b,
@@ -85,7 +85,7 @@ async fn main() {
     let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
         volume_paths
             .iter()
-            .filter_map(|p| LocalDisk::new(p.as_path()).ok())
+            .filter_map(|p| LocalVolume::new(p.as_path()).ok())
             .map(|d| Box::new(d) as Box<dyn Backend>)
             .collect(),
     );

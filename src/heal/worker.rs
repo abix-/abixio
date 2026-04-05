@@ -358,7 +358,7 @@ mod tests {
         paths
             .iter()
             .map(|p| {
-                Box::new(crate::storage::disk::LocalDisk::new(p.as_path()).unwrap())
+                Box::new(crate::storage::local_volume::LocalVolume::new(p.as_path()).unwrap())
                     as Box<dyn Backend>
             })
             .collect()

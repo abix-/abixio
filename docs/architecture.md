@@ -10,7 +10,7 @@ cluster-control direction.
    are Reed-Solomon encoded.
 
 2. **Pluggable storage backends.** The `Backend` trait defines the per-disk storage
-   interface. `LocalDisk` implements it for local directories. Any storage service
+   interface. `LocalVolume` implements it for local directories. Any storage service
    that can read/write blobs by key can implement `Backend` and plug into the
    erasure set without changing the core logic.
 
@@ -104,7 +104,7 @@ src/
     mod.rs                # Backend trait, Store trait, StorageError, BackendInfo, EcConfig
     metadata.rs           # ObjectMetaFile, ObjectMeta, ErasureMeta, EcConfig, PutOptions
     bitrot.rs             # sha256_hex(), md5_hex()
-    disk.rs               # LocalDisk: Backend impl for local directories
+    local_volume.rs       # LocalVolume: Backend impl for local directories
     erasure_set.rs        # ErasureSet: disk pool with per-object EC resolution
     erasure_encode.rs     # split_data + reed-solomon encode + disk subset selection
     erasure_decode.rs     # read from backends + bitrot check + reconstruct

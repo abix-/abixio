@@ -11,7 +11,7 @@ use abixio::cluster::topology::{StaticTopology, TopologyVolume, TopologyNode};
 use abixio::heal::mrf::MrfQueue;
 use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
-use abixio::storage::disk::LocalDisk;
+use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::erasure_set::ErasureSet;
 use abixio::storage::metadata::{BucketSettings, ObjectMeta};
 use abixio::storage::{Backend, BackendInfo, StorageError};
@@ -41,7 +41,7 @@ impl AvailabilityController {
 }
 
 struct ControlledBackend {
-    inner: LocalDisk,
+    inner: LocalVolume,
     owner_node_id: String,
     controller: AvailabilityController,
 }
@@ -49,7 +49,7 @@ struct ControlledBackend {
 impl ControlledBackend {
     fn new(root: &Path, owner_node_id: impl Into<String>, controller: AvailabilityController) -> Self {
         Self {
-            inner: LocalDisk::new(root).unwrap(),
+            inner: LocalVolume::new(root).unwrap(),
             owner_node_id: owner_node_id.into(),
             controller,
         }

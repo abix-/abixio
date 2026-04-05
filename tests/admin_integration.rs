@@ -8,7 +8,7 @@ use abixio::heal::mrf::MrfQueue;
 use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
 use abixio::storage::Backend;
-use abixio::storage::disk::LocalDisk;
+use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::erasure_set::ErasureSet;
 use tempfile::TempDir;
 
@@ -37,7 +37,7 @@ async fn start_server_with_cluster(
 ) -> (SocketAddr, tokio::task::JoinHandle<()>, Arc<ClusterManager>) {
     let backends: Vec<Box<dyn Backend>> = paths
         .iter()
-        .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
+        .map(|p| Box::new(LocalVolume::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
     let mut set = ErasureSet::new(backends, 2, 2).unwrap();
 
@@ -48,7 +48,7 @@ async fn start_server_with_cluster(
     let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
         paths
             .iter()
-            .filter_map(|p| LocalDisk::new(p.as_path()).ok())
+            .filter_map(|p| LocalVolume::new(p.as_path()).ok())
             .map(|d| Box::new(d) as Box<dyn Backend>)
             .collect(),
     );
@@ -129,7 +129,7 @@ async fn start_server_pool(
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let backends: Vec<Box<dyn Backend>> = paths
         .iter()
-        .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
+        .map(|p| Box::new(LocalVolume::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
     let mut set = ErasureSet::new(backends, data, parity).unwrap();
 
@@ -140,7 +140,7 @@ async fn start_server_pool(
     let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
         paths
             .iter()
-            .filter_map(|p| LocalDisk::new(p.as_path()).ok())
+            .filter_map(|p| LocalVolume::new(p.as_path()).ok())
             .map(|d| Box::new(d) as Box<dyn Backend>)
             .collect(),
     );

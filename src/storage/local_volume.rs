@@ -6,7 +6,7 @@ use super::metadata::{
 };
 use super::{Backend, BackendInfo, StorageError};
 
-pub struct LocalDisk {
+pub struct LocalVolume {
     root: PathBuf,
 }
 
@@ -16,7 +16,7 @@ const META_FILE: &str = "meta.json";
 const SYS_DIR: &str = ".abixio.sys";
 const BUCKET_SETTINGS_FILE: &str = "settings.json";
 
-impl LocalDisk {
+impl LocalVolume {
     pub fn new(root: &Path) -> Result<Self, StorageError> {
         if !root.is_dir() {
             return Err(StorageError::InvalidConfig(format!(
@@ -72,7 +72,7 @@ impl LocalDisk {
     }
 }
 
-impl Backend for LocalDisk {
+impl Backend for LocalVolume {
     fn write_shard(
         &self,
         bucket: &str,
@@ -453,19 +453,19 @@ mod tests {
     #[test]
     fn new_valid_dir() {
         let dir = TempDir::new().unwrap();
-        assert!(LocalDisk::new(dir.path()).is_ok());
+        assert!(LocalVolume::new(dir.path()).is_ok());
     }
 
     #[test]
     fn new_nonexistent_dir() {
         let path = PathBuf::from("/tmp/abixio_does_not_exist_12345");
-        assert!(LocalDisk::new(&path).is_err());
+        assert!(LocalVolume::new(&path).is_err());
     }
 
     #[test]
     fn make_bucket_and_exists() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         assert!(!disk.bucket_exists("test"));
         disk.make_bucket("test").unwrap();
         assert!(disk.bucket_exists("test"));
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn make_bucket_twice_errors() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         assert!(matches!(
             disk.make_bucket("test"),
@@ -485,14 +485,14 @@ mod tests {
     #[test]
     fn bucket_exists_missing() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         assert!(!disk.bucket_exists("nope"));
     }
 
     #[test]
     fn list_buckets_ignores_tmp() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("alpha").unwrap();
         disk.make_bucket("beta").unwrap();
         let buckets = disk.list_buckets().unwrap();
@@ -503,7 +503,7 @@ mod tests {
     #[test]
     fn write_read_shard_round_trip() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         let data = b"hello world";
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn write_shard_nested_key() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         disk.write_shard("test", "a/b/c", b"nested", &meta).unwrap();
@@ -527,7 +527,7 @@ mod tests {
     #[test]
     fn read_shard_missing_returns_error() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         assert!(matches!(
             disk.read_shard("test", "nope"),
@@ -538,7 +538,7 @@ mod tests {
     #[test]
     fn delete_object_then_read_fails() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         disk.write_shard("test", "key", b"data", &meta).unwrap();
@@ -552,7 +552,7 @@ mod tests {
     #[test]
     fn list_objects_returns_written_keys() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         disk.write_shard("test", "aaa", b"1", &meta).unwrap();
@@ -564,7 +564,7 @@ mod tests {
     #[test]
     fn list_objects_with_prefix() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         disk.write_shard("test", "logs/a", b"1", &meta).unwrap();
@@ -577,7 +577,7 @@ mod tests {
     #[test]
     fn stat_object_returns_meta() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("test").unwrap();
         let meta = test_meta(0);
         disk.write_shard("test", "key", b"data", &meta).unwrap();
@@ -588,7 +588,7 @@ mod tests {
     #[test]
     fn info_returns_local_backend() {
         let dir = TempDir::new().unwrap();
-        let disk = LocalDisk::new(dir.path()).unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
         let info = disk.info();
         assert_eq!(info.backend_type, "local");
         assert!(info.label.starts_with("local:"));

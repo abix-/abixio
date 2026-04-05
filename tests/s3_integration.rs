@@ -5,7 +5,7 @@ use abixio::cluster::{ClusterConfig, ClusterManager};
 use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
 use abixio::storage::Backend;
-use abixio::storage::disk::LocalDisk;
+use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::erasure_set::ErasureSet;
 use tempfile::TempDir;
 
@@ -34,7 +34,7 @@ async fn start_server_with_cluster(
 ) -> (SocketAddr, tokio::task::JoinHandle<()>, Arc<ClusterManager>) {
     let backends: Vec<Box<dyn Backend>> = paths
         .iter()
-        .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
+        .map(|p| Box::new(LocalVolume::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
     let set = Arc::new(ErasureSet::new(backends, 2, 2).unwrap());
     let cluster = Arc::new(
@@ -86,7 +86,7 @@ async fn start_server_pool(
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let backends: Vec<Box<dyn Backend>> = paths
         .iter()
-        .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
+        .map(|p| Box::new(LocalVolume::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
     let set = Arc::new(ErasureSet::new(backends, data, parity).unwrap());
     let cluster = Arc::new(

@@ -352,7 +352,7 @@ key/
 ### Object detection
 
 A directory is an object if it contains `meta.json`. The `walk_keys` function
-in `disk.rs` uses this to list objects.
+in `local_volume.rs` uses this to list objects.
 
 ### Atomic writes
 
