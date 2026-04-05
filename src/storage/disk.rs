@@ -2,7 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::{Backend, BackendInfo, StorageError};
-use super::metadata::{ObjectMeta, read_meta, write_meta};
+use super::metadata::{
+    ObjectMeta, VersionEntry, VersioningConfig, read_meta, read_versions, write_meta,
+    write_versions,
+};
 
 pub struct LocalDisk {
     root: PathBuf,
@@ -11,6 +14,8 @@ pub struct LocalDisk {
 const TMP_DIR: &str = ".abixio.tmp";
 const SHARD_FILE: &str = "shard.dat";
 const META_FILE: &str = "meta.json";
+const VERSIONS_FILE: &str = "versions.json";
+const VERSIONING_FILE: &str = ".versioning.json";
 
 impl LocalDisk {
     pub fn new(root: &Path) -> Result<Self, StorageError> {
@@ -47,9 +52,12 @@ impl LocalDisk {
                 if name.starts_with('.') {
                     continue;
                 }
-                // check if this dir is an object (has shard.dat)
-                let shard_path = entry.path().join(SHARD_FILE);
-                if shard_path.exists() {
+                // check if this dir is an object:
+                // - legacy: has shard.dat directly
+                // - versioned: has versions.json
+                let is_legacy_object = entry.path().join(SHARD_FILE).exists();
+                let is_versioned_object = entry.path().join(VERSIONS_FILE).exists();
+                if is_legacy_object || is_versioned_object {
                     let rel = entry
                         .path()
                         .strip_prefix(base)
@@ -209,6 +217,105 @@ impl Backend for LocalDisk {
         write_meta(&obj_dir.join(META_FILE), meta).map_err(StorageError::Io)
     }
 
+    fn write_versioned_shard(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: &str,
+        data: &[u8],
+        meta: &ObjectMeta,
+    ) -> Result<(), StorageError> {
+        let ver_dir = self.root.join(bucket).join(key).join(version_id);
+        let tmp_id = uuid::Uuid::new_v4().to_string();
+        let tmp_dir = self.root.join(TMP_DIR).join(&tmp_id);
+
+        fs::create_dir_all(&tmp_dir)?;
+        fs::write(tmp_dir.join(SHARD_FILE), data)?;
+        write_meta(&tmp_dir.join(META_FILE), meta).map_err(StorageError::Io)?;
+
+        if let Some(parent) = ver_dir.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if ver_dir.exists() {
+            fs::remove_dir_all(&ver_dir)?;
+        }
+        fs::rename(&tmp_dir, &ver_dir)?;
+        Ok(())
+    }
+
+    fn read_versioned_shard(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: &str,
+    ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
+        let ver_dir = self.root.join(bucket).join(key).join(version_id);
+        if !ver_dir.is_dir() {
+            return Err(StorageError::ObjectNotFound);
+        }
+        let data = fs::read(ver_dir.join(SHARD_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
+        let meta = read_meta(&ver_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
+        Ok((data, meta))
+    }
+
+    fn delete_version_data(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: &str,
+    ) -> Result<(), StorageError> {
+        let ver_dir = self.root.join(bucket).join(key).join(version_id);
+        if ver_dir.is_dir() {
+            fs::remove_dir_all(&ver_dir)?;
+        }
+        Ok(())
+    }
+
+    fn read_version_index(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<Vec<VersionEntry>, StorageError> {
+        let path = self.root.join(bucket).join(key).join(VERSIONS_FILE);
+        match read_versions(&path) {
+            Ok(v) => Ok(v),
+            Err(_) => Ok(Vec::new()),
+        }
+    }
+
+    fn write_version_index(
+        &self,
+        bucket: &str,
+        key: &str,
+        entries: &[VersionEntry],
+    ) -> Result<(), StorageError> {
+        let obj_dir = self.root.join(bucket).join(key);
+        fs::create_dir_all(&obj_dir)?;
+        write_versions(&obj_dir.join(VERSIONS_FILE), entries).map_err(StorageError::Io)
+    }
+
+    fn read_versioning_config(&self, bucket: &str) -> Option<VersioningConfig> {
+        let path = self.root.join(bucket).join(VERSIONING_FILE);
+        fs::read(&path)
+            .ok()
+            .and_then(|data| serde_json::from_slice(&data).ok())
+    }
+
+    fn write_versioning_config(
+        &self,
+        bucket: &str,
+        config: &VersioningConfig,
+    ) -> Result<(), StorageError> {
+        let bucket_dir = self.root.join(bucket);
+        if !bucket_dir.is_dir() {
+            return Err(StorageError::BucketNotFound);
+        }
+        let data = serde_json::to_vec(config)
+            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        fs::write(bucket_dir.join(VERSIONING_FILE), data)?;
+        Ok(())
+    }
+
     fn info(&self) -> BackendInfo {
         let (total_bytes, free_bytes) = disk_space(&self.root);
         let used_bytes = total_bytes.saturating_sub(free_bytes);
@@ -283,6 +390,7 @@ mod tests {
             checksum: "deadbeef".to_string(),
             user_metadata: std::collections::HashMap::new(),
             tags: std::collections::HashMap::new(),
+            version_id: String::new(),
         }
     }
 

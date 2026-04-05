@@ -3,7 +3,9 @@ use std::sync::Arc;
 use super::Backend;
 use super::erasure_decode::read_and_decode;
 use super::erasure_encode::encode_and_write_with_mrf;
-use super::metadata::{BucketInfo, ListOptions, ListResult, ObjectInfo, PutOptions};
+use super::metadata::{
+    BucketInfo, ListOptions, ListResult, ObjectInfo, PutOptions, VersionEntry, VersioningConfig,
+};
 use super::{StorageError, Store};
 use crate::heal::mrf::MrfQueue;
 
@@ -100,6 +102,8 @@ impl Store for ErasureSet {
                 created_at: meta.created_at,
                 user_metadata: meta.user_metadata,
                 tags: meta.tags,
+                version_id: meta.version_id,
+                is_delete_marker: false,
             },
         ))
     }
@@ -118,6 +122,8 @@ impl Store for ErasureSet {
                         created_at: meta.created_at,
                         user_metadata: meta.user_metadata,
                         tags: meta.tags,
+                        version_id: meta.version_id,
+                        is_delete_marker: false,
                     });
                 }
                 Err(_) => continue,
@@ -334,6 +340,154 @@ impl Store for ErasureSet {
 
     fn delete_object_tags(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
         self.put_object_tags(bucket, key, std::collections::HashMap::new())
+    }
+
+    // -- versioning --
+
+    fn get_versioning_config(
+        &self,
+        bucket: &str,
+    ) -> Result<Option<VersioningConfig>, StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        for disk in &self.disks {
+            if let Some(config) = disk.read_versioning_config(bucket) {
+                return Ok(Some(config));
+            }
+        }
+        Ok(None)
+    }
+
+    fn set_versioning_config(
+        &self,
+        bucket: &str,
+        config: &VersioningConfig,
+    ) -> Result<(), StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        let mut successes = 0;
+        for disk in &self.disks {
+            if disk.write_versioning_config(bucket, config).is_ok() {
+                successes += 1;
+            }
+        }
+        if successes == 0 {
+            return Err(StorageError::WriteQuorum);
+        }
+        Ok(())
+    }
+
+    fn get_object_version(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: &str,
+    ) -> Result<(Vec<u8>, ObjectInfo), StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        // read versioned shard from first responsive disk
+        // TODO: proper erasure decode for versioned shards
+        for disk in &self.disks {
+            match disk.read_versioned_shard(bucket, key, version_id) {
+                Ok((data, meta)) => {
+                    return Ok((
+                        data,
+                        ObjectInfo {
+                            bucket: bucket.to_string(),
+                            key: key.to_string(),
+                            size: meta.size,
+                            etag: meta.etag,
+                            content_type: meta.content_type,
+                            created_at: meta.created_at,
+                            user_metadata: meta.user_metadata,
+                            tags: meta.tags,
+                            version_id: meta.version_id,
+                            is_delete_marker: false,
+                        },
+                    ));
+                }
+                Err(_) => continue,
+            }
+        }
+        Err(StorageError::ObjectNotFound)
+    }
+
+    fn delete_object_version(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: &str,
+    ) -> Result<(), StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        // remove version data from all disks
+        for disk in &self.disks {
+            let _ = disk.delete_version_data(bucket, key, version_id);
+        }
+        // update version index: remove this version entry
+        for disk in &self.disks {
+            if let Ok(mut entries) = disk.read_version_index(bucket, key) {
+                entries.retain(|e| e.version_id != version_id);
+                // recalculate is_latest
+                if let Some(first) = entries.first_mut() {
+                    first.is_latest = true;
+                }
+                let _ = disk.write_version_index(bucket, key, &entries);
+            }
+        }
+        Ok(())
+    }
+
+    fn list_object_versions(
+        &self,
+        bucket: &str,
+        prefix: &str,
+    ) -> Result<Vec<(String, Vec<VersionEntry>)>, StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        // list keys from first responsive disk
+        let mut keys = Vec::new();
+        for disk in &self.disks {
+            match disk.list_objects(bucket, prefix) {
+                Ok(k) => {
+                    keys = k;
+                    break;
+                }
+                Err(_) => continue,
+            }
+        }
+        let mut result = Vec::new();
+        for key in &keys {
+            // try versioned index first
+            for disk in &self.disks {
+                let entries = disk.read_version_index(bucket, key).unwrap_or_default();
+                if !entries.is_empty() {
+                    result.push((key.clone(), entries));
+                    break;
+                }
+                // fallback: legacy object without versions.json
+                if let Ok(meta) = disk.stat_object(bucket, key) {
+                    result.push((
+                        key.clone(),
+                        vec![VersionEntry {
+                            version_id: "null".to_string(),
+                            is_latest: true,
+                            is_delete_marker: false,
+                            created_at: meta.created_at,
+                            size: meta.size,
+                            etag: meta.etag.clone(),
+                        }],
+                    ));
+                    break;
+                }
+            }
+        }
+        Ok(result)
     }
 }
 

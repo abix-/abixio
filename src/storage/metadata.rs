@@ -18,6 +18,8 @@ pub struct ObjectMeta {
     pub user_metadata: HashMap<String, String>,
     #[serde(default)]
     pub tags: HashMap<String, String>,
+    #[serde(default)]
+    pub version_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -38,6 +40,8 @@ pub struct ObjectInfo {
     pub created_at: u64,
     pub user_metadata: HashMap<String, String>,
     pub tags: HashMap<String, String>,
+    pub version_id: String,
+    pub is_delete_marker: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -68,6 +72,34 @@ pub struct PutOptions {
     pub content_type: String,
     pub user_metadata: HashMap<String, String>,
     pub tags: HashMap<String, String>,
+}
+
+// -- versioning --
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VersionEntry {
+    pub version_id: String,
+    pub is_latest: bool,
+    pub is_delete_marker: bool,
+    pub created_at: u64,
+    pub size: u64,
+    pub etag: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VersioningConfig {
+    pub status: String, // "Enabled", "Suspended", or absent
+}
+
+pub fn read_versions(path: &Path) -> io::Result<Vec<VersionEntry>> {
+    let data = fs::read(path)?;
+    serde_json::from_slice(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+}
+
+pub fn write_versions(path: &Path, entries: &[VersionEntry]) -> io::Result<()> {
+    let json = serde_json::to_vec_pretty(entries)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    fs::write(path, json)
 }
 
 impl ObjectMeta {
@@ -125,6 +157,7 @@ mod tests {
             checksum: "abc123".to_string(),
             user_metadata: HashMap::new(),
             tags: HashMap::new(),
+            version_id: String::new(),
         };
         let json = serde_json::to_string(&meta).unwrap();
         let decoded: ObjectMeta = serde_json::from_str(&json).unwrap();
@@ -149,6 +182,7 @@ mod tests {
             checksum: "def456".to_string(),
             user_metadata: HashMap::new(),
             tags: HashMap::new(),
+            version_id: String::new(),
         };
         write_meta(&path, &meta).unwrap();
         let loaded = read_meta(&path).unwrap();
@@ -178,6 +212,7 @@ mod tests {
             checksum: "checksum_shard_0".to_string(),
             user_metadata: HashMap::new(),
             tags: HashMap::new(),
+            version_id: String::new(),
         };
         let meta_b = ObjectMeta {
             size: 100,
@@ -193,6 +228,7 @@ mod tests {
             checksum: "checksum_shard_3".to_string(),
             user_metadata: HashMap::new(),
             tags: HashMap::new(),
+            version_id: String::new(),
         };
         assert!(meta_a.quorum_eq(&meta_b));
     }
@@ -213,6 +249,7 @@ mod tests {
             checksum: "x".to_string(),
             user_metadata: HashMap::new(),
             tags: HashMap::new(),
+            version_id: String::new(),
         };
         let meta_b = ObjectMeta {
             size: 200,

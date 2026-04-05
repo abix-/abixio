@@ -115,6 +115,7 @@ pub fn encode_and_write_with_mrf(
             checksum,
             user_metadata: opts.user_metadata.clone(),
             tags: opts.tags.clone(),
+            version_id: String::new(),
         };
         if let Err(e) = disks[disk_idx].write_shard(bucket, key, shard_data, &meta) {
             errs[shard_idx] = Some(e);
@@ -155,6 +156,8 @@ pub fn encode_and_write_with_mrf(
         created_at,
         user_metadata: opts.user_metadata,
         tags: opts.tags,
+        version_id: String::new(),
+        is_delete_marker: false,
     })
 }
 
