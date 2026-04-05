@@ -29,6 +29,16 @@ AbixIO design principles, project structure, and comparison with MinIO.
 7. **Single meta.json per object.** All version metadata in one file, matching
    MinIO's `xl.meta` pattern. See [storage-layout.md](storage-layout.md).
 
+8. **Per-object erasure coding.** Each object owns its data/parity ratio, stored
+   in `meta.json`. The encode path resolves EC per-request (object header > bucket
+   config > server default). The decode and heal paths read EC from metadata.
+   Objects with different EC ratios coexist in the same bucket and disk pool.
+   See [per-object-ec.md](per-object-ec.md).
+
+9. **Disk pool model.** Disks form a pool. Objects select a subset of disks via
+   hash-based permutation. Pool can have more disks than any single object's
+   data+parity, spreading I/O across the full pool.
+
 ## Comparison with MinIO
 
 | Aspect | MinIO | AbixIO |
@@ -55,12 +65,12 @@ src/
   config.rs               # Config struct (clap derive) + validation
   query.rs                # URL query string parsing
   storage/
-    mod.rs                # Backend trait, Store trait, StorageError, BackendInfo
-    metadata.rs           # ObjectMetaFile, ObjectMeta, ErasureMeta, ObjectInfo, VersioningConfig
+    mod.rs                # Backend trait, Store trait, StorageError, BackendInfo, EcConfig
+    metadata.rs           # ObjectMetaFile, ObjectMeta, ErasureMeta, EcConfig, PutOptions
     bitrot.rs             # sha256_hex(), md5_hex()
     disk.rs               # LocalDisk: Backend impl for local directories
-    erasure_set.rs        # ErasureSet: Store impl over Vec<Box<dyn Backend>>
-    erasure_encode.rs     # split_data + reed-solomon encode + write to backends
+    erasure_set.rs        # ErasureSet: disk pool with per-object EC resolution
+    erasure_encode.rs     # split_data + reed-solomon encode + disk subset selection
     erasure_decode.rs     # read from backends + bitrot check + reconstruct
   s3/
     mod.rs
@@ -69,20 +79,21 @@ src/
     response.rs           # S3 XML response structs (quick-xml)
     errors.rs             # S3 error codes + XML + error mapping
   admin/
-    handlers.rs           # Admin API handlers (status, disks, healing, inspect)
+    handlers.rs           # Admin API handlers (status, disks, healing, inspect, bucket EC)
   multipart/
     mod.rs                # multipart upload state, part encode/decode, assembly
   heal/
     mod.rs
     mrf.rs                # MRF queue (bounded channel, dedup)
     scanner.rs            # Per-object scan cooldown tracking
-    worker.rs             # heal_object(), MRF drain worker, scanner loop
+    worker.rs             # heal_object(), MRF drain worker, scanner loop (per-object EC aware)
 tests/
-  s3_integration.rs       # 47 S3 API integration tests
-  admin_integration.rs    # 13 admin API integration tests
+  s3_integration.rs       # 94 S3 API integration tests
+  admin_integration.rs    # 19 admin API integration tests
 docs/
   architecture.md         # this file
   storage-layout.md       # disk layout, meta.json format
+  per-object-ec.md        # per-object erasure coding, bucket EC config, disk pools
   versioning.md           # S3 object versioning
   tagging.md              # object and bucket tagging
   presigned-urls.md       # presigned URL authentication

@@ -41,6 +41,7 @@ Matches MinIO's approach: `fmt.Sprintf("%X", t.UnixNano())`.
 | `InvalidRange` | 416 | Range header not satisfiable |
 | `AccessDenied` | 403 | Auth failure or expired presigned URL |
 | `PreconditionFailed` | 412 | If-Match or If-Unmodified-Since failed |
+| `InvalidRequest` | 400 | Invalid per-object EC params (data=0 or data+parity > disk count) |
 
 ## Error mapping
 

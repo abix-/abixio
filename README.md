@@ -17,7 +17,7 @@ lose nothing. Any S3 client works out of the box.
 - Object and bucket tagging
 - Multipart upload (files of any size)
 - Bucket policies and lifecycle configuration
-- Admin API for disk health, healing status, shard inspection
+- Admin API for disk health, healing status, shard inspection, bucket EC config
 
 ## Quick start
 
@@ -78,7 +78,7 @@ Precedence: per-object header > bucket config > server default (`--data`/`--pari
 
 ## S3 API coverage
 
-41 of 72 S3 API operations (57%). 196 tests.
+41 of 72 S3 API operations (57%). 215 tests.
 See [docs/s3-compliance.md](docs/s3-compliance.md) for the full audit.
 
 **Fully implemented (26):** ListBuckets, CreateBucket, HeadBucket, DeleteBucket,

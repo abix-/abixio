@@ -72,10 +72,16 @@ Scanner wakes up
 
 This is the core repair logic. Called by both MRF worker and scanner.
 
+The healer is **per-object EC aware**: it reads each object's `erasure.data`
+and `erasure.parity` from the stored metadata rather than using global config.
+A disk pool can contain objects with different EC ratios (e.g., one object at
+1+5 and another at 4+2), and each is healed using its own parameters.
+
 ### Step 1: Read All Disks
 
 Read `meta.json` and `shard.dat` from every disk for the given (bucket, key).
-Some disks may return errors (missing files, IO errors).
+Some disks may return errors (missing files, IO errors). The object's EC params
+(`data`, `parity`) are extracted from the first available metadata.
 
 ### Step 2: Find Consensus Metadata
 
@@ -150,6 +156,10 @@ This is the same atomic write pattern used by normal PUTs.
 
 **General rule:** You can lose up to `parity_n` shards and still heal.
 If you lose more than `parity_n`, the object is unrecoverable.
+
+With per-object EC, different objects in the same bucket can have different
+tolerance levels. An object stored with EC 1+5 survives 5 disk failures,
+while an object stored with EC 4+2 in the same bucket only survives 2.
 
 ## Configuration
 

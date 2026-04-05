@@ -3,7 +3,7 @@
 Authoritative audit of every S3 API operation. Compared against MinIO's
 72 unique handler routes in `cmd/api-router.go`.
 
-abixio implements **41 of 72** operations. 196 tests.
+abixio implements **41 of 72** operations. 215 tests.
 
 ## All operations
 
@@ -63,7 +63,7 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 
 | Operation | HTTP | Status | Rating | Notes |
 |---|---|---|---|---|
-| PutObject | `PUT /{bucket}/{key}` | Done | 8/10 | Content-type, custom metadata, versioning. |
+| PutObject | `PUT /{bucket}/{key}` | Done | 9/10 | Content-type, custom metadata, versioning, per-object EC via x-amz-meta headers. |
 | GetObject | `GET /{bucket}/{key}` | Done | 9/10 | Range, conditionals, version-id. |
 | HeadObject | `HEAD /{bucket}/{key}` | Done | 9/10 | Conditionals, custom metadata. |
 | DeleteObject | `DELETE /{bucket}/{key}` | Done | 8/10 | Delete markers for versioned buckets. |
@@ -123,7 +123,7 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 
 | Field | Status |
 |---|---|
-| `<Code>` | 11 error codes defined. |
+| `<Code>` | 12 error codes defined. |
 | `<Message>` | Descriptive messages. |
 | `<RequestId>` | Included in XML body. |
 | `<Resource>` | Included when handler has context. |
@@ -139,7 +139,7 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 
 ## Summary
 
-41 of 72 operations (57%). 196 tests.
+41 of 72 operations (57%). 215 tests.
 
 Not implemented: encryption config, replication, notifications,
 object lock/retention, ACLs, S3 Select.
