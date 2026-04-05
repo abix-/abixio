@@ -1,6 +1,6 @@
 # AbixIO Server
 
-Rust S3-compatible object storage where each object chooses its own fault tolerance. Mix any disks, any nodes, one pool. Runs on a single machine or a cluster with no mode switch.
+Rust S3-compatible object storage where each object chooses its own fault tolerance. Mix any disks, any nodes, one pool. Single machine or cluster.
 
 > **Home lab use only.** Early development. Do not store business data on this.
 > For production, see [RustFS](https://github.com/rustfs/rustfs) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
