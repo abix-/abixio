@@ -104,7 +104,7 @@ All four are UUIDv4, generated at format time, immutable after that.
 
 **First boot (standalone)**:
 
-1. `abixio --disks /d1,/d2,/d3,/d4`
+1. `abixio -v /d1 -v /d2 -v /d3 -v /d4`
 2. No volume.json found -- generate node_id, volume_id UUIDs
 3. No `--peers` -- standalone mode, generate deployment_id and set_id
 4. Write complete volume.json to every volume
@@ -112,7 +112,7 @@ All four are UUIDv4, generated at format time, immutable after that.
 
 **First boot (cluster)**:
 
-1. `abixio --disks /d1,/d2 --peers http://node-2:10000`
+1. `abixio -v /d1 -v /d2 --peers http://node-2:10000`
 2. No volume.json found -- generate node_id, volume_id UUIDs
 3. Write partial volume.json (node_id, volume_id only)
 4. Exchange identity with peers via `/_admin/cluster/join`
@@ -131,7 +131,7 @@ All four are UUIDv4, generated at format time, immutable after that.
 **Volume migration**:
 
 1. Move volumes to new hardware
-2. Start abixio binary with `--disks` pointing to the moved volumes
+2. Start abixio binary with `-v` pointing to the moved volumes
 3. Binary reads volume.json, discovers identity
 4. Peers recognize the node by its persisted node_id and volume_ids
 5. Node comes online
@@ -382,7 +382,7 @@ and externally inspectable across nodes.
 
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
-| `--disks` | yes | -- | Comma-separated volume paths |
+| `-v` / `--volume` | yes | -- | Volume path (repeat for each) |
 | `--listen` | no | `:10000` | Bind address |
 | `--peers` | no | empty | Peer endpoints for cluster mode |
 | `--cluster-secret` | no | empty | Shared secret for peer probes |

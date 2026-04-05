@@ -65,7 +65,7 @@ The current implementation does **not** provide:
 
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
-| `--disks` | yes | -- | Comma-separated volume paths |
+| `-v` / `--volume` | yes | -- | Volume path (repeat for each) |
 | `--listen` | no | `:10000` | Bind address |
 | `--peers` | no | empty | Peer endpoints for cluster mode |
 | `--cluster-secret` | no | empty | Shared secret for peer probes |
@@ -75,7 +75,7 @@ Example:
 
 ```bash
 ./target/release/abixio \
-  --disks /srv/abixio/d1,/srv/abixio/d2 \
+  -v /srv/abixio/d1 -v /srv/abixio/d2 \
   --peers http://node-2:10000,http://node-3:10000
 ```
 
@@ -84,7 +84,7 @@ For a standalone node, omit `--peers`. The node immediately transitions to
 
 ## Boot Sequence
 
-1. Read `.abixio.sys/volume.json` from each `--disks` path
+1. Read `.abixio.sys/volume.json` from each `-v` path
 2. If no volume.json exists (first boot): generate node_id and volume_id UUIDs,
    write partial volume.json
 3. If `--peers` is empty: standalone mode -- finalize volume.json immediately

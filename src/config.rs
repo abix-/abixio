@@ -10,9 +10,9 @@ pub struct Config {
     #[arg(long, default_value = ":10000")]
     pub listen: String,
 
-    /// Comma-separated disk/volume paths
-    #[arg(long, value_delimiter = ',')]
-    pub disks: Vec<PathBuf>,
+    /// Volume paths (repeat for each volume)
+    #[arg(short = 'v', long = "volume")]
+    pub volumes: Vec<PathBuf>,
 
     /// Comma-separated peer endpoints for cluster mode
     #[arg(long, value_delimiter = ',', default_value = "")]
@@ -41,12 +41,12 @@ pub struct Config {
 
 impl Config {
     pub fn validate(&self) -> Result<(), String> {
-        if self.disks.is_empty() {
-            return Err("no disks specified".to_string());
+        if self.volumes.is_empty() {
+            return Err("no volumes specified".to_string());
         }
-        for path in &self.disks {
+        for path in &self.volumes {
             if !path.is_dir() {
-                return Err(format!("disk path does not exist: {}", path.display()));
+                return Err(format!("volume path does not exist: {}", path.display()));
             }
         }
         // validate duration strings
@@ -116,12 +116,12 @@ mod tests {
         (base, paths)
     }
 
-    fn config_with(disks: Vec<PathBuf>) -> Config {
+    fn config_with(volumes: Vec<PathBuf>) -> Config {
         Config {
             listen: ":10000".to_string(),
             peers: Vec::new(),
             cluster_secret: String::new(),
-            disks,
+            volumes,
             no_auth: false,
             scan_interval: "10m".to_string(),
             heal_interval: "24h".to_string(),

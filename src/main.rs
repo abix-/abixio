@@ -30,7 +30,7 @@ async fn main() {
 
     // resolve node identity from volume.json or peer exchange
     let identity = resolve_identity(
-        &cfg.disks,
+        &cfg.volumes,
         &cfg.listen,
         &cfg.peers,
         &cfg.cluster_secret,
@@ -49,7 +49,7 @@ async fn main() {
     );
 
     let backends: Vec<Box<dyn Backend>> = match cfg
-        .disks
+        .volumes
         .iter()
         .map(|p| LocalDisk::new(p.as_path()).map(|d| Box::new(d) as Box<dyn Backend>))
         .collect::<Result<Vec<_>, _>>()
@@ -82,7 +82,7 @@ async fn main() {
 
     // build disk list for heal workers (separate from ErasureSet's disks)
     let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
-        cfg.disks
+        cfg.volumes
             .iter()
             .filter_map(|p| LocalDisk::new(p.as_path()).ok())
             .map(|d| Box::new(d) as Box<dyn Backend>)
@@ -126,7 +126,7 @@ async fn main() {
             advertise_cluster: identity.advertise.clone(),
             peers: identity.peers.clone(),
             cluster_secret: cfg.cluster_secret.clone(),
-            disk_paths: cfg.disks.clone(),
+            disk_paths: cfg.volumes.clone(),
         })
         .unwrap_or_else(|err| {
             eprintln!("error: {}", err);

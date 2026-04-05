@@ -31,7 +31,7 @@ cargo build --release
 mkdir -p /tmp/abixio/{d1,d2,d3,d4}
 
 ./target/release/abixio \
-  --disks /tmp/abixio/d1,/tmp/abixio/d2,/tmp/abixio/d3,/tmp/abixio/d4 \
+  -v /tmp/abixio/d1 -v /tmp/abixio/d2 -v /tmp/abixio/d3 -v /tmp/abixio/d4 \
   --no-auth
 ```
 
@@ -55,17 +55,17 @@ the erasure set membership from the handshake.
 ```bash
 # node 1
 ./target/release/abixio \
-  --disks /srv/abixio/d1,/srv/abixio/d2 \
+  -v /srv/abixio/d1 -v /srv/abixio/d2 \
   --peers http://node-2:10000,http://node-3:10000
 
 # node 2
 ./target/release/abixio \
-  --disks /srv/abixio/d1,/srv/abixio/d2 \
+  -v /srv/abixio/d1 -v /srv/abixio/d2 \
   --peers http://node-1:10000,http://node-3:10000
 
 # node 3
 ./target/release/abixio \
-  --disks /srv/abixio/d1,/srv/abixio/d2 \
+  -v /srv/abixio/d1 -v /srv/abixio/d2 \
   --peers http://node-1:10000,http://node-2:10000
 ```
 
@@ -84,7 +84,7 @@ quorum confirmation. If quorum is lost, the node fences itself.
 
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
-| `--disks` | yes | -- | Comma-separated volume paths |
+| `-v` / `--volume` | yes | -- | Volume path (repeat for each) |
 | `--listen` | no | `:10000` | Bind address |
 | `--peers` | no | empty | Peer endpoints for cluster mode |
 | `--cluster-secret` | no | empty | Shared secret for peer probes |

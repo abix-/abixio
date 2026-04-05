@@ -66,12 +66,12 @@ impl AdminConfig {
         identity: &crate::cluster::identity::ResolvedIdentity,
         cfg: &Config,
     ) -> Self {
-        let (data_shards, parity_shards) = default_ec(cfg.disks.len());
+        let (data_shards, parity_shards) = default_ec(cfg.volumes.len());
         Self {
             listen: cfg.listen.clone(),
             data_shards,
             parity_shards,
-            total_disks: cfg.disks.len(),
+            total_disks: cfg.volumes.len(),
             auth_enabled: !cfg.no_auth,
             scan_interval: cfg.scan_interval.clone(),
             heal_interval: cfg.heal_interval.clone(),
