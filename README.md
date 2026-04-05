@@ -73,13 +73,8 @@ Every node gets the same `--nodes` list -- the full cluster membership. Each
 node figures out which one it is automatically.
 
 ```bash
-# same --nodes on every node, only --volumes differs per node
-./target/release/abixio \
-  --volumes /srv/abixio/d1,/srv/abixio/d2 \
-  --nodes http://node{1...3}:10000
+abixio --volumes /data{1...2} --nodes http://node{1...3}:10000
 ```
-
-Supports `{N...M}` range expansion for both `--volumes` and `--nodes`.
 
 What happens at startup:
 
