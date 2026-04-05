@@ -74,48 +74,9 @@ The FTT header is returned on GET and HEAD like all S3 custom metadata.
 - FTT must be >= 0 and < total disk count
 - Invalid values return HTTP 400 `InvalidRequest`
 
-## Bucket EC config
+## Bucket FTT
 
-Set a default EC for all new objects in a bucket. Stored in
-`.abixio.sys/buckets/<bucket>/settings.json` under the `ec` field.
-
-### Admin API
-
-```bash
-# set bucket default
-curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ftt?ftt=2"
-
-# get bucket config (returns auto-computed default if not set)
-curl http://localhost:10000/_admin/bucket/mybucket/ftt
-```
-
-Response format:
-
-```json
-{
-  "ftt": 2
-}
-```
-
-Every bucket gets FTT=1 at creation. The GET endpoint always returns a config.
-
-## Volume pool model
-
-AbixIO volumes form a pool. FTT determines the data/parity split. All volumes
-are used for every object.
-
-```bash
-# 6-volume pool, bucket default FTT=1 -> 5+1
-abixio --volumes /d{1...6}
-
-# set bucket to FTT=2 -> 4+2
-curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ftt?ftt=2"
-```
-
-In the single-node path, shard distribution is a deterministic backend
-permutation. In the placement-aware path, the same FTT choice is combined
-with stable placement metadata including `epoch_id`, `set_id`, `node_ids`,
-and `volume_ids`.
+Every bucket gets FTT=1 at creation. Change it via the admin API. See [admin-api.md](admin-api.md).
 
 ### Example configurations
 
@@ -130,59 +91,11 @@ and `volume_ids`.
 ## How reads work
 
 The decode path reads `erasure.ftt` and `erasure.distribution` from the object's
-`meta.json`. It does not consult bucket FTT. This means:
+`meta.json`. It does not consult bucket FTT. Objects are self-describing:
+changing bucket FTT or adding disks does not affect existing objects.
 
-- Objects written with FTT=5 (1+5) are always read with 1+5
-- Changing volume count does not affect existing objects
-- Older objects still work (their `meta.json` records the EC params they were written with)
+## Related
 
-## How healing works
-
-The heal worker reads EC params from each object's stored metadata. A pool can
-contain objects with different EC ratios, and the healer handles each one
-correctly:
-
-1. Read `meta.json` from any available disk
-2. Extract `erasure.ftt` and derive shard counts from `erasure.distribution`
-3. Use stored `distribution` and, when present, stored placement identity to identify which shards belong where
-4. Reconstruct missing shards using the object's own EC params
-5. Write repaired shards back
-
-## Comparison with MinIO
-
-| Aspect | MinIO | AbixIO |
-|---|---|---|
-| Fault tolerance granularity | Per server pool | Per object (FTT) |
-| Changing fault tolerance | Requires new server pool | Set FTT header on next PUT |
-| Mixed FTT in same bucket | Not possible | Native |
-| EC stored in metadata | Yes (xl.meta) | Yes (meta.json) |
-| Disk selection | All disks in erasure set | All disks in volume pool, with placement metadata |
-
-MinIO's approach requires planning EC ratios at deployment time. AbixIO lets
-you choose per object, per bucket, or per server -- and change your mind at
-any time for new objects.
-
-## Disk layout
-
-```
-disk0/
-  .abixio.sys/
-    buckets/
-      mybucket/
-        settings.json     # { "ec": { "ftt": 2 } }
-  mybucket/
-    critical.txt/
-      meta.json           # erasure: { data: 1, parity: 5, ... }
-      shard.dat
-    bigfile.bin/
-      meta.json           # erasure: { data: 4, parity: 2, ... }
-      shard.dat
-```
-
-Each object's `meta.json` is the source of truth for its EC configuration.
-The bucket-level `settings.json` EC config is only used as a default for new
-writes.
-
-For placement-aware objects, `meta.json` also records `epoch_id`, `set_id`,
-`node_ids`, and `volume_ids` alongside `data`, `parity`, `index`, and
-`distribution`.
+- [healing.md](healing.md) for how the heal worker uses per-object FTT
+- [comparison.md](comparison.md) for how this differs from MinIO's model
+- [storage-layout.md](storage-layout.md) for on-disk metadata format
