@@ -290,10 +290,21 @@ and the scaffold those features would build on.
   inconsistent behavior.
 - Cluster status can be checked without S3 requests through the admin endpoints.
 
+## Disk Format
+
+The target identity model for AbixIO is self-describing disks. Each disk
+carries `.abixio.sys/format.json` with deployment, set, node, and disk UUIDs
+plus the full erasure set membership. This replaces `--node-id` on the CLI and
+makes the topology file a one-time formatting input rather than a boot
+requirement.
+
+See [disk-format.md](disk-format.md) for the full design.
+
 ## Recommended Reading
 
 - [architecture.md](architecture.md) for the overall storage model
 - [admin-api.md](admin-api.md) for the admin endpoints
 - [static-topology.md](static-topology.md) for the manifest schema
 - [per-object-ec.md](per-object-ec.md) for current erasure-coding behavior
+- [disk-format.md](disk-format.md) for the disk format and metadata architecture
 - [storage-layout.md](storage-layout.md) for on-disk object metadata layout
