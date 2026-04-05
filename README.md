@@ -12,7 +12,7 @@ volume, lose nothing. Any S3 client works out of the box.
 - Per-object erasure coding (data/parity per object, bucket, or server default)
 - Pluggable storage backends via `Backend` trait (local disk, NFS, S3, anything)
 - Self-describing volumes -- identity stored on the volumes themselves
-- Peer-based cluster formation -- no topology file, no master server
+- Node-based cluster formation -- no topology file, no master server
 - Per-shard SHA256 bitrot detection
 - Background healing (MRF queue + integrity scanner)
 - AWS Signature V4 authentication + presigned URL support
@@ -22,6 +22,27 @@ volume, lose nothing. Any S3 client works out of the box.
 - Bucket policy and lifecycle configuration storage
 - Admin API for volume health, healing status, shard inspection, bucket EC config
 - Quorum-aware readiness and hard fencing
+
+## Status
+
+**Alpha.** Single-node storage works and is tested (251 tests). The S3 API
+covers the core operations (57% of the spec). Cluster control-plane is
+implemented (identity exchange, quorum tracking, fencing) but the distributed
+data plane is not -- there is no internode shard RPC yet. Each node operates
+on its own local volumes.
+
+What works today:
+- Single-node erasure-coded object storage with full S3 API
+- Multi-node cluster formation and identity exchange
+- Quorum-aware fencing (unsafe nodes stop serving)
+- Deterministic placement metadata in object shards
+- Background healing (MRF queue + integrity scanner)
+
+What does not work yet:
+- Internode shard RPC (distributed reads/writes across nodes)
+- Live topology changes or rebalance
+- Consensus-backed control plane (Raft or equivalent)
+- Encryption at rest
 
 ## Quick start
 
@@ -77,7 +98,7 @@ What happens at startup:
 4. Blocks until all nodes respond, then finalizes volume.json with full membership
 5. Serves traffic
 
-On subsequent boots, identity is read from volume.json. Peers are probed for
+On subsequent boots, identity is read from volume.json. Nodes are probed for
 quorum confirmation. If quorum is lost, the node fences itself.
 
 ### CLI flags
