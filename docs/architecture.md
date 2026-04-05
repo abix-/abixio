@@ -74,12 +74,15 @@ src/
     erasure_decode.rs     # read from backends + bitrot check + reconstruct
   s3/
     mod.rs
+    router.rs             # HTTP server: TcpListener + hyper service dispatch
     handlers.rs           # S3 handler dispatch + all endpoint implementations
     auth.rs               # AWS Sig V4 verification + presigned URL validation
     response.rs           # S3 XML response structs (quick-xml)
     errors.rs             # S3 error codes + XML + error mapping
   admin/
+    mod.rs                # HealStats shared state (atomic counters, uptime)
     handlers.rs           # Admin API handlers (status, disks, healing, inspect, bucket EC)
+    types.rs              # Admin JSON response structs (serde Serialize)
   multipart/
     mod.rs                # multipart upload state, part encode/decode, assembly
   heal/
@@ -90,10 +93,12 @@ src/
 tests/
   s3_integration.rs       # 94 S3 API integration tests
   admin_integration.rs    # 19 admin API integration tests
+  e2e.py                  # end-to-end Python test (starts server, exercises S3 + admin)
 docs/
   architecture.md         # this file
   storage-layout.md       # disk layout, meta.json format
   per-object-ec.md        # per-object erasure coding, bucket EC config, disk pools
+  admin-api.md            # admin API endpoints (status, disks, heal, inspect, bucket EC)
   versioning.md           # S3 object versioning
   tagging.md              # object and bucket tagging
   presigned-urls.md       # presigned URL authentication
@@ -102,6 +107,7 @@ docs/
   healing.md              # erasure healing, MRF, scanner
   encryption.md           # encryption design (pending)
   multipart-upload.md     # multipart upload lifecycle
+  bucket-policy.md        # bucket policy storage (enforcement pending)
   s3-compliance.md        # S3 API compliance audit
 ```
 

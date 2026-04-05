@@ -3,7 +3,7 @@
 Authoritative audit of every S3 API operation. Compared against MinIO's
 72 unique handler routes in `cmd/api-router.go`.
 
-abixio implements **41 of 72** operations. 215 tests.
+abixio implements **41 of 72** operations. 214 tests.
 
 ## All operations
 
@@ -139,7 +139,7 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 
 ## Summary
 
-41 of 72 operations (57%). 215 tests.
+41 of 72 operations (57%). 214 tests (101 unit + 94 S3 integration + 19 admin integration).
 
 Not implemented: encryption config, replication, notifications,
 object lock/retention, ACLs, S3 Select.
