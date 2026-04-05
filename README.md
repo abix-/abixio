@@ -52,7 +52,7 @@ cargo build --release
 mkdir -p /tmp/abixio/{d1,d2,d3,d4}
 
 ./target/release/abixio \
-  -v /tmp/abixio/d1 -v /tmp/abixio/d2 -v /tmp/abixio/d3 -v /tmp/abixio/d4 \
+  --volumes /tmp/abixio/d{1...4} \
   --no-auth
 ```
 
@@ -69,26 +69,17 @@ Works with AWS CLI, rclone, MinIO client, boto3, or any S3-compatible tool.
 
 ## Cluster mode
 
-Nodes discover each other via `--nodes`. No topology file needed. Each node
-generates its own identity on first boot, exchanges it with other nodes, and builds
-the erasure set membership from the handshake.
+Every node gets the same `--nodes` list -- the full cluster membership. Each
+node figures out which one it is automatically.
 
 ```bash
-# node 1
+# same --nodes on every node, only --volumes differs per node
 ./target/release/abixio \
-  -v /srv/abixio/d1 -v /srv/abixio/d2 \
-  --nodes http://node-2:10000,http://node-3:10000
-
-# node 2
-./target/release/abixio \
-  -v /srv/abixio/d1 -v /srv/abixio/d2 \
-  --nodes http://node-1:10000,http://node-3:10000
-
-# node 3
-./target/release/abixio \
-  -v /srv/abixio/d1 -v /srv/abixio/d2 \
-  --nodes http://node-1:10000,http://node-2:10000
+  --volumes /srv/abixio/d1,/srv/abixio/d2 \
+  --nodes http://node{1...3}:10000
 ```
+
+Supports `{N...M}` range expansion for both `--volumes` and `--nodes`.
 
 What happens at startup:
 
@@ -105,9 +96,9 @@ quorum confirmation. If quorum is lost, the node fences itself.
 
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
-| `-v` / `--volume` | yes | -- | Volume path (repeat for each) |
+| `--volumes` | yes | -- | Volume paths (comma-separated, supports `{N...M}`) |
 | `--listen` | no | `:10000` | Bind address |
-| `--nodes` | no | empty | Node endpoints for cluster mode |
+| `--nodes` | no | empty | All node endpoints (comma-separated, supports `{N...M}`) |
 | `--cluster-secret` | no | empty | Shared secret for node probes |
 | `--no-auth` | no | false | Disable S3 authentication |
 

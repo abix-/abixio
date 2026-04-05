@@ -65,18 +65,19 @@ The current implementation does **not** provide:
 
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
-| `-v` / `--volume` | yes | -- | Volume path (repeat for each) |
+| `--volumes` | yes | -- | Volume paths (comma-separated, supports `{N...M}`) |
 | `--listen` | no | `:10000` | Bind address |
-| `--nodes` | no | empty | Node endpoints for cluster mode |
+| `--nodes` | no | empty | All node endpoints (supports `{N...M}`) |
 | `--cluster-secret` | no | empty | Shared secret for node probes |
 | `--no-auth` | no | false | Disable S3 authentication |
 
 Example:
 
 ```bash
+# same command on every node, only --volumes differs per node
 ./target/release/abixio \
-  -v /srv/abixio/d1 -v /srv/abixio/d2 \
-  --nodes http://node-2:10000,http://node-3:10000
+  --volumes /srv/abixio/d{1...2} \
+  --nodes http://node{1...3}:10000
 ```
 
 For a standalone node, omit `--nodes`. The node immediately transitions to

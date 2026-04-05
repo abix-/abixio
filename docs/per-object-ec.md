@@ -96,7 +96,7 @@ AbixIO volumes form a pool. The auto-computed server default uses all volumes
 
 ```bash
 # 6-volume pool, auto-computes 5+1 default
-abixio -v /d1 -v /d2 -v /d3 -v /d4 -v /d5 -v /d6
+abixio --volumes /d{1...6}
 
 # set bucket to use 2+2 instead (4 of 6 volumes per object)
 curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=2&parity=2"

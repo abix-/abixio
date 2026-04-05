@@ -22,15 +22,17 @@ use abixio::storage::erasure_set::{ErasureSet, default_ec};
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let cfg = Config::parse();
-    if let Err(e) = cfg.validate() {
+    let mut cfg = Config::parse();
+    if let Err(e) = cfg.expand_and_validate() {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
 
+    let volume_paths = cfg.volume_paths();
+
     // resolve node identity from volume.json or peer exchange
     let identity = resolve_identity(
-        &cfg.volumes,
+        &volume_paths,
         &cfg.listen,
         &cfg.nodes,
         &cfg.cluster_secret,
@@ -48,8 +50,7 @@ async fn main() {
         "identity resolved"
     );
 
-    let backends: Vec<Box<dyn Backend>> = match cfg
-        .volumes
+    let backends: Vec<Box<dyn Backend>> = match volume_paths
         .iter()
         .map(|p| LocalDisk::new(p.as_path()).map(|d| Box::new(d) as Box<dyn Backend>))
         .collect::<Result<Vec<_>, _>>()
@@ -82,7 +83,7 @@ async fn main() {
 
     // build disk list for heal workers (separate from ErasureSet's disks)
     let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
-        cfg.volumes
+        volume_paths
             .iter()
             .filter_map(|p| LocalDisk::new(p.as_path()).ok())
             .map(|d| Box::new(d) as Box<dyn Backend>)
@@ -126,7 +127,7 @@ async fn main() {
             advertise_cluster: identity.advertise.clone(),
             nodes: identity.nodes.clone(),
             cluster_secret: cfg.cluster_secret.clone(),
-            disk_paths: cfg.volumes.clone(),
+            disk_paths: volume_paths.clone(),
         })
         .unwrap_or_else(|err| {
             eprintln!("error: {}", err);

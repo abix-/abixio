@@ -63,6 +63,15 @@ pub async fn resolve_identity(
     };
 
     // step 2: standalone or cluster?
+    // nodes list includes self -- filter to just remote nodes
+    let remote_nodes: Vec<&String> = nodes
+        .iter()
+        .filter(|n| {
+            let normalized = n.trim_end_matches('/');
+            normalized != advertise.trim_end_matches('/')
+        })
+        .collect();
+
     if nodes.is_empty() {
         // standalone: finalize immediately
         let deployment_id = deployment_id_for(&[node_id.clone()]);
@@ -96,22 +105,22 @@ pub async fn resolve_identity(
         });
     }
 
-    // step 4: first boot cluster -- exchange identity with nodes
+    // step 4: first boot cluster -- exchange identity with remote nodes
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .map_err(|e| format!("build http client: {}", e))?;
 
     let mut all_identities = vec![local_identity.clone()];
-    let expected_nodes = nodes.len() + 1;
+    let expected_nodes = nodes.len();
 
     tracing::info!(
-        "waiting for {} node(s) to exchange identity",
-        nodes.len()
+        "waiting for {} remote node(s) to exchange identity",
+        remote_nodes.len()
     );
 
     loop {
-        for node in nodes {
+        for node in &remote_nodes {
             if all_identities.iter().any(|id| {
                 let node_base = node.trim_end_matches('/');
                 id.advertise.trim_end_matches('/') == node_base

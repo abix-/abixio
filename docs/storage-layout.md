@@ -104,7 +104,7 @@ All four are UUIDv4, generated at format time, immutable after that.
 
 **First boot (standalone)**:
 
-1. `abixio -v /d1 -v /d2 -v /d3 -v /d4`
+1. `abixio --volumes /d{1...4}`
 2. No volume.json found -- generate node_id, volume_id UUIDs
 3. No `--nodes` -- standalone mode, generate deployment_id and set_id
 4. Write complete volume.json to every volume
@@ -112,7 +112,7 @@ All four are UUIDv4, generated at format time, immutable after that.
 
 **First boot (cluster)**:
 
-1. `abixio -v /d1 -v /d2 --nodes http://node-2:10000`
+1. `abixio --volumes /d{1...2} --nodes http://node{1...2}:10000`
 2. No volume.json found -- generate node_id, volume_id UUIDs
 3. Write partial volume.json (node_id, volume_id only)
 4. Exchange identity with nodes via `/_admin/cluster/join`
@@ -382,9 +382,9 @@ and externally inspectable across nodes.
 
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
-| `-v` / `--volume` | yes | -- | Volume path (repeat for each) |
+| `--volumes` | yes | -- | Volume paths (comma-separated, supports `{N...M}`) |
 | `--listen` | no | `:10000` | Bind address |
-| `--nodes` | no | empty | Node endpoints for cluster mode |
+| `--nodes` | no | empty | All node endpoints (supports `{N...M}`) |
 | `--cluster-secret` | no | empty | Shared secret for peer probes |
 | `--no-auth` | no | false | Disable S3 authentication |
 

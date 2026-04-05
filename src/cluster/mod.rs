@@ -303,7 +303,7 @@ impl ClusterManager {
     async fn refresh_from_nodes(&self) -> Result<()> {
         let peer_summaries = self.fetch_peer_summaries().await;
         let reachable_voters = 1 + peer_summaries.len();
-        let voter_count = self.config.nodes.len() + 1;
+        let voter_count = self.config.nodes.len();
         let quorum = voter_count / 2 + 1;
         let leader_id = elect_leader(&self.config.node_id, &peer_summaries);
         if reachable_voters < quorum {
@@ -359,7 +359,7 @@ impl ClusterManager {
     ) {
         let mut guard = self.state.write().unwrap();
         let committed_at = unix_secs();
-        let voter_count = self.config.nodes.len() + 1;
+        let voter_count = self.config.nodes.len();
         let quorum = voter_count / 2 + 1;
         guard.summary.state = ServiceState::Ready;
         guard.summary.epoch_id = epoch_id;
@@ -405,7 +405,7 @@ impl ClusterManager {
         reason: Option<String>,
     ) {
         let mut guard = self.state.write().unwrap();
-        let voter_count = self.config.nodes.len() + 1;
+        let voter_count = self.config.nodes.len();
         let quorum = voter_count / 2 + 1;
         guard.summary.state = ServiceState::Fenced;
         guard.summary.epoch_id = epoch_id;
@@ -447,6 +447,12 @@ impl ClusterManager {
 
         let probed = peer_summaries.unwrap_or_default();
         for remote in &self.config.nodes {
+            // skip self -- already added above
+            if remote.trim_end_matches('/') == self.config.advertise_s3.trim_end_matches('/')
+                || remote.trim_end_matches('/') == self.config.advertise_cluster.trim_end_matches('/')
+            {
+                continue;
+            }
             let status = probed
                 .iter()
                 .find(|(endpoint, _)| endpoint == remote)
@@ -537,16 +543,16 @@ fn initial_state(config: &ClusterConfig, cluster_id: &str) -> PersistedClusterSt
         epoch_id: 1,
         leader_id: config.node_id.clone(),
         node_count: config.nodes.len(),
-        voter_count: config.nodes.len() + 1,
+        voter_count: config.nodes.len(),
         reachable_voters: 1,
-        quorum: (config.nodes.len() + 1) / 2 + 1,
+        quorum: (config.nodes.len()) / 2 + 1,
         fenced_reason: None,
     };
     let epoch = ClusterEpoch {
         epoch_id: 1,
         leader_id: config.node_id.clone(),
         committed_at_unix_secs: committed_at,
-        voter_count: config.nodes.len() + 1,
+        voter_count: config.nodes.len(),
         reachable_voters: 1,
     };
     let topology = ClusterTopology {
@@ -673,8 +679,8 @@ mod tests {
     fn test_config(disk: PathBuf) -> ClusterConfig {
         ClusterConfig {
             node_id: "node-a".to_string(),
-            advertise_s3: "127.0.0.1:9000".to_string(),
-            advertise_cluster: "127.0.0.1:9000".to_string(),
+            advertise_s3: "http://127.0.0.1:10000".to_string(),
+            advertise_cluster: "http://127.0.0.1:10000".to_string(),
             nodes: Vec::new(),
             cluster_secret: String::new(),
             disk_paths: vec![disk],
@@ -763,7 +769,7 @@ mod tests {
     fn clustered_config_starts_syncing_and_blocked() {
         let (_base, disk) = test_disk();
         let mut cfg = test_config(disk);
-        cfg.nodes = vec!["node-b:9000".to_string(), "node-c:9000".to_string()];
+        cfg.nodes = vec!["http://127.0.0.1:10000".to_string(), "http://node-b:10000".to_string(), "http://node-c:10000".to_string()];
         let manager = ClusterManager::new(cfg).unwrap();
         let summary = manager.summary();
         assert_eq!(summary.state, ServiceState::SyncingEpoch);
@@ -791,7 +797,7 @@ mod tests {
     fn persisted_state_survives_restart() {
         let (_base, disk) = test_disk();
         let mut cfg = test_config(disk.clone());
-        cfg.nodes = vec!["http://127.0.0.1:65011".to_string()];
+        cfg.nodes = vec!["http://127.0.0.1:10000".to_string(), "http://127.0.0.1:65011".to_string()];
         let manager = ClusterManager::new(cfg.clone()).unwrap();
         manager.force_fence("persisted fence");
 
@@ -819,11 +825,12 @@ mod tests {
             fenced_reason: None,
         }));
         let (peer, handle) = start_mock_peer(Arc::clone(&peer_summary), None).await;
+        let all_nodes = vec!["http://127.0.0.1:10000".to_string(), peer];
         peer_summary.write().unwrap().cluster_id =
-            cluster_id_for("node-a", std::slice::from_ref(&peer));
+            cluster_id_for("node-a", &all_nodes);
 
         let mut cfg = test_config(disk);
-        cfg.nodes = vec![peer];
+        cfg.nodes = all_nodes;
         let manager = ClusterManager::new(cfg).unwrap();
         manager.refresh_from_nodes().await.unwrap();
 
@@ -839,6 +846,7 @@ mod tests {
         let (_base, disk) = test_disk();
         let mut cfg = test_config(disk);
         cfg.nodes = vec![
+            "http://127.0.0.1:10000".to_string(),
             "http://127.0.0.1:65001".to_string(),
             "http://127.0.0.1:65002".to_string(),
         ];
@@ -874,11 +882,12 @@ mod tests {
             Some("expected-secret".to_string()),
         )
         .await;
+        let all_nodes = vec!["http://127.0.0.1:10000".to_string(), peer];
         peer_summary.write().unwrap().cluster_id =
-            cluster_id_for("node-a", std::slice::from_ref(&peer));
+            cluster_id_for("node-a", &all_nodes);
 
         let mut cfg = test_config(disk);
-        cfg.nodes = vec![peer];
+        cfg.nodes = all_nodes;
         cfg.cluster_secret = "wrong-secret".to_string();
         let manager = ClusterManager::new(cfg).unwrap();
         manager.refresh_from_nodes().await.unwrap();
@@ -907,11 +916,12 @@ mod tests {
             fenced_reason: None,
         }));
         let (peer, handle) = start_mock_peer(Arc::clone(&peer_summary), None).await;
+        let all_nodes = vec!["http://127.0.0.1:10000".to_string(), peer];
         peer_summary.write().unwrap().cluster_id =
-            cluster_id_for("node-a", std::slice::from_ref(&peer));
+            cluster_id_for("node-a", &all_nodes);
 
         let mut cfg = test_config(disk);
-        cfg.nodes = vec![peer];
+        cfg.nodes = all_nodes;
         let manager = ClusterManager::new(cfg).unwrap();
         manager.force_fence("temporary fence");
         assert_eq!(manager.summary().state, ServiceState::Fenced);
