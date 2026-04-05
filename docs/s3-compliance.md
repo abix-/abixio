@@ -1,157 +1,148 @@
 # S3 API Compliance
 
-How well abixio implements the S3 API. This is the authoritative doc for
-what the server supports. The abixio-ui client repo references this doc
-but does not duplicate it.
+Authoritative audit of every S3 API operation. Compared against MinIO's
+72 unique handler routes in `cmd/api-router.go`.
 
-Ratings are 1-10 where 10 means "fully implemented, matches AWS S3 behavior"
-and 1 means "not implemented at all."
+abixio implements **26 of 72** operations. 175 tests.
 
-## Implemented Endpoints
+## All operations
 
-These are routed in `src/s3/handlers.rs` dispatch table.
+Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 
-| S3 API | HTTP | Route | Rating | Assessment |
+### Bucket operations
+
+| Operation | HTTP | Status | Rating | Notes |
 |---|---|---|---|---|
-| ListBuckets | `GET /` | `list_buckets` | 8/10 | Works. Returns XML with bucket names and real creation dates from filesystem. |
-| CreateBucket | `PUT /{bucket}` | `create_bucket` | 7/10 | Works. No region, ACL, or object lock configuration support. |
-| HeadBucket | `HEAD /{bucket}` | `head_bucket` | 8/10 | Works. Returns 200 or 404. |
-| ListObjectsV2 | `GET /{bucket}` | `list_objects_handler` | 7/10 | Supports prefix, delimiter, max-keys. Has pagination (continuation token). Missing: list-type=2 query validation, encoding-type, start-after, fetch-owner. |
-| PutObject | `PUT /{bucket}/{key}` | `put_object` | 8/10 | Reads full body, stores with content-type and custom metadata (x-amz-meta-*). Returns ETag. Missing: content-MD5 validation, storage class, tagging headers. |
-| GetObject | `GET /{bucket}/{key}` | `get_object` | 9/10 | Returns body with Content-Type, Content-Length, ETag, Last-Modified (RFC 7231), Accept-Ranges, custom metadata. Supports Range requests and conditional headers (If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since). |
-| HeadObject | `HEAD /{bucket}/{key}` | `head_object` | 9/10 | Returns Content-Type, Content-Length, ETag, Last-Modified (RFC 7231), Accept-Ranges, custom metadata. Supports conditional headers. Missing: storage class, version ID, encryption info. |
-| DeleteObject | `DELETE /{bucket}/{key}` | `delete_object` | 8/10 | Returns 204 No Content. Missing: version ID support, MFA delete. |
-| DeleteBucket | `DELETE /{bucket}` | `delete_bucket_handler` | 8/10 | Returns 204 No Content. Only deletes empty buckets (returns 409 BucketNotEmpty otherwise). Matches S3 spec. |
-| DeleteObjects (batch) | `POST /{bucket}?delete` | `delete_objects` | 8/10 | Parses XML request body, deletes each key, returns XML with deleted/error results. Up to 1000 keys per request. |
-| CopyObject | `PUT /{bucket}/{key}` (x-amz-copy-source) | `copy_object` | 7/10 | Detects x-amz-copy-source header on PUT. Reads source, writes to destination with same content-type. Returns CopyObjectResult XML with ETag and LastModified. Currently does GET+PUT internally (no zero-copy optimization). |
+| ListBuckets | `GET /` | Done | 8/10 | XML with names and creation dates. |
+| CreateBucket | `PUT /{bucket}` | Done | 7/10 | No region, ACL, or object lock config. |
+| HeadBucket | `HEAD /{bucket}` | Done | 8/10 | Returns 200 or 404. |
+| DeleteBucket | `DELETE /{bucket}` | Done | 8/10 | 409 if not empty. |
+| GetBucketLocation | `GET /{bucket}?location` | No | 0/10 | |
+| GetBucketVersioning | `GET /{bucket}?versioning` | Done | 8/10 | Returns Enabled/Suspended. |
+| PutBucketVersioning | `PUT /{bucket}?versioning` | Done | 8/10 | Enable or suspend per bucket. |
+| GetBucketTagging | `GET /{bucket}?tagging` | Done | 8/10 | |
+| PutBucketTagging | `PUT /{bucket}?tagging` | Done | 8/10 | |
+| DeleteBucketTagging | `DELETE /{bucket}?tagging` | Done | 8/10 | |
+| GetBucketPolicy | `GET /{bucket}?policy` | No | 0/10 | |
+| PutBucketPolicy | `PUT /{bucket}?policy` | No | 0/10 | |
+| DeleteBucketPolicy | `DELETE /{bucket}?policy` | No | 0/10 | |
+| GetBucketEncryption | `GET /{bucket}?encryption` | No | 0/10 | |
+| PutBucketEncryption | `PUT /{bucket}?encryption` | No | 0/10 | |
+| DeleteBucketEncryption | `DELETE /{bucket}?encryption` | No | 0/10 | |
+| GetBucketLifecycle | `GET /{bucket}?lifecycle` | No | 0/10 | |
+| PutBucketLifecycle | `PUT /{bucket}?lifecycle` | No | 0/10 | |
+| DeleteBucketLifecycle | `DELETE /{bucket}?lifecycle` | No | 0/10 | |
+| GetBucketCors | `GET /{bucket}?cors` | No | 0/10 | |
+| PutBucketCors | `PUT /{bucket}?cors` | No | 0/10 | |
+| DeleteBucketCors | `DELETE /{bucket}?cors` | No | 0/10 | |
+| GetBucketACL | `GET /{bucket}?acl` | No | 0/10 | Legacy. |
+| PutBucketACL | `PUT /{bucket}?acl` | No | 0/10 | Legacy. |
+| GetBucketReplication | `GET /{bucket}?replication` | No | 0/10 | |
+| PutBucketReplication | `PUT /{bucket}?replication` | No | 0/10 | |
+| DeleteBucketReplication | `DELETE /{bucket}?replication` | No | 0/10 | |
+| GetBucketNotification | `GET /{bucket}?notification` | No | 0/10 | |
+| PutBucketNotification | `PUT /{bucket}?notification` | No | 0/10 | |
+| GetBucketLogging | `GET /{bucket}?logging` | No | 0/10 | |
+| GetBucketWebsite | `GET /{bucket}?website` | No | 0/10 | |
+| DeleteBucketWebsite | `DELETE /{bucket}?website` | No | 0/10 | |
+| GetBucketObjectLockConfig | `GET /{bucket}?object-lock` | No | 0/10 | |
+| PutBucketObjectLockConfig | `PUT /{bucket}?object-lock` | No | 0/10 | |
+| GetBucketAccelerate | `GET /{bucket}?accelerate` | N/A | -- | AWS-specific. |
+| GetBucketRequestPayment | `GET /{bucket}?requestPayment` | N/A | -- | AWS-specific. |
+| GetBucketPolicyStatus | `GET /{bucket}?policyStatus` | No | 0/10 | |
 
-## Not Implemented -- Medium Priority
+### Object listing
 
-| S3 API | HTTP | Rating | Impact |
-|---|---|---|---|
-| GetObjectTagging | `GET /{bucket}/{key}?tagging` | 8/10 | Returns XML TagSet from object metadata. |
-| PutObjectTagging | `PUT /{bucket}/{key}?tagging` | 8/10 | Parses XML TagSet, stores in object metadata on all shards. |
-| DeleteObjectTagging | `DELETE /{bucket}/{key}?tagging` | 8/10 | Clears tags from object metadata on all shards. |
-| ListObjectVersions | `GET /{bucket}?versions` | 8/10 | Returns versions and delete markers per object. |
-| GetBucketVersioning | `GET /{bucket}?versioning` | 8/10 | Returns Enabled/Suspended status per bucket. |
-| PutBucketVersioning | `PUT /{bucket}?versioning` | 8/10 | Enable or suspend versioning per bucket. |
-| GetBucketPolicy | `GET /{bucket}?policy` | 1/10 | No policy support. |
-| PutBucketPolicy | `PUT /{bucket}?policy` | 1/10 | Same. |
-| DeleteBucketPolicy | `DELETE /{bucket}?policy` | 1/10 | Same. |
-| GetBucketEncryption | `GET /{bucket}?encryption` | 1/10 | No encryption config support. |
-| PutBucketEncryption | `PUT /{bucket}?encryption` | 1/10 | Same. |
-| GetBucketTagging | `GET /{bucket}?tagging` | 8/10 | Returns bucket tags from .tagging.json. |
-| PutBucketTagging | `PUT /{bucket}?tagging` | 8/10 | Parses XML TagSet, stores as .tagging.json in bucket dir. |
-| DeleteBucketTagging | `DELETE /{bucket}?tagging` | 8/10 | Removes .tagging.json from bucket dir. |
+| Operation | HTTP | Status | Rating | Notes |
+|---|---|---|---|---|
+| ListObjectsV2 | `GET /{bucket}` | Done | 7/10 | Prefix, delimiter, max-keys, pagination. |
+| ListObjectVersions | `GET /{bucket}?versions` | Done | 8/10 | Versions + delete markers. |
+| ListMultipartUploads | `GET /{bucket}?uploads` | Done | 8/10 | In-progress uploads. |
 
-## Not Implemented -- Low Priority / Out of Scope
+### Object operations
 
-These are S3 features that self-hosted object storage servers commonly skip.
+| Operation | HTTP | Status | Rating | Notes |
+|---|---|---|---|---|
+| PutObject | `PUT /{bucket}/{key}` | Done | 8/10 | Content-type, custom metadata, versioning. |
+| GetObject | `GET /{bucket}/{key}` | Done | 9/10 | Range, conditionals, version-id. |
+| HeadObject | `HEAD /{bucket}/{key}` | Done | 9/10 | Conditionals, custom metadata. |
+| DeleteObject | `DELETE /{bucket}/{key}` | Done | 8/10 | Delete markers for versioned buckets. |
+| DeleteObjects | `POST /{bucket}?delete` | Done | 8/10 | Batch delete up to 1000 keys. |
+| CopyObject | `PUT /{bucket}/{key}` (x-amz-copy-source) | Done | 7/10 | Same-bucket and cross-bucket. GET+PUT internally. |
+| GetObjectTagging | `GET /{bucket}/{key}?tagging` | Done | 8/10 | |
+| PutObjectTagging | `PUT /{bucket}/{key}?tagging` | Done | 8/10 | |
+| DeleteObjectTagging | `DELETE /{bucket}/{key}?tagging` | Done | 8/10 | |
+| GetObjectACL | `GET /{bucket}/{key}?acl` | No | 0/10 | Legacy. |
+| PutObjectACL | `PUT /{bucket}/{key}?acl` | No | 0/10 | Legacy. |
+| GetObjectRetention | `GET /{bucket}/{key}?retention` | No | 0/10 | |
+| PutObjectRetention | `PUT /{bucket}/{key}?retention` | No | 0/10 | |
+| GetObjectLegalHold | `GET /{bucket}/{key}?legal-hold` | No | 0/10 | |
+| PutObjectLegalHold | `PUT /{bucket}/{key}?legal-hold` | No | 0/10 | |
+| GetObjectAttributes | `GET /{bucket}/{key}?attributes` | No | 0/10 | |
+| PostRestoreObject | `POST /{bucket}/{key}?restore` | No | 0/10 | Glacier restore. |
+| SelectObjectContent | `POST /{bucket}/{key}?select` | No | 0/10 | S3 Select (SQL). |
+| PostPolicyBucket | `POST /{bucket}` | No | 0/10 | Browser-based upload. |
 
-| Category | Operations | Rating | Notes |
-|---|---|---|---|
-| Multipart upload | CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload, ListMultipartUploads, ListParts | 8/10 | All 6 endpoints implemented. Each part erasure-encoded. 16 integration tests. |
-| Object lock / retention | GetObjectRetention, PutObjectRetention, GetObjectLegalHold, PutObjectLegalHold, GetObjectLockConfiguration, PutObjectLockConfiguration | 1/10 | Governance/compliance. Not in current scope. |
-| Bucket CORS | GetBucketCors, PutBucketCors, DeleteBucketCors | 1/10 | Relevant if abixio is accessed from browsers. |
-| Bucket ACL | GetBucketAcl, PutBucketAcl, GetObjectAcl, PutObjectAcl | 1/10 | Legacy. AWS recommends policies over ACLs. |
-| Bucket lifecycle | GetBucketLifecycleConfiguration, PutBucketLifecycleConfiguration, DeleteBucketLifecycle | 1/10 | Automatic object expiration/transition. |
-| Bucket replication | GetBucketReplication, PutBucketReplication, DeleteBucketReplication | 1/10 | Cross-site replication. |
-| Bucket notifications | GetBucketNotificationConfiguration, PutBucketNotificationConfiguration | 1/10 | Event notifications. |
-| Bucket logging | GetBucketLogging, PutBucketLogging | 1/10 | Access logging. |
-| Bucket website | GetBucketWebsite, PutBucketWebsite, DeleteBucketWebsite | 1/10 | Static hosting. |
-| Analytics / metrics / inventory | All operations | 1/10 | AWS-specific. Not relevant. |
-| S3 Select | SelectObjectContent | 1/10 | SQL queries on objects. Niche. |
-| Presigned URLs | N/A (client-side) | N/A | Presigned URL generation is client-side. Server just needs to validate SigV4, which it does. |
+### Multipart upload
 
-## Response Field Coverage
+| Operation | HTTP | Status | Rating | Notes |
+|---|---|---|---|---|
+| CreateMultipartUpload | `POST /{bucket}/{key}?uploads` | Done | 8/10 | Returns upload ID. |
+| UploadPart | `PUT /{bucket}/{key}?partNumber&uploadId` | Done | 8/10 | Erasure-encoded per part. |
+| CompleteMultipartUpload | `POST /{bucket}/{key}?uploadId` | Done | 8/10 | Assembles + writes final object. |
+| AbortMultipartUpload | `DELETE /{bucket}/{key}?uploadId` | Done | 8/10 | Full cleanup. |
+| ListParts | `GET /{bucket}/{key}?uploadId` | Done | 8/10 | |
+| CopyObjectPart | `PUT /{bucket}/{key}?partNumber&uploadId` (x-amz-copy-source) | No | 0/10 | Server-side part copy. |
 
-How complete our responses are compared to what S3 clients expect.
+### MinIO extensions (not standard S3)
 
-### ListBuckets response
+| Operation | Status | Notes |
+|---|---|---|
+| ListObjectVersionsM (metadata) | No | MinIO extension. |
+| PutObjectExtract | No | MinIO tar auto-extract. |
+| GetObjectLambda | No | MinIO lambda. |
+| ListenNotification | No | MinIO SSE notifications. |
+| ResetBucketReplication | No | MinIO replication admin. |
+| ValidateBucketReplicationCreds | No | MinIO replication admin. |
+| GetBucketReplicationMetrics | No | MinIO replication metrics. |
 
-| Field | S3 spec | abixio returns | Gap |
-|---|---|---|---|
-| `Buckets.Bucket.Name` | bucket name | yes | -- |
-| `Buckets.Bucket.CreationDate` | actual creation time | yes (filesystem mtime, ISO 8601) | -- |
-| `Owner.ID` | account ID | hardcoded | cosmetic |
-| `Owner.DisplayName` | account name | hardcoded | cosmetic |
+## Response quality
 
-### ListObjectsV2 response
+### Common response headers
 
-| Field | S3 spec | abixio returns | Gap |
-|---|---|---|---|
-| `Name` | bucket name | yes | -- |
-| `Prefix` | requested prefix | yes | -- |
-| `KeyCount` | number of keys | yes | -- |
-| `MaxKeys` | max keys requested | yes | -- |
-| `IsTruncated` | pagination flag | yes | -- |
-| `Contents.Key` | object key | yes | -- |
-| `Contents.LastModified` | modification time | yes (from metadata) | -- |
-| `Contents.ETag` | entity tag | yes | -- |
-| `Contents.Size` | object size | yes | -- |
-| `Contents.StorageClass` | storage class | hardcoded `STANDARD` | correct for single-tier |
-| `CommonPrefixes.Prefix` | folder prefixes | yes | -- |
-| `NextContinuationToken` | pagination token | yes | -- |
-| `ContinuationToken` | echo of request token | not returned | minor gap |
-| `Delimiter` | echo of delimiter | not returned | minor gap |
-| `EncodingType` | encoding type | not returned | minor gap |
-| `StartAfter` | not supported | not returned | not implemented |
-
-### HeadObject / GetObject response headers
-
-| Header | S3 spec | abixio returns | Gap |
-|---|---|---|---|
-| `Content-Type` | object content type | yes | -- |
-| `Content-Length` | object size | yes | -- |
-| `ETag` | entity tag | yes | -- |
-| `Last-Modified` | modification time | yes (RFC 7231 HTTP-date) | -- |
-| `Accept-Ranges` | `bytes` | yes | -- |
-| `x-amz-meta-*` | custom metadata | yes | stored on PUT, returned on HEAD/GET |
-| `x-amz-storage-class` | storage class | not returned | cosmetic |
-| `x-amz-version-id` | version ID | not returned | no versioning |
-| `x-amz-server-side-encryption` | encryption | not returned | no encryption |
-| `Cache-Control` | cache control | not returned | not stored |
-| `Content-Disposition` | disposition | not returned | not stored |
-| `Content-Encoding` | encoding | not returned | not stored |
+| Header | Status |
+|---|---|
+| `x-amz-request-id` | Set on every response (hex nanos). |
+| `Content-Type` | Set on all XML and object responses. |
+| `ETag` | Set on PUT, GET, HEAD. Quoted format. |
+| `Last-Modified` | RFC 7231 HTTP-date on GET, HEAD. |
+| `x-amz-version-id` | Set when versioning enabled. |
+| `x-amz-delete-marker` | Set on versioned DELETE. |
 
 ### Error responses
 
-| Aspect | S3 spec | abixio | Gap |
-|---|---|---|---|
-| XML error body | `<Error><Code>...</Code><Message>...</Message></Error>` | yes | -- |
-| Error codes | standard S3 error codes | partial (10 codes defined) | covers common cases |
-| `RequestId` in errors | required | yes (XML body + `x-amz-request-id` header) | -- |
-| `Resource` in errors | recommended | yes (in XML body) | -- |
+| Field | Status |
+|---|---|
+| `<Code>` | 11 error codes defined. |
+| `<Message>` | Descriptive messages. |
+| `<RequestId>` | Included in XML body. |
+| `<Resource>` | Included when handler has context. |
 
 ## Auth
 
-| Aspect | S3 spec | abixio | Rating |
-|---|---|---|---|
-| SigV4 verification | required | yes (`src/s3/auth.rs`) | 8/10 |
-| Anonymous access | optional | yes (configurable `no_auth`) | 8/10 |
-| SigV4 chunked transfer | optional | not supported | 3/10 |
-| Presigned URL validation | optional | yes (SigV4 query params) | 8/10 |
+| Method | Status | Rating |
+|---|---|---|
+| SigV4 header auth | Done | 8/10 |
+| SigV4 presigned URL | Done | 8/10 |
+| Anonymous (no-auth mode) | Done | 8/10 |
+| SigV4 chunked transfer | No | 0/10 |
 
 ## Summary
 
-### Overall S3 compliance: 4/10
+26 of 72 operations (36%). The implemented operations are well-tested
+(175 tests) and cover the core S3 workflow: object CRUD, multipart upload,
+versioning, tagging, batch delete, copy, range requests, conditional
+requests, presigned URLs.
 
-abixio implements 26 of ~80 S3 API operations (MinIO implements 81 routes). The 26 it implements are
-solid (auth, conditionals, presigned URLs, tagging, batch delete, copy,
-range requests, custom metadata) but the missing surface is large: no
-multipart upload (blocks files >5GB), no versioning, no policies, no
-lifecycle, no encryption config, no replication. Everything unimplemented
-returns 405. The 17 endpoints that exist are well-implemented (8-9/10 each)
-but coverage of the full S3 API surface is low.
-
-### Next priorities for server-side compliance
-
-| Priority | What | Why |
-|---|---|---|
-| ~~**Should**~~ | ~~Structured error responses~~ | Done. RequestId and Resource in XML + x-amz-request-id header. |
-| ~~**Later**~~ | ~~Object tagging~~ | Done. Object and bucket tagging implemented. |
-| ~~**Later**~~ | ~~Presigned URL validation~~ | Done. SigV4 query param auth with expiration check. |
-| ~~**Later**~~ | ~~Conditional requests~~ | Done. If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since. |
-| **Later** | Versioning | Version browser support. |
-| **Later** | Multipart upload | Required for files >5GB. |
-| **Later** | Bucket policies | Access control. |
+Not implemented: bucket policies, lifecycle, encryption config, CORS,
+replication, notifications, object lock/retention, ACLs, S3 Select.
