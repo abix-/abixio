@@ -42,6 +42,7 @@ AbixIO Server is a single Rust binary that exposes an S3-compatible API and stor
 Key properties:
 - Server, not client: this repo is the storage server itself
 - Any S3 client can talk to it: AWS CLI, rclone, boto3, MinIO client, custom tools
+- Single-node through multi-node deployment under one storage model
 - Self-describing volumes store their own identity metadata
 - Cluster membership is node-based and discovered from shared startup configuration
 - Per-object SHA256 checksums detect shard corruption
@@ -50,6 +51,7 @@ Key properties:
 ## Features
 
 - 1 volume minimum, scale up by adding volumes
+- Single-node and clustered deployments are both first-class operating modes
 - Per-object erasure coding with object, bucket, or server defaults
 - Pluggable storage backends via the `Backend` trait
 - Self-describing volumes with identity stored on disk
@@ -61,6 +63,7 @@ Key properties:
 - Multipart upload for large objects
 - Bucket policy and lifecycle configuration storage
 - Admin API for volume health, healing status, shard inspection, and bucket EC config
+- Thick-console administration model for serious multi-node visibility, rather than depending only on a thin per-node web UI
 - Quorum-aware readiness and hard fencing
 
 ## Quick Start

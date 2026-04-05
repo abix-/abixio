@@ -7,6 +7,7 @@ pub mod erasure_decode;
 pub mod erasure_encode;
 pub mod erasure_set;
 pub mod metadata;
+pub mod pathing;
 pub mod volume;
 
 use std::io;
@@ -232,4 +233,16 @@ pub enum StorageError {
 
     #[error("io error: {0}")]
     Io(#[from] io::Error),
+
+    #[error("invalid bucket name: {0}")]
+    InvalidBucketName(String),
+
+    #[error("invalid object key or prefix: {0}")]
+    InvalidObjectKey(String),
+
+    #[error("invalid version id: {0}")]
+    InvalidVersionId(String),
+
+    #[error("invalid upload id: {0}")]
+    InvalidUploadId(String),
 }

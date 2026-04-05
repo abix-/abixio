@@ -9,8 +9,8 @@ use crate::storage::Backend;
 use crate::storage::StorageError;
 use crate::storage::bitrot::{md5_hex, sha256_hex};
 use crate::storage::metadata::{ErasureMeta, ObjectInfo, PutOptions};
+use crate::storage::pathing;
 
-const MULTIPART_DIR: &str = ".abixio.sys/multipart";
 const UPLOAD_FILE: &str = "upload.json";
 
 fn local_planner(disks: &[Box<dyn Backend>]) -> PlacementPlanner {
@@ -53,6 +53,8 @@ pub fn create_upload(
     content_type: &str,
     user_metadata: HashMap<String, String>,
 ) -> Result<String, StorageError> {
+    pathing::validate_bucket_name(bucket)?;
+    pathing::validate_object_key(key)?;
     let upload_id = uuid::Uuid::new_v4().to_string();
     let data_dir = uuid::Uuid::new_v4().to_string();
     let now = crate::storage::metadata::unix_timestamp_secs();
@@ -72,7 +74,7 @@ pub fn create_upload(
 
     let mut successes = 0;
     for disk in disks {
-        let dir = upload_dir(disk, bucket, key, &upload_id);
+        let dir = upload_dir(disk, bucket, key, &upload_id)?;
         if fs::create_dir_all(&dir).is_ok() && fs::write(dir.join(UPLOAD_FILE), &json).is_ok() {
             successes += 1;
         }
@@ -95,6 +97,9 @@ pub fn put_part(
     part_number: i32,
     data: &[u8],
 ) -> Result<PartMeta, StorageError> {
+    pathing::validate_bucket_name(bucket)?;
+    pathing::validate_object_key(key)?;
+    pathing::validate_upload_id(upload_id)?;
     // read upload meta to get data_dir
     let upload = read_upload(disks, bucket, key, upload_id)?;
     let etag = md5_hex(data);
@@ -126,7 +131,7 @@ pub fn put_part(
         if disk_idx >= disks.len() {
             continue;
         }
-        let dir = upload_dir(&disks[disk_idx], bucket, key, upload_id);
+        let dir = upload_dir(&disks[disk_idx], bucket, key, upload_id)?;
         let data_path = dir.join(&upload.data_dir);
         if fs::create_dir_all(&data_path).is_ok()
             && fs::write(data_path.join(&part_file), shard_data).is_ok()
@@ -180,12 +185,15 @@ pub fn list_parts(
     key: &str,
     upload_id: &str,
 ) -> Result<(UploadMeta, Vec<PartMeta>), StorageError> {
+    pathing::validate_bucket_name(bucket)?;
+    pathing::validate_object_key(key)?;
+    pathing::validate_upload_id(upload_id)?;
     let upload = read_upload(disks, bucket, key, upload_id)?;
     let mut parts = Vec::new();
 
     // read from first responsive disk
     for disk in disks {
-        let data_path = upload_dir(disk, bucket, key, upload_id).join(&upload.data_dir);
+        let data_path = upload_dir(disk, bucket, key, upload_id)?.join(&upload.data_dir);
         if !data_path.is_dir() {
             continue;
         }
@@ -228,6 +236,9 @@ pub fn complete_upload(
     upload_id: &str,
     requested_parts: &[(i32, String)], // (part_number, etag)
 ) -> Result<ObjectInfo, StorageError> {
+    pathing::validate_bucket_name(bucket)?;
+    pathing::validate_object_key(key)?;
+    pathing::validate_upload_id(upload_id)?;
     let (upload, available_parts) = list_parts(disks, bucket, key, upload_id)?;
 
     // validate all requested parts exist
@@ -247,7 +258,7 @@ pub fn complete_upload(
         // read part meta from first responsive disk to get distribution
         let mut part_meta: Option<PartFileMeta> = None;
         for disk in disks {
-            let meta_path = upload_dir(disk, bucket, key, upload_id)
+            let meta_path = upload_dir(disk, bucket, key, upload_id)?
                 .join(&upload.data_dir)
                 .join(format!("part.{}.meta", pn));
             if let Ok(data) = fs::read(&meta_path) {
@@ -266,7 +277,7 @@ pub fn complete_upload(
             if disk_idx >= disks.len() {
                 continue;
             }
-            let shard_path = upload_dir(&disks[disk_idx], bucket, key, upload_id)
+            let shard_path = upload_dir(&disks[disk_idx], bucket, key, upload_id)?
                 .join(&upload.data_dir)
                 .join(&part_file);
             if let Ok(shard_data) = fs::read(&shard_path) {
@@ -334,8 +345,9 @@ pub fn complete_upload(
 
     // cleanup: delete upload dir from all disks
     for disk in disks {
-        let dir = upload_dir(disk, bucket, key, upload_id);
-        let _ = fs::remove_dir_all(&dir);
+        if let Ok(dir) = upload_dir(disk, bucket, key, upload_id) {
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     Ok(final_info)
@@ -348,8 +360,11 @@ pub fn abort_upload(
     key: &str,
     upload_id: &str,
 ) -> Result<(), StorageError> {
+    pathing::validate_bucket_name(bucket)?;
+    pathing::validate_object_key(key)?;
+    pathing::validate_upload_id(upload_id)?;
     for disk in disks {
-        let dir = upload_dir(disk, bucket, key, upload_id);
+        let dir = upload_dir(disk, bucket, key, upload_id)?;
         let _ = fs::remove_dir_all(&dir);
     }
     Ok(())
@@ -360,11 +375,12 @@ pub fn list_uploads(
     disks: &[Box<dyn Backend>],
     bucket: &str,
 ) -> Result<Vec<UploadMeta>, StorageError> {
+    pathing::validate_bucket_name(bucket)?;
     let mut uploads = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for disk in disks {
-        let bucket_dir = multipart_bucket_dir(disk, bucket);
+        let bucket_dir = multipart_bucket_dir(disk, bucket)?;
         if !bucket_dir.is_dir() {
             continue;
         }
@@ -378,16 +394,17 @@ pub fn list_uploads(
 
 // -- helpers --
 
-fn upload_dir(disk: &Box<dyn Backend>, bucket: &str, key: &str, upload_id: &str) -> PathBuf {
-    disk_root(disk)
-        .join(MULTIPART_DIR)
-        .join(bucket)
-        .join(key)
-        .join(upload_id)
+fn upload_dir(
+    disk: &Box<dyn Backend>,
+    bucket: &str,
+    key: &str,
+    upload_id: &str,
+) -> Result<PathBuf, StorageError> {
+    pathing::multipart_upload_dir(&disk_root(disk), bucket, key, upload_id)
 }
 
-fn multipart_bucket_dir(disk: &Box<dyn Backend>, bucket: &str) -> PathBuf {
-    disk_root(disk).join(MULTIPART_DIR).join(bucket)
+fn multipart_bucket_dir(disk: &Box<dyn Backend>, bucket: &str) -> Result<PathBuf, StorageError> {
+    pathing::multipart_bucket_dir(&disk_root(disk), bucket)
 }
 
 fn disk_root(disk: &Box<dyn Backend>) -> PathBuf {
@@ -405,8 +422,11 @@ fn read_upload(
     key: &str,
     upload_id: &str,
 ) -> Result<UploadMeta, StorageError> {
+    pathing::validate_bucket_name(bucket)?;
+    pathing::validate_object_key(key)?;
+    pathing::validate_upload_id(upload_id)?;
     for disk in disks {
-        let path = upload_dir(disk, bucket, key, upload_id).join(UPLOAD_FILE);
+        let path = upload_dir(disk, bucket, key, upload_id)?.join(UPLOAD_FILE);
         if let Ok(data) = fs::read(&path) {
             if let Ok(meta) = serde_json::from_slice::<UploadMeta>(&data) {
                 return Ok(meta);

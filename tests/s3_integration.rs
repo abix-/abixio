@@ -1286,6 +1286,91 @@ async fn suspended_versioning_uses_null_version() {
     assert_eq!(resp.headers()["x-amz-version-id"], "null");
 }
 
+#[tokio::test]
+async fn create_bucket_rejects_invalid_bucket_name() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let resp = client.put(url(&addr, "/Bad_Bucket")).send().await.unwrap();
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("InvalidBucketName"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn list_objects_rejects_hostile_prefix() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .get(url_with_query(
+            &addr,
+            "/tb",
+            &[("list-type", "2"), ("prefix", "safe/../escape")],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("InvalidArgument"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn get_object_rejects_invalid_version_id() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(url_with_query(
+            &addr,
+            "/tb/obj",
+            &[("versionId", "../escape")],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("InvalidArgument"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn multipart_rejects_invalid_upload_id() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .put(url_with_query(
+            &addr,
+            "/tb/key",
+            &[("uploadId", "../escape"), ("partNumber", "1")],
+        ))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("InvalidArgument"), "body: {}", body);
+}
+
 // --- CopyObject ---
 
 #[tokio::test]

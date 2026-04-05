@@ -124,6 +124,18 @@ pub const ERR_INVALID_REQUEST: S3Error = S3Error {
     http_status: 400,
 };
 
+pub const ERR_INVALID_ARGUMENT: S3Error = S3Error {
+    code: "InvalidArgument",
+    message: "Invalid request argument",
+    http_status: 400,
+};
+
+pub const ERR_INVALID_BUCKET_NAME: S3Error = S3Error {
+    code: "InvalidBucketName",
+    message: "The specified bucket is not valid",
+    http_status: 400,
+};
+
 #[derive(Debug, Serialize)]
 #[serde(rename = "Error")]
 pub struct ErrorResponse {
@@ -171,6 +183,10 @@ pub fn map_error(err: &StorageError) -> S3Error {
         StorageError::ReadQuorum => ERR_INTERNAL,
         StorageError::Bitrot => ERR_INTERNAL,
         StorageError::InvalidConfig(_) => ERR_INTERNAL,
+        StorageError::InvalidBucketName(_) => ERR_INVALID_BUCKET_NAME,
+        StorageError::InvalidObjectKey(_)
+        | StorageError::InvalidVersionId(_)
+        | StorageError::InvalidUploadId(_) => ERR_INVALID_ARGUMENT,
         StorageError::Io(_) => ERR_INTERNAL,
     }
 }

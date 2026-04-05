@@ -79,5 +79,6 @@ nav:
   - Encryption: encryption.md
   - S3 Compliance: s3-compliance.md
   - Comparison: comparison.md
+  - Security Review: security-review.md
 
 copyright: AbixIO Server &mdash; Erasure-coded storage with a steel-blue control-plane aesthetic

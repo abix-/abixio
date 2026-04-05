@@ -15,6 +15,7 @@ use crate::storage::Backend;
 use crate::storage::Store;
 use crate::storage::bitrot::sha256_hex;
 use crate::storage::erasure_set::{ErasureSet, default_ec};
+use crate::storage::pathing;
 
 type BoxBody = Full<Bytes>;
 
@@ -223,6 +224,12 @@ impl AdminHandler {
             Some(k) => k.as_str(),
             None => return error_json(StatusCode::BAD_REQUEST, "missing key parameter"),
         };
+        if let Err(e) = pathing::validate_bucket_name(bucket) {
+            return error_json(StatusCode::BAD_REQUEST, &e.to_string());
+        }
+        if let Err(e) = pathing::validate_object_key(key) {
+            return error_json(StatusCode::BAD_REQUEST, &e.to_string());
+        }
 
         let disks = self.store.disks();
 
@@ -323,7 +330,7 @@ impl AdminHandler {
                 "parity": self.config.parity_shards,
                 "source": "server_default"
             })),
-            Err(e) => error_json(StatusCode::NOT_FOUND, &e.to_string()),
+            Err(e) => error_json(map_storage_status(&e), &e.to_string()),
         }
     }
 
@@ -360,6 +367,12 @@ impl AdminHandler {
             Some(k) => k.clone(),
             None => return error_json(StatusCode::BAD_REQUEST, "missing key parameter"),
         };
+        if let Err(e) = pathing::validate_bucket_name(&bucket) {
+            return error_json(StatusCode::BAD_REQUEST, &e.to_string());
+        }
+        if let Err(e) = pathing::validate_object_key(&key) {
+            return error_json(StatusCode::BAD_REQUEST, &e.to_string());
+        }
 
         match heal_object(
             &self.heal_disks,
@@ -388,6 +401,19 @@ impl AdminHandler {
             }),
             Err(e) => error_json(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
         }
+    }
+}
+
+fn map_storage_status(err: &crate::storage::StorageError) -> StatusCode {
+    match err {
+        crate::storage::StorageError::BucketNotFound | crate::storage::StorageError::ObjectNotFound => StatusCode::NOT_FOUND,
+        crate::storage::StorageError::BucketExists | crate::storage::StorageError::BucketNotEmpty => StatusCode::CONFLICT,
+        crate::storage::StorageError::InvalidConfig(_)
+        | crate::storage::StorageError::InvalidBucketName(_)
+        | crate::storage::StorageError::InvalidObjectKey(_)
+        | crate::storage::StorageError::InvalidVersionId(_)
+        | crate::storage::StorageError::InvalidUploadId(_) => StatusCode::BAD_REQUEST,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 

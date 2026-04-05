@@ -34,9 +34,10 @@ Current reality as of 2026-04-05:
 | **S3 API** | Standard object storage access for AWS CLI, rclone, boto3, MinIO client, and custom tools |
 | **Erasure coding** | Per-object data/parity control with object, bucket, and server defaults |
 | **Storage model** | Volume-pool design across local and remote volumes |
+| **Topology** | Single-node through multi-node deployment under one storage model |
 | **Clustering** | Node identity exchange, persisted membership, quorum tracking, and fencing |
 | **Integrity** | Per-shard checksums, bitrot detection, background healing |
-| **Operations** | Admin API for volume health, healing state, and shard inspection |
+| **Operations** | Admin API plus a thick-console direction for cluster-wide visibility and shard inspection |
 
 ## What Works Today
 
@@ -97,9 +98,10 @@ curl http://localhost:10000/mybucket/hello.txt
 AbixIO is not trying to win on maturity today. It is interesting because of:
 
 - per-object erasure coding
-- support for both single-node and clustered deployment
+- one-node through multi-node deployment under one product model
 - self-describing clustered volumes
 - shard-level operational visibility
+- a thick native console model that fits multi-node administration better than a thin per-node web panel
 - a backend model that can grow beyond local disks
 
 If you need a production S3-compatible object store right now, you should still

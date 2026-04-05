@@ -64,6 +64,10 @@ impl RemoteVolume {
         match status {
             404 if msg.contains("bucket") => StorageError::BucketNotFound,
             404 => StorageError::ObjectNotFound,
+            400 if msg.contains("invalid bucket name") => StorageError::InvalidBucketName(msg),
+            400 if msg.contains("invalid object key") => StorageError::InvalidObjectKey(msg),
+            400 if msg.contains("invalid version id") => StorageError::InvalidVersionId(msg),
+            400 if msg.contains("invalid upload id") => StorageError::InvalidUploadId(msg),
             409 if msg.contains("not empty") => StorageError::BucketNotEmpty,
             409 => StorageError::BucketExists,
             _ => StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, msg)),

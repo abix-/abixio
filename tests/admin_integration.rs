@@ -703,6 +703,35 @@ async fn admin_endpoints_accept_encoded_bucket_and_key() {
     assert_eq!(heal["result"], "healthy");
 }
 
+#[tokio::test]
+async fn admin_endpoints_reject_hostile_encoded_key() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(url_with_query(
+            &addr,
+            "/_admin/object",
+            &[("bucket", "testbucket"), ("key", "dir-one/../escape.txt")],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    let resp = client
+        .post(url_with_query(
+            &addr,
+            "/_admin/heal",
+            &[("bucket", "testbucket"), ("key", "dir-one/../escape.txt")],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
 // -- unknown admin endpoint --
 
 #[tokio::test]

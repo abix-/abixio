@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use super::metadata::{
     BucketSettings, ObjectMeta, ObjectMetaFile, read_meta_file, write_meta_file,
 };
+use super::pathing;
 use super::{Backend, BackendInfo, StorageError};
 
 pub struct LocalVolume {
@@ -11,9 +12,7 @@ pub struct LocalVolume {
 }
 
 const TMP_DIR: &str = ".abixio.tmp";
-const SHARD_FILE: &str = "shard.dat";
 const META_FILE: &str = "meta.json";
-const SYS_DIR: &str = ".abixio.sys";
 const BUCKET_SETTINGS_FILE: &str = "settings.json";
 
 impl LocalVolume {
@@ -43,6 +42,7 @@ impl LocalVolume {
         prefix: &str,
         keys: &mut Vec<String>,
     ) -> Result<(), StorageError> {
+        pathing::validate_object_prefix(prefix)?;
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let ft = entry.file_type()?;
@@ -80,11 +80,11 @@ impl Backend for LocalVolume {
         data: &[u8],
         meta: &ObjectMeta,
     ) -> Result<(), StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
+        let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         fs::create_dir_all(&obj_dir)?;
 
         // write shard data directly to key/shard.dat
-        fs::write(obj_dir.join(SHARD_FILE), data)?;
+        fs::write(pathing::object_shard_path(&self.root, bucket, key)?, data)?;
 
         // update meta.json: single version entry (unversioned = overwrite)
         let mut version = meta.clone();
@@ -92,18 +92,19 @@ impl Backend for LocalVolume {
         let mf = ObjectMetaFile {
             versions: vec![version],
         };
-        write_meta_file(&obj_dir.join(META_FILE), &mf).map_err(StorageError::Io)?;
+        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf)
+            .map_err(StorageError::Io)?;
 
         Ok(())
     }
 
     fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
+        let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
-        let mf =
-            read_meta_file(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
+        let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?)
+            .map_err(|_| StorageError::ObjectNotFound)?;
 
         // find latest non-delete-marker version
         let version = mf
@@ -114,9 +115,9 @@ impl Backend for LocalVolume {
 
         // determine shard path: unversioned = key/shard.dat, versioned = key/<uuid>/shard.dat
         let shard_path = if version.version_id.is_empty() {
-            obj_dir.join(SHARD_FILE)
+            pathing::object_shard_path(&self.root, bucket, key)?
         } else {
-            obj_dir.join(&version.version_id).join(SHARD_FILE)
+            pathing::version_shard_path(&self.root, bucket, key, &version.version_id)?
         };
 
         let data = fs::read(&shard_path).map_err(|_| StorageError::ObjectNotFound)?;
@@ -124,7 +125,7 @@ impl Backend for LocalVolume {
     }
 
     fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
+        let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
@@ -133,7 +134,7 @@ impl Backend for LocalVolume {
     }
 
     fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError> {
-        let bucket_dir = self.root.join(bucket);
+        let bucket_dir = pathing::bucket_dir(&self.root, bucket)?;
         if !bucket_dir.is_dir() {
             return Err(StorageError::BucketNotFound);
         }
@@ -160,7 +161,7 @@ impl Backend for LocalVolume {
     }
 
     fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
-        let path = self.root.join(bucket);
+        let path = pathing::bucket_dir(&self.root, bucket)?;
         if path.is_dir() {
             return Err(StorageError::BucketExists);
         }
@@ -169,7 +170,7 @@ impl Backend for LocalVolume {
     }
 
     fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
-        let path = self.root.join(bucket);
+        let path = pathing::bucket_dir(&self.root, bucket)?;
         if !path.is_dir() {
             return Err(StorageError::BucketNotFound);
         }
@@ -185,11 +186,15 @@ impl Backend for LocalVolume {
     }
 
     fn bucket_exists(&self, bucket: &str) -> bool {
-        self.root.join(bucket).is_dir()
+        pathing::bucket_dir(&self.root, bucket)
+            .map(|path| path.is_dir())
+            .unwrap_or(false)
     }
 
     fn bucket_created_at(&self, bucket: &str) -> u64 {
-        let path = self.root.join(bucket);
+        let Ok(path) = pathing::bucket_dir(&self.root, bucket) else {
+            return 0;
+        };
         fs::metadata(&path)
             .and_then(|m| m.modified())
             .ok()
@@ -199,12 +204,12 @@ impl Backend for LocalVolume {
     }
 
     fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
+        let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
-        let mf =
-            read_meta_file(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
+        let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?)
+            .map_err(|_| StorageError::ObjectNotFound)?;
         mf.versions
             .iter()
             .find(|v| !v.is_delete_marker)
@@ -213,13 +218,13 @@ impl Backend for LocalVolume {
     }
 
     fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
+        let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
         // replace the matching version entry (by index) in meta.json
-        let mut mf =
-            read_meta_file(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
+        let mut mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?)
+            .map_err(|_| StorageError::ObjectNotFound)?;
         if let Some(v) = mf
             .versions
             .iter_mut()
@@ -227,7 +232,8 @@ impl Backend for LocalVolume {
         {
             *v = meta.clone();
         }
-        write_meta_file(&obj_dir.join(META_FILE), &mf).map_err(StorageError::Io)
+        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf)
+            .map_err(StorageError::Io)
     }
 
     fn write_versioned_shard(
@@ -238,15 +244,14 @@ impl Backend for LocalVolume {
         data: &[u8],
         meta: &ObjectMeta,
     ) -> Result<(), StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
-        let ver_dir = obj_dir.join(version_id);
+        let ver_dir = pathing::version_dir(&self.root, bucket, key, version_id)?;
         fs::create_dir_all(&ver_dir)?;
 
         // write shard data to key/<uuid>/shard.dat
-        fs::write(ver_dir.join(SHARD_FILE), data)?;
+        fs::write(pathing::version_shard_path(&self.root, bucket, key, version_id)?, data)?;
 
         // update meta.json: add new version entry at front, mark others as not latest
-        let mut mf = read_meta_file(&obj_dir.join(META_FILE)).unwrap_or(ObjectMetaFile {
+        let mut mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).unwrap_or(ObjectMetaFile {
             versions: Vec::new(),
         });
         for v in &mut mf.versions {
@@ -256,7 +261,8 @@ impl Backend for LocalVolume {
         version.is_latest = true;
         version.version_id = version_id.to_string();
         mf.versions.insert(0, version);
-        write_meta_file(&obj_dir.join(META_FILE), &mf).map_err(StorageError::Io)?;
+        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf)
+            .map_err(StorageError::Io)?;
 
         Ok(())
     }
@@ -267,9 +273,8 @@ impl Backend for LocalVolume {
         key: &str,
         version_id: &str,
     ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
-        let mf =
-            read_meta_file(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
+        let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?)
+            .map_err(|_| StorageError::ObjectNotFound)?;
 
         let version = mf
             .versions
@@ -277,7 +282,7 @@ impl Backend for LocalVolume {
             .find(|v| v.version_id == version_id)
             .ok_or(StorageError::ObjectNotFound)?;
 
-        let shard_path = obj_dir.join(version_id).join(SHARD_FILE);
+        let shard_path = pathing::version_shard_path(&self.root, bucket, key, version_id)?;
         let data = fs::read(&shard_path).map_err(|_| StorageError::ObjectNotFound)?;
         Ok((data, version.clone()))
     }
@@ -288,29 +293,26 @@ impl Backend for LocalVolume {
         key: &str,
         version_id: &str,
     ) -> Result<(), StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
-
         // remove shard data dir
-        let ver_dir = obj_dir.join(version_id);
+        let ver_dir = pathing::version_dir(&self.root, bucket, key, version_id)?;
         if ver_dir.is_dir() {
             fs::remove_dir_all(&ver_dir)?;
         }
 
         // remove version entry from meta.json
-        if let Ok(mut mf) = read_meta_file(&obj_dir.join(META_FILE)) {
+        if let Ok(mut mf) = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?) {
             mf.versions.retain(|v| v.version_id != version_id);
             // update is_latest
             if let Some(first) = mf.versions.first_mut() {
                 first.is_latest = true;
             }
-            let _ = write_meta_file(&obj_dir.join(META_FILE), &mf);
+            let _ = write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf);
         }
         Ok(())
     }
 
     fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
-        match read_meta_file(&obj_dir.join(META_FILE)) {
+        match read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?) {
             Ok(mf) => Ok(mf.versions),
             Err(_) => Ok(Vec::new()),
         }
@@ -322,21 +324,19 @@ impl Backend for LocalVolume {
         key: &str,
         versions: &[ObjectMeta],
     ) -> Result<(), StorageError> {
-        let obj_dir = self.root.join(bucket).join(key);
+        let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         fs::create_dir_all(&obj_dir)?;
         let mf = ObjectMetaFile {
             versions: versions.to_vec(),
         };
-        write_meta_file(&obj_dir.join(META_FILE), &mf).map_err(StorageError::Io)
+        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf)
+            .map_err(StorageError::Io)
     }
 
     fn read_bucket_settings(&self, bucket: &str) -> BucketSettings {
-        let path = self
-            .root
-            .join(SYS_DIR)
-            .join("buckets")
-            .join(bucket)
-            .join(BUCKET_SETTINGS_FILE);
+        let Ok(path) = pathing::bucket_settings_path(&self.root, bucket) else {
+            return BucketSettings::default();
+        };
         fs::read(&path)
             .ok()
             .and_then(|data| serde_json::from_slice(&data).ok())
@@ -348,7 +348,7 @@ impl Backend for LocalVolume {
         bucket: &str,
         settings: &BucketSettings,
     ) -> Result<(), StorageError> {
-        let dir = self.root.join(SYS_DIR).join("buckets").join(bucket);
+        let dir = pathing::bucket_settings_dir(&self.root, bucket)?;
         fs::create_dir_all(&dir)?;
         let data = serde_json::to_vec_pretty(settings)
             .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
@@ -522,6 +522,30 @@ mod tests {
         disk.write_shard("test", "a/b/c", b"nested", &meta).unwrap();
         let (data, _) = disk.read_shard("test", "a/b/c").unwrap();
         assert_eq!(data, b"nested");
+    }
+
+    #[test]
+    fn write_shard_rejects_hostile_key() {
+        let dir = TempDir::new().unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
+        disk.make_bucket("test").unwrap();
+        let meta = test_meta(0);
+
+        let err = disk.write_shard("test", "a/../b", b"bad", &meta).unwrap_err();
+        assert!(matches!(err, StorageError::InvalidObjectKey(_)));
+    }
+
+    #[test]
+    fn write_versioned_shard_rejects_hostile_version_id() {
+        let dir = TempDir::new().unwrap();
+        let disk = LocalVolume::new(dir.path()).unwrap();
+        disk.make_bucket("test").unwrap();
+        let meta = test_meta(0);
+
+        let err = disk
+            .write_versioned_shard("test", "safe", "../escape", b"bad", &meta)
+            .unwrap_err();
+        assert!(matches!(err, StorageError::InvalidVersionId(_)));
     }
 
     #[test]

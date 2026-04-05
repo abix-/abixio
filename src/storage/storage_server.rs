@@ -406,7 +406,11 @@ fn storage_error_response(e: StorageError) -> Response<BoxBody> {
         StorageError::BucketNotFound | StorageError::ObjectNotFound => StatusCode::NOT_FOUND,
         StorageError::BucketExists => StatusCode::CONFLICT,
         StorageError::BucketNotEmpty => StatusCode::CONFLICT,
-        StorageError::InvalidConfig(_) => StatusCode::BAD_REQUEST,
+        StorageError::InvalidConfig(_)
+        | StorageError::InvalidBucketName(_)
+        | StorageError::InvalidObjectKey(_)
+        | StorageError::InvalidVersionId(_)
+        | StorageError::InvalidUploadId(_) => StatusCode::BAD_REQUEST,
         _ => StatusCode::INTERNAL_SERVER_ERROR,
     };
     error_response(status, &e.to_string())

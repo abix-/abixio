@@ -7,6 +7,7 @@ use crate::storage::Backend;
 use crate::storage::StorageError;
 use crate::storage::bitrot::sha256_hex;
 use crate::storage::metadata::ObjectMeta;
+use crate::storage::pathing;
 
 use super::mrf::{MrfEntry, MrfQueue};
 use super::scanner::ScanState;
@@ -41,6 +42,8 @@ pub fn heal_object(
     bucket: &str,
     key: &str,
 ) -> Result<HealResult, StorageError> {
+    pathing::validate_bucket_name(bucket)?;
+    pathing::validate_object_key(key)?;
     // step 1: read meta + shard from every disk
     let mut reads: Vec<Option<(Vec<u8>, ObjectMeta)>> = Vec::with_capacity(disks.len());
     for disk in disks.iter() {

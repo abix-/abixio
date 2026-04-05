@@ -7,6 +7,7 @@ use super::metadata::{
     BucketInfo, BucketSettings, EcConfig, ListOptions, ListResult, ObjectInfo, ObjectMeta,
     PutOptions, VersioningConfig,
 };
+use super::pathing;
 use super::{StorageError, Store};
 use crate::cluster::placement::{PlacementVolume, PlacementPlanner};
 use crate::heal::mrf::MrfQueue;
@@ -182,6 +183,8 @@ impl Store for ErasureSet {
         data: &[u8],
         opts: PutOptions,
     ) -> Result<ObjectInfo, StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -201,6 +204,8 @@ impl Store for ErasureSet {
     }
 
     fn get_object(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectInfo), StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -212,6 +217,8 @@ impl Store for ErasureSet {
     }
 
     fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo, StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -224,6 +231,8 @@ impl Store for ErasureSet {
     }
 
     fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
         // get stored EC params for quorum calculation
         let (data_n, parity_n) = self
             .read_ec_from_meta(bucket, key)
@@ -254,6 +263,7 @@ impl Store for ErasureSet {
     }
 
     fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+        pathing::validate_bucket_name(bucket)?;
         if self.disks.iter().any(|d| d.bucket_exists(bucket)) {
             return Err(StorageError::BucketExists);
         }
@@ -270,6 +280,7 @@ impl Store for ErasureSet {
     }
 
     fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+        pathing::validate_bucket_name(bucket)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -287,6 +298,7 @@ impl Store for ErasureSet {
     }
 
     fn head_bucket(&self, bucket: &str) -> Result<bool, StorageError> {
+        pathing::validate_bucket_name(bucket)?;
         let count = self
             .disks
             .iter()
@@ -315,6 +327,8 @@ impl Store for ErasureSet {
     }
 
     fn list_objects(&self, bucket: &str, opts: ListOptions) -> Result<ListResult, StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_prefix(&opts.prefix)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -374,6 +388,8 @@ impl Store for ErasureSet {
         bucket: &str,
         key: &str,
     ) -> Result<std::collections::HashMap<String, String>, StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -392,6 +408,8 @@ impl Store for ErasureSet {
         key: &str,
         tags: std::collections::HashMap<String, String>,
     ) -> Result<(), StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -436,6 +454,9 @@ impl Store for ErasureSet {
         opts: PutOptions,
         version_id: &str,
     ) -> Result<ObjectInfo, StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
+        pathing::validate_version_id(version_id)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -459,6 +480,7 @@ impl Store for ErasureSet {
         &self,
         bucket: &str,
     ) -> Result<Option<VersioningConfig>, StorageError> {
+        pathing::validate_bucket_name(bucket)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -476,6 +498,7 @@ impl Store for ErasureSet {
         bucket: &str,
         config: &VersioningConfig,
     ) -> Result<(), StorageError> {
+        pathing::validate_bucket_name(bucket)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -499,6 +522,9 @@ impl Store for ErasureSet {
         key: &str,
         version_id: &str,
     ) -> Result<(Vec<u8>, ObjectInfo), StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
+        pathing::validate_version_id(version_id)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -517,6 +543,9 @@ impl Store for ErasureSet {
         key: &str,
         version_id: &str,
     ) -> Result<(), StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
+        pathing::validate_version_id(version_id)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -531,6 +560,8 @@ impl Store for ErasureSet {
         bucket: &str,
         prefix: &str,
     ) -> Result<Vec<(String, Vec<ObjectMeta>)>, StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_prefix(prefix)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -560,6 +591,7 @@ impl Store for ErasureSet {
     // -- per-bucket EC config --
 
     fn get_ec_config(&self, bucket: &str) -> Result<Option<EcConfig>, StorageError> {
+        pathing::validate_bucket_name(bucket)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -573,6 +605,7 @@ impl Store for ErasureSet {
     }
 
     fn set_ec_config(&self, bucket: &str, config: &EcConfig) -> Result<(), StorageError> {
+        pathing::validate_bucket_name(bucket)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -607,6 +640,7 @@ impl Store for ErasureSet {
         &self,
         bucket: &str,
     ) -> Result<BucketSettings, StorageError> {
+        pathing::validate_bucket_name(bucket)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -625,6 +659,7 @@ impl Store for ErasureSet {
         bucket: &str,
         settings: &BucketSettings,
     ) -> Result<(), StorageError> {
+        pathing::validate_bucket_name(bucket)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
