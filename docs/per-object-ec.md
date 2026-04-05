@@ -132,10 +132,9 @@ and `volume_ids`.
 The decode path reads `erasure.data` and `erasure.parity` from the object's
 `meta.json`. It does not consult bucket FTT. This means:
 
-- Objects written with EC 1+5 are always read with EC 1+5
+- Objects written with FTT=5 (1+5) are always read with 1+5
 - Changing volume count does not affect existing objects
-- Objects from before per-object EC still work (their `meta.json` records the
-  EC params they were written with)
+- Older objects still work (their `meta.json` records the EC params they were written with)
 
 ## How healing works
 
@@ -153,11 +152,11 @@ correctly:
 
 | Aspect | MinIO | AbixIO |
 |---|---|---|
-| EC granularity | Per server pool | Per object |
-| Changing EC | Requires new server pool | Set header on next PUT |
-| Mixed EC in same bucket | Not possible | Native |
+| Fault tolerance granularity | Per server pool | Per object (FTT) |
+| Changing fault tolerance | Requires new server pool | Set FTT header on next PUT |
+| Mixed FTT in same bucket | Not possible | Native |
 | EC stored in metadata | Yes (xl.meta) | Yes (meta.json) |
-| Disk selection | All disks in erasure set | Deterministic subset of pool, optionally with placement metadata |
+| Disk selection | All disks in erasure set | All disks in volume pool, with placement metadata |
 
 MinIO's approach requires planning EC ratios at deployment time. AbixIO lets
 you choose per object, per bucket, or per server -- and change your mind at

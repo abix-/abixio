@@ -423,9 +423,9 @@ When `--no-auth` is set, JWT validation is skipped.
 ## Cluster Notes
 
 When `--nodes` is used, nodes exchange identity at startup and build the
-erasure set membership from the node handshake. After exchange, each node
+pool membership from the node handshake. After exchange, each node
 constructs `LocalVolume` backends for its own volumes and `RemoteVolume`
-backends for volumes on other nodes. The `ErasureSet` treats all backends
+backends for volumes on other nodes. The `VolumePool` treats all backends
 identically. See [cluster.md](cluster.md) for the full cluster design.
 
 See [per-object-ec.md](per-object-ec.md) for the full EC precedence chain

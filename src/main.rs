@@ -17,7 +17,7 @@ use abixio::s3::router;
 use abixio::storage::Backend;
 use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::remote_volume::RemoteVolume;
-use abixio::storage::erasure_set::ErasureSet;
+use abixio::storage::volume_pool::VolumePool;
 use abixio::storage::storage_server::StorageServer;
 
 #[tokio::main]
@@ -100,10 +100,10 @@ async fn main() {
     let remote_count = total_backends - local_count;
     tracing::info!(local = local_count, remote = remote_count, total = total_backends, "backends ready");
 
-    let default_ftt = abixio::storage::erasure_set::default_ftt(backends.len());
+    let default_ftt = abixio::storage::volume_pool::default_ftt(backends.len());
     tracing::info!(ftt = default_ftt, disks = backends.len(), "default bucket FTT");
 
-    let mut set = match ErasureSet::new(backends) {
+    let mut set = match VolumePool::new(backends) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {}", e);
@@ -116,11 +116,11 @@ async fn main() {
     let scan_state = Arc::new(ScanState::new(cfg.heal_interval_duration()));
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-    // wire MRF into erasure set for auto-enqueue on partial writes
+    // wire MRF into volume pool for auto-enqueue on partial writes
     set.set_mrf(Arc::clone(&mrf));
     let set = Arc::new(set);
 
-    // build disk list for heal workers (separate from ErasureSet's disks)
+    // build disk list for heal workers (separate from VolumePool's disks)
     let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
         volume_paths
             .iter()

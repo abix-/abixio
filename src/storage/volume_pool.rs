@@ -38,13 +38,13 @@ struct PlacementTopology {
     disks: Vec<PlacementVolume>,
 }
 
-pub struct ErasureSet {
+pub struct VolumePool {
     disks: Vec<Box<dyn Backend>>,
     mrf: Option<Arc<MrfQueue>>,
     placement: RwLock<PlacementTopology>,
 }
 
-impl ErasureSet {
+impl VolumePool {
     pub fn new(disks: Vec<Box<dyn Backend>>) -> Result<Self, StorageError> {
         if disks.is_empty() {
             return Err(StorageError::InvalidConfig(
@@ -159,7 +159,7 @@ impl ErasureSet {
     }
 }
 
-impl Store for ErasureSet {
+impl Store for VolumePool {
     fn put_object(
         &self,
         bucket: &str,
@@ -655,7 +655,7 @@ impl Store for ErasureSet {
     }
 
     fn bucket_ec(&self, bucket: &str) -> (usize, usize) {
-        ErasureSet::bucket_ec(self, bucket)
+        VolumePool::bucket_ec(self, bucket)
     }
 }
 
@@ -683,15 +683,15 @@ mod tests {
             .collect()
     }
 
-    fn make_set(paths: &[std::path::PathBuf]) -> ErasureSet {
-        ErasureSet::new(make_backends(paths)).unwrap()
+    fn make_set(paths: &[std::path::PathBuf]) -> VolumePool {
+        VolumePool::new(make_backends(paths)).unwrap()
     }
 
     // -- construction tests --
 
     #[test]
     fn new_empty_disks_fails() {
-        assert!(ErasureSet::new(Vec::new()).is_err());
+        assert!(VolumePool::new(Vec::new()).is_err());
     }
 
     // -- put + get round-trip across configs --

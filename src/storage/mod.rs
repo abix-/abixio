@@ -5,7 +5,7 @@ pub mod remote_volume;
 pub mod storage_server;
 pub mod erasure_decode;
 pub mod erasure_encode;
-pub mod erasure_set;
+pub mod volume_pool;
 pub mod metadata;
 pub mod pathing;
 pub mod volume;
@@ -102,7 +102,7 @@ pub struct BackendInfo {
     pub free_bytes: Option<u64>,
 }
 
-/// Store is the primary storage interface. ErasureSet implements this.
+/// Store is the primary storage interface. VolumePool implements this.
 pub trait Store: Send + Sync {
     fn put_object(
         &self,

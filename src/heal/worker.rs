@@ -332,7 +332,7 @@ fn object_needs_healing(
 mod tests {
     use super::*;
     use crate::storage::Store;
-    use crate::storage::erasure_set::ErasureSet;
+    use crate::storage::volume_pool::VolumePool;
     use crate::storage::metadata::PutOptions;
     use tempfile::TempDir;
 
@@ -357,11 +357,11 @@ mod tests {
             .collect()
     }
 
-    fn make_set(paths: &[std::path::PathBuf]) -> ErasureSet {
-        ErasureSet::new(make_backends(paths)).unwrap()
+    fn make_set(paths: &[std::path::PathBuf]) -> VolumePool {
+        VolumePool::new(make_backends(paths)).unwrap()
     }
 
-    fn put_test_object(set: &ErasureSet, bucket: &str, key: &str, payload: &[u8]) {
+    fn put_test_object(set: &VolumePool, bucket: &str, key: &str, payload: &[u8]) {
         set.make_bucket(bucket).unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),

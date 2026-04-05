@@ -12,7 +12,7 @@ use abixio::heal::mrf::MrfQueue;
 use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
 use abixio::storage::local_volume::LocalVolume;
-use abixio::storage::erasure_set::ErasureSet;
+use abixio::storage::volume_pool::VolumePool;
 use abixio::storage::metadata::{BucketSettings, ObjectMeta};
 use abixio::storage::{Backend, BackendInfo, StorageError};
 use tempfile::TempDir;
@@ -337,7 +337,7 @@ impl ClusterHarness {
         disk_paths: &[PathBuf],
         placement_volumes: &[PlacementVolume],
         controller: AvailabilityController,
-    ) -> ErasureSet {
+    ) -> VolumePool {
         let backends = placement_volumes
             .iter()
             .map(|disk| {
@@ -348,7 +348,7 @@ impl ClusterHarness {
                 )) as Box<dyn Backend>
             })
             .collect::<Vec<_>>();
-        let mut set = ErasureSet::new(backends).unwrap();
+        let mut set = VolumePool::new(backends).unwrap();
         set.set_mrf(Arc::new(MrfQueue::new(1000)));
         set.set_placement_topology(7, "cluster-set-4x2", placement_volumes.to_vec())
             .unwrap();
@@ -416,7 +416,7 @@ impl ClusterHarness {
 
 async fn start_server(
     node_id: &str,
-    store: Arc<ErasureSet>,
+    store: Arc<VolumePool>,
     cluster: Arc<ClusterManager>,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(Vec::new());

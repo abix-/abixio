@@ -14,7 +14,7 @@ use crate::query::parse_query;
 use crate::storage::Backend;
 use crate::storage::Store;
 use crate::storage::bitrot::sha256_hex;
-use crate::storage::erasure_set::ErasureSet;
+use crate::storage::volume_pool::VolumePool;
 use crate::storage::pathing;
 
 type BoxBody = Full<Bytes>;
@@ -38,7 +38,7 @@ fn error_json(status: StatusCode, msg: &str) -> Response<BoxBody> {
 }
 
 pub struct AdminHandler {
-    store: Arc<ErasureSet>,
+    store: Arc<VolumePool>,
     heal_disks: Arc<Vec<Box<dyn Backend>>>,
     mrf: Arc<MrfQueue>,
     stats: Arc<HealStats>,
@@ -82,7 +82,7 @@ impl AdminConfig {
 
 impl AdminHandler {
     pub fn new(
-        store: Arc<ErasureSet>,
+        store: Arc<VolumePool>,
         heal_disks: Arc<Vec<Box<dyn Backend>>>,
         mrf: Arc<MrfQueue>,
         stats: Arc<HealStats>,
@@ -127,7 +127,7 @@ impl AdminHandler {
             server: "abixio",
             version: env!("CARGO_PKG_VERSION"),
             uptime_secs: self.stats.uptime_secs(),
-            default_ftt: crate::storage::erasure_set::default_ftt(self.config.total_disks),
+            default_ftt: crate::storage::volume_pool::default_ftt(self.config.total_disks),
             total_disks: self.config.total_disks,
             listen: self.config.listen.clone(),
             auth_enabled: self.config.auth_enabled,
@@ -323,7 +323,7 @@ impl AdminHandler {
         match self.store.get_ec_config(bucket) {
             Ok(Some(config)) => json_response(&config),
             Ok(None) => {
-                let ftt = crate::storage::erasure_set::default_ftt(self.store.disk_count());
+                let ftt = crate::storage::volume_pool::default_ftt(self.store.disk_count());
                 json_response(&crate::storage::metadata::EcConfig { ftt })
             }
             Err(e) => error_json(map_storage_status(&e), &e.to_string()),
@@ -342,7 +342,7 @@ impl AdminHandler {
             Some(f) => f,
             None => return error_json(StatusCode::BAD_REQUEST, "missing ftt parameter"),
         };
-        if let Err(e) = crate::storage::erasure_set::ftt_to_ec(ftt, self.store.disk_count()) {
+        if let Err(e) = crate::storage::volume_pool::ftt_to_ec(ftt, self.store.disk_count()) {
             return error_json(StatusCode::BAD_REQUEST, &e.to_string());
         }
         let config = crate::storage::metadata::EcConfig { ftt };

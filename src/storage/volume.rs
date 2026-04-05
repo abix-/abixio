@@ -19,11 +19,12 @@ pub struct VolumeFormat {
     pub volume_index: u32,
     pub created_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub erasure_set: Option<ErasureSetMembers>,
+    #[serde(alias = "erasure_set")]
+    pub pool: Option<PoolMembers>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ErasureSetMembers {
+pub struct PoolMembers {
     pub members: Vec<SetMember>,
 }
 
@@ -69,7 +70,7 @@ pub fn generate_volume_format(node_id: &str, volume_index: u32) -> VolumeFormat 
         volume_id: uuid::Uuid::new_v4().to_string(),
         volume_index,
         created_at: unix_now(),
-        erasure_set: None,
+        pool: None,
     }
 }
 
@@ -142,11 +143,11 @@ pub fn finalize_volumes(
     set_id: &str,
     members: Vec<SetMember>,
 ) -> Result<(), String> {
-    let erasure_set = ErasureSetMembers { members };
+    let pool = PoolMembers { members };
     for (i, fmt) in formats.iter_mut().enumerate() {
         fmt.deployment_id = Some(deployment_id.to_string());
         fmt.set_id = Some(set_id.to_string());
-        fmt.erasure_set = Some(erasure_set.clone());
+        fmt.pool = Some(pool.clone());
         write_volume_format(&disk_paths[i], fmt)
             .map_err(|e| format!("write volume.json: {}", e))?;
     }
@@ -193,7 +194,7 @@ mod tests {
         let loaded = load_volumes(&paths).unwrap().unwrap();
         assert_eq!(loaded[0].deployment_id.as_deref(), Some("deploy-1"));
         assert_eq!(loaded[0].set_id.as_deref(), Some("set-1"));
-        assert!(loaded[0].erasure_set.is_some());
+        assert!(loaded[0].pool.is_some());
     }
 
     #[test]

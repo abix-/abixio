@@ -19,11 +19,11 @@ use crate::cluster::ClusterManager;
 use crate::storage::storage_server::StorageServer;
 use crate::query::parse_query;
 use crate::storage::Store;
-use crate::storage::erasure_set::ErasureSet;
+use crate::storage::volume_pool::VolumePool;
 use crate::storage::metadata::{ListOptions, PutOptions};
 
 pub struct S3Handler {
-    store: Arc<ErasureSet>,
+    store: Arc<VolumePool>,
     auth: AuthConfig,
     admin: Option<Arc<AdminHandler>>,
     storage_server: Option<Arc<StorageServer>>,
@@ -69,7 +69,7 @@ fn empty_response(status: StatusCode) -> Response<BoxBody> {
 }
 
 impl S3Handler {
-    pub fn new(store: Arc<ErasureSet>, auth: AuthConfig, cluster: Arc<ClusterManager>) -> Self {
+    pub fn new(store: Arc<VolumePool>, auth: AuthConfig, cluster: Arc<ClusterManager>) -> Self {
         Self {
             store,
             auth,

@@ -36,7 +36,7 @@ Layer 4: Object Metadata       <bucket>/<key>/meta.json                     "Wha
 **File**: `.abixio.sys/volume.json` on every volume.
 
 **Responsibility**: Permanent identity. Who is this volume, what cluster and
-erasure set does it belong to, and who are all the other members.
+volume pool does it belong to, and who are all the other members.
 
 ### volume.json schema
 
@@ -44,20 +44,20 @@ erasure set does it belong to, and who are all the other members.
 |---|---|---|
 | `version` | u32 | Format schema version (currently `1`) |
 | `deployment_id` | UUID | Cluster-wide identifier. Same on every disk in the cluster |
-| `set_id` | UUID | Erasure set identifier. Same on every disk in the set |
+| `set_id` | UUID | Pool identifier. Same on every disk in the pool |
 | `node_id` | UUID | Node identifier. Same on every disk owned by this node |
 | `volume_id` | UUID | Globally unique volume identifier |
-| `volume_index` | u32 | This volume's position in the erasure set member list |
+| `volume_index` | u32 | This volume's position in the pool member list |
 | `created_at` | u64 | Unix timestamp when this disk was formatted |
-| `erasure_set.members` | array | Full set membership (see below) |
+| `pool.members` | array | Full pool membership (see below) |
 
-Each member in `erasure_set.members`:
+Each member in `pool.members`:
 
 | Field | Type | Description |
 |---|---|---|
 | `volume_id` | UUID | The member volume's unique identifier |
 | `node_id` | UUID | The node that owns this member volume |
-| `index` | u32 | Position in the erasure set |
+| `index` | u32 | Position in the pool |
 
 **Does NOT store**:
 - EC defaults (that is policy, not identity -- belongs to Layer 3 or CLI)
@@ -75,7 +75,7 @@ Each member in `erasure_set.members`:
   "volume_id": "aaaaaaaa-0000-0000-0000-000000000000",
   "volume_index": 0,
   "created_at": 1712300000,
-  "erasure_set": {
+  "pool": {
     "members": [
       { "volume_id": "aaaaaaaa-0000-0000-0000-000000000000", "node_id": "11111111-0000-0000-0000-000000000000", "index": 0 },
       { "volume_id": "bbbbbbbb-0000-0000-0000-000000000000", "node_id": "11111111-0000-0000-0000-000000000000", "index": 1 },
@@ -86,14 +86,14 @@ Each member in `erasure_set.members`:
 }
 ```
 
-Every disk in the cluster carries the full erasure set membership. Any single
+Every disk in the cluster carries the full pool membership. Any single
 disk is enough to reconstruct the cluster's identity.
 
 ### Identity hierarchy
 
 ```
 deployment_id       one per cluster, all disks share it
-  set_id            one per erasure set, all disks in the set share it
+  set_id            one per pool, all disks in the pool share it
     node_id         one per node, all disks on a node share it
       volume_id       one per volume, globally unique
 ```

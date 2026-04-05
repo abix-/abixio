@@ -323,7 +323,7 @@ pub fn complete_upload(
         ..Default::default()
     };
 
-    // use the Store's put_object -- but we need to go through the ErasureSet.
+    // use the Store's put_object -- but we need to go through the VolumePool.
     // instead, call the erasure encode directly, matching how put_object works.
     let info = crate::storage::erasure_encode::encode_and_write_with_mrf(
         disks,

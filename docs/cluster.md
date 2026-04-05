@@ -17,7 +17,7 @@ The cluster layer is designed around these rules:
 
 1. **Volumes are self-describing.**
    Each volume carries `.abixio.sys/volume.json` with its node_id, volume_id,
-   deployment_id, and the full erasure set membership. A fresh binary pointed
+   deployment_id, and the full pool membership. A fresh binary pointed
    at formatted volumes can reconstruct the cluster.
 
 2. **No master server.**
@@ -264,7 +264,7 @@ and the scaffold those features would build on.
 ## Volume Identity
 
 Each volume carries `.abixio.sys/volume.json` with deployment, set, node, and
-volume UUIDs plus the full erasure set membership. Identity is generated at
+volume UUIDs plus the full pool membership. Identity is generated at
 first boot and exchanged with nodes. A fresh binary pointed at formatted
 volumes can reconstruct the cluster without any config files.
 

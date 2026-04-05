@@ -6,7 +6,7 @@ use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
 use abixio::storage::Backend;
 use abixio::storage::local_volume::LocalVolume;
-use abixio::storage::erasure_set::ErasureSet;
+use abixio::storage::volume_pool::VolumePool;
 use tempfile::TempDir;
 
 fn setup() -> (TempDir, Vec<std::path::PathBuf>) {
@@ -36,7 +36,7 @@ async fn start_server_with_cluster(
         .iter()
         .map(|p| Box::new(LocalVolume::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
-    let set = Arc::new(ErasureSet::new(backends).unwrap());
+    let set = Arc::new(VolumePool::new(backends).unwrap());
     let cluster = Arc::new(
         ClusterManager::new(ClusterConfig {
             node_id: "test-node".to_string(),
@@ -88,7 +88,7 @@ async fn start_server_pool(
         .iter()
         .map(|p| Box::new(LocalVolume::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
-    let set = Arc::new(ErasureSet::new(backends).unwrap());
+    let set = Arc::new(VolumePool::new(backends).unwrap());
     let cluster = Arc::new(
         ClusterManager::new(ClusterConfig {
             node_id: "test-node".to_string(),

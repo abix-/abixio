@@ -61,7 +61,7 @@ object using the normal PUT path (erasure-encode + meta.json).
 Current implementation note:
 
 - multipart uses its own local planner (`multipart-local`) rather than the
-  `ErasureSet` placement topology used by normal object writes
+  `VolumePool` placement topology used by normal object writes
 - this means multipart does not yet preserve cluster placement metadata in the
   same way as the newer placement-aware object path
 

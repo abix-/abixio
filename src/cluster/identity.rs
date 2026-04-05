@@ -107,10 +107,10 @@ pub async fn resolve_identity(
     }
 
     // step 3: cluster -- already finalized from previous boot?
-    if formats[0].deployment_id.is_some() && formats[0].erasure_set.is_some() {
+    if formats[0].deployment_id.is_some() && formats[0].pool.is_some() {
         let deployment_id = formats[0].deployment_id.clone().unwrap();
         let set_id = formats[0].set_id.clone().unwrap();
-        let members = formats[0].erasure_set.as_ref().unwrap().members.clone();
+        let members = formats[0].pool.as_ref().unwrap().members.clone();
         // rebuild node_volumes from members + nodes list
         // we know our own paths; remote paths will be discovered via probes
         let node_volumes = build_node_volumes_from_members(

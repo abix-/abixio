@@ -11,7 +11,7 @@ cluster-control direction.
 
 2. **Pluggable storage backends.** The `Backend` trait defines the per-volume storage
    interface. `LocalVolume` implements it for local directories. `RemoteVolume`
-   implements it over HTTP for volumes on other nodes. The erasure set treats all
+   implements it over HTTP for volumes on other nodes. The volume pool treats all
    backends identically -- it does not know whether a volume is local or remote.
 
 3. **Deterministic shard distribution.** Each object's key is mapped
@@ -108,7 +108,7 @@ src/
     remote_volume.rs      # RemoteVolume: Backend impl over HTTP (internode RPC)
     storage_server.rs     # Storage REST server: dispatches /_storage/v1/* to local volumes
     internode_auth.rs     # JWT sign/validate for internode RPC
-    erasure_set.rs        # ErasureSet: volume pool with per-object EC resolution
+    volume_pool.rs        # VolumePool: volume pool with per-object FTT resolution
     erasure_encode.rs     # split_data + reed-solomon encode + volume subset selection
     erasure_decode.rs     # read from backends + bitrot check + reconstruct
     volume.rs             # VolumeFormat: read/write .abixio.sys/volume.json

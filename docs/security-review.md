@@ -41,7 +41,7 @@ Status now:
 - fixed in `src/storage/local_volume.rs`
 - fixed in `src/multipart/mod.rs`
 - fixed in `src/storage/storage_server.rs`
-- fixed in `src/storage/erasure_set.rs`
+- fixed in `src/storage/volume_pool.rs`
 - fixed in `src/storage/remote_volume.rs`
 - fixed in `src/admin/handlers.rs`
 - fixed in `src/heal/worker.rs`
