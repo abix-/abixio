@@ -111,6 +111,7 @@ S3 Select, cloud storage backends.
 | [error-responses.md](docs/error-responses.md) | Error XML format, codes, request ID |
 | [multipart-upload.md](docs/multipart-upload.md) | Multipart upload lifecycle and disk layout |
 | [bucket-policy.md](docs/bucket-policy.md) | Bucket policy storage and validation |
+| [per-object-ec.md](docs/per-object-ec.md) | Per-object erasure coding, bucket EC config, disk pools |
 | [healing.md](docs/healing.md) | Erasure healing, MRF queue, scanner |
 | [s3-compliance.md](docs/s3-compliance.md) | Full S3 API compliance audit (all 72 operations) |
 
