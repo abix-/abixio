@@ -23,7 +23,7 @@ Current reality as of 2026-04-05:
 
 - first commit: 2026-04-04
 - no releases, packaging, or production deployments
-- 95 automated tests
+- 316 automated tests
 - 41 of 72 S3 API operations implemented
 - core storage engine works with real S3 clients, but important gaps remain
 
