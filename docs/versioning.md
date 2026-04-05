@@ -9,11 +9,11 @@ Each bucket has one of three versioning states:
 
 | State | Behavior | Config file |
 |---|---|---|
-| **Disabled** (default) | PUT overwrites, DELETE removes. No version IDs. | No `.versioning.json` |
-| **Enabled** | PUT creates new UUID version. DELETE adds delete marker. Old versions preserved. | `{ "status": "Enabled" }` |
-| **Suspended** | PUT overwrites the current null-version object and returns `x-amz-version-id: null`. DELETE adds delete marker. Existing versioned history is preserved. | `{ "status": "Suspended" }` |
+| **Disabled** (default) | PUT overwrites, DELETE removes. No version IDs. | No `versioning` field in settings.json |
+| **Enabled** | PUT creates new UUID version. DELETE adds delete marker. Old versions preserved. | `"versioning": "Enabled"` |
+| **Suspended** | PUT overwrites the current null-version object and returns `x-amz-version-id: null`. DELETE adds delete marker. Existing versioned history is preserved. | `"versioning": "Suspended"` |
 
-Config stored at `bucket/.versioning.json` on each disk.
+Config stored in `.abixio.sys/buckets/<bucket>/settings.json` on each disk.
 
 ## S3 endpoints
 

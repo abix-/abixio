@@ -13,7 +13,7 @@ use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
 use abixio::storage::disk::LocalDisk;
 use abixio::storage::erasure_set::ErasureSet;
-use abixio::storage::metadata::{EcConfig, ObjectMeta, VersioningConfig};
+use abixio::storage::metadata::{BucketSettings, ObjectMeta};
 use abixio::storage::{Backend, BackendInfo, StorageError};
 use tempfile::TempDir;
 
@@ -182,34 +182,21 @@ impl Backend for ControlledBackend {
         self.inner.delete_version_data(bucket, key, version_id)
     }
 
-    fn read_versioning_config(&self, bucket: &str) -> Option<VersioningConfig> {
+    fn read_bucket_settings(&self, bucket: &str) -> BucketSettings {
         if self.available() {
-            self.inner.read_versioning_config(bucket)
+            self.inner.read_bucket_settings(bucket)
         } else {
-            None
+            BucketSettings::default()
         }
     }
 
-    fn write_versioning_config(
+    fn write_bucket_settings(
         &self,
         bucket: &str,
-        config: &VersioningConfig,
+        settings: &BucketSettings,
     ) -> Result<(), StorageError> {
         self.ensure_available()?;
-        self.inner.write_versioning_config(bucket, config)
-    }
-
-    fn read_ec_config(&self, bucket: &str) -> Option<EcConfig> {
-        if self.available() {
-            self.inner.read_ec_config(bucket)
-        } else {
-            None
-        }
-    }
-
-    fn write_ec_config(&self, bucket: &str, config: &EcConfig) -> Result<(), StorageError> {
-        self.ensure_available()?;
-        self.inner.write_ec_config(bucket, config)
+        self.inner.write_bucket_settings(bucket, settings)
     }
 
     fn info(&self) -> BackendInfo {

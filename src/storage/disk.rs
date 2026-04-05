@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::metadata::{
-    EcConfig, ObjectMeta, ObjectMetaFile, VersioningConfig, read_meta_file, write_meta_file,
+    BucketSettings, ObjectMeta, ObjectMetaFile, read_meta_file, write_meta_file,
 };
 use super::{Backend, BackendInfo, StorageError};
 
@@ -13,8 +13,8 @@ pub struct LocalDisk {
 const TMP_DIR: &str = ".abixio.tmp";
 const SHARD_FILE: &str = "shard.dat";
 const META_FILE: &str = "meta.json";
-const VERSIONING_FILE: &str = ".versioning.json";
-const EC_CONFIG_FILE: &str = ".ec.json";
+const SYS_DIR: &str = ".abixio.sys";
+const BUCKET_SETTINGS_FILE: &str = "settings.json";
 
 impl LocalDisk {
     pub fn new(root: &Path) -> Result<Self, StorageError> {
@@ -330,43 +330,29 @@ impl Backend for LocalDisk {
         write_meta_file(&obj_dir.join(META_FILE), &mf).map_err(StorageError::Io)
     }
 
-    fn read_versioning_config(&self, bucket: &str) -> Option<VersioningConfig> {
-        let path = self.root.join(bucket).join(VERSIONING_FILE);
+    fn read_bucket_settings(&self, bucket: &str) -> BucketSettings {
+        let path = self
+            .root
+            .join(SYS_DIR)
+            .join("buckets")
+            .join(bucket)
+            .join(BUCKET_SETTINGS_FILE);
         fs::read(&path)
             .ok()
             .and_then(|data| serde_json::from_slice(&data).ok())
+            .unwrap_or_default()
     }
 
-    fn write_versioning_config(
+    fn write_bucket_settings(
         &self,
         bucket: &str,
-        config: &VersioningConfig,
+        settings: &BucketSettings,
     ) -> Result<(), StorageError> {
-        let bucket_dir = self.root.join(bucket);
-        if !bucket_dir.is_dir() {
-            return Err(StorageError::BucketNotFound);
-        }
-        let data = serde_json::to_vec(config)
+        let dir = self.root.join(SYS_DIR).join("buckets").join(bucket);
+        fs::create_dir_all(&dir)?;
+        let data = serde_json::to_vec_pretty(settings)
             .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        fs::write(bucket_dir.join(VERSIONING_FILE), data)?;
-        Ok(())
-    }
-
-    fn read_ec_config(&self, bucket: &str) -> Option<EcConfig> {
-        let path = self.root.join(bucket).join(EC_CONFIG_FILE);
-        fs::read(&path)
-            .ok()
-            .and_then(|data| serde_json::from_slice(&data).ok())
-    }
-
-    fn write_ec_config(&self, bucket: &str, config: &EcConfig) -> Result<(), StorageError> {
-        let bucket_dir = self.root.join(bucket);
-        if !bucket_dir.is_dir() {
-            return Err(StorageError::BucketNotFound);
-        }
-        let data = serde_json::to_vec(config)
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        fs::write(bucket_dir.join(EC_CONFIG_FILE), data)?;
+        fs::write(dir.join(BUCKET_SETTINGS_FILE), data)?;
         Ok(())
     }
 

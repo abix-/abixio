@@ -4,8 +4,8 @@ use super::Backend;
 use super::erasure_decode::{read_and_decode, read_and_decode_versioned};
 use super::erasure_encode::{encode_and_write_versioned, encode_and_write_with_mrf};
 use super::metadata::{
-    BucketInfo, EcConfig, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions,
-    VersioningConfig,
+    BucketInfo, BucketSettings, EcConfig, ListOptions, ListResult, ObjectInfo, ObjectMeta,
+    PutOptions, VersioningConfig,
 };
 use super::{StorageError, Store};
 use crate::cluster::placement::{PlacementDisk, PlacementPlanner};
@@ -124,7 +124,10 @@ impl ErasureSet {
         }
 
         // bucket-level config
-        if let Some(ec) = self.disks.iter().find_map(|d| d.read_ec_config(bucket))
+        if let Some(ec) = self
+            .disks
+            .iter()
+            .find_map(|d| d.read_bucket_settings(bucket).ec)
             && ec.data >= 1
             && ec.data + ec.parity <= self.disks.len()
         {
@@ -450,8 +453,9 @@ impl Store for ErasureSet {
             return Err(StorageError::BucketNotFound);
         }
         for disk in &self.disks {
-            if let Some(config) = disk.read_versioning_config(bucket) {
-                return Ok(Some(config));
+            let settings = disk.read_bucket_settings(bucket);
+            if let Some(status) = settings.versioning {
+                return Ok(Some(VersioningConfig { status }));
             }
         }
         Ok(None)
@@ -467,7 +471,9 @@ impl Store for ErasureSet {
         }
         let mut successes = 0;
         for disk in &self.disks {
-            if disk.write_versioning_config(bucket, config).is_ok() {
+            let mut settings = disk.read_bucket_settings(bucket);
+            settings.versioning = Some(config.status.clone());
+            if disk.write_bucket_settings(bucket, &settings).is_ok() {
                 successes += 1;
             }
         }
@@ -548,8 +554,9 @@ impl Store for ErasureSet {
             return Err(StorageError::BucketNotFound);
         }
         for disk in &self.disks {
-            if let Some(config) = disk.read_ec_config(bucket) {
-                return Ok(Some(config));
+            let settings = disk.read_bucket_settings(bucket);
+            if settings.ec.is_some() {
+                return Ok(settings.ec);
             }
         }
         Ok(None)
@@ -574,7 +581,46 @@ impl Store for ErasureSet {
         }
         let mut successes = 0;
         for disk in &self.disks {
-            if disk.write_ec_config(bucket, config).is_ok() {
+            let mut settings = disk.read_bucket_settings(bucket);
+            settings.ec = Some(config.clone());
+            if disk.write_bucket_settings(bucket, &settings).is_ok() {
+                successes += 1;
+            }
+        }
+        if successes == 0 {
+            return Err(StorageError::WriteQuorum);
+        }
+        Ok(())
+    }
+
+    fn get_bucket_settings(
+        &self,
+        bucket: &str,
+    ) -> Result<BucketSettings, StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        // read from first available disk
+        for disk in &self.disks {
+            let settings = disk.read_bucket_settings(bucket);
+            if settings != BucketSettings::default() {
+                return Ok(settings);
+            }
+        }
+        Ok(BucketSettings::default())
+    }
+
+    fn set_bucket_settings(
+        &self,
+        bucket: &str,
+        settings: &BucketSettings,
+    ) -> Result<(), StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        let mut successes = 0;
+        for disk in &self.disks {
+            if disk.write_bucket_settings(bucket, settings).is_ok() {
                 successes += 1;
             }
         }

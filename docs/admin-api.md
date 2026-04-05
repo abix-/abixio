@@ -296,8 +296,8 @@ curl http://localhost:10000/_admin/bucket/mybucket/ec
 
 ## PUT /_admin/bucket/{name}/ec?data=N&parity=N
 
-Set a default EC ratio for new objects in a bucket. Stored as `.ec.json`
-on each disk. Does not affect existing objects.
+Set a default EC ratio for new objects in a bucket. Stored in
+`.abixio.sys/buckets/<bucket>/settings.json`. Does not affect existing objects.
 
 ```bash
 curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=3&parity=3"

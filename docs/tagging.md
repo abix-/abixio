@@ -66,8 +66,8 @@ DELETE returns 204 No Content.
 
 ## Bucket tagging
 
-Bucket-level tags are stored in `.tagging.json` in the bucket directory
-on the first disk. Uses the same S3 XML format as object tagging.
+Bucket-level tags are stored in `.abixio.sys/buckets/<bucket>/settings.json`
+under the `tags` field. Uses the same S3 XML format as object tagging.
 
 | Endpoint | Description |
 |---|---|

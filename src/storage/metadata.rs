@@ -5,6 +5,7 @@ use std::path::Path;
 use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// Single meta.json per object, containing all version metadata.
 /// Matches MinIO's xl.meta pattern.
@@ -110,6 +111,22 @@ pub struct VersioningConfig {
 pub struct EcConfig {
     pub data: usize,
     pub parity: usize,
+}
+
+// -- consolidated bucket settings --
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct BucketSettings {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub versioning: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ec: Option<EcConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tags: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<String>,
 }
 
 impl ObjectMeta {

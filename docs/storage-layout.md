@@ -23,22 +23,22 @@ external configuration.
 AbixIO has four metadata layers. Each has a single responsibility.
 
 ```
-Layer 1: Disk Identity         .abixio.sys/format.json        "Who is this disk?"
-Layer 2: Cluster Runtime       .abixio.sys/cluster/state.json "What is this node doing right now?"
-Layer 3: Bucket Config         <bucket>/.ec.json, etc.        "How should new objects behave?"
-Layer 4: Object Metadata       <bucket>/<key>/meta.json       "What is this object and where are its shards?"
+Layer 1: Disk Identity         .abixio.sys/disk.json                        "Who is this disk?"
+Layer 2: Cluster Runtime       .abixio.sys/cluster.json                     "What is this node doing right now?"
+Layer 3: Bucket Config         .abixio.sys/buckets/<bucket>/settings.json   "How should new objects behave?"
+Layer 4: Object Metadata       <bucket>/<key>/meta.json                     "What is this object and where are its shards?"
 ```
 
 ---
 
 ## Layer 1: Disk Identity
 
-**File**: `.abixio.sys/format.json` on every disk.
+**File**: `.abixio.sys/disk.json` on every disk.
 
 **Responsibility**: Permanent identity. Who is this disk, what cluster and
 erasure set does it belong to, and who are all the other members.
 
-### format.json schema
+### disk.json schema
 
 | Field | Type | Description |
 |---|---|---|
@@ -105,14 +105,14 @@ All four are UUIDv4, generated at format time, immutable after that.
 **First boot (standalone)**:
 
 1. Operator starts `abixio --disks /d1,/d2,/d3,/d4 --data 2 --parity 2`
-2. Binary checks each disk for `.abixio.sys/format.json`
+2. Binary checks each disk for `.abixio.sys/disk.json`
 3. No format found on any disk -- this is a first boot
 4. Generate UUIDs: one `deployment_id`, one `set_id`, one `node_id`, one
    `disk_id` per disk
-5. Write `format.json` to every disk with the full member list
+5. Write `disk.json` to every disk with the full member list
 6. Proceed to serve
 
-On subsequent boots, the binary reads format.json and derives identity. No
+On subsequent boots, the binary reads disk.json and derives identity. No
 `--node-id` needed. `--data`/`--parity` are server-default EC policy.
 
 **First boot (multi-node, topology-seeded)**:
@@ -122,7 +122,7 @@ other's identities. For v1, a static topology file seeds the initial format.
 
 1. Operator writes a topology file with node entries and disk paths
 2. Each node starts with `abixio --disks ... --cluster-topology topology.json`
-3. Binary checks disks for format.json -- none found
+3. Binary checks disks for disk.json -- none found
 4. Binary reads the topology file and matches this node by disk paths:
    - Normalize local `--disks` paths
    - Find the topology node whose disk paths match
@@ -132,7 +132,7 @@ other's identities. For v1, a static topology file seeds the initial format.
    the same values independently). `node_id` and `disk_id` are derived
    deterministically from the topology node_id/disk_id strings (so the same
    topology always produces the same UUIDs)
-6. Write format.json to every local disk with the full set membership
+6. Write disk.json to every local disk with the full set membership
 7. Proceed to serve
 
 After formatting, the topology file is no longer required. Subsequent boots
@@ -141,7 +141,7 @@ validated against the on-disk format as a safety check.
 
 **Subsequent boot**:
 
-1. Binary reads format.json from each disk
+1. Binary reads disk.json from each disk
 2. Validates all disks agree on deployment_id, set_id, node_id
 3. Derives identity from format -- no CLI identity flags needed
 4. If `--cluster-topology` is present, validate it matches on-disk format
@@ -151,7 +151,7 @@ validated against the on-disk format as a safety check.
 
 1. Physically move disks to new hardware
 2. Start abixio binary with `--disks` pointing to the moved disks
-3. Binary reads format.json, discovers this node's identity
+3. Binary reads disk.json, discovers this node's identity
 4. Peers recognize the node by its persisted node_id and disk_ids
 5. Node comes online
 
@@ -159,7 +159,7 @@ The binary never stored identity. The disks did. Hardware is irrelevant.
 
 **Disk replacement**:
 
-1. New blank disk has no format.json
+1. New blank disk has no disk.json
 2. Operator (or future automation) formats the new disk with:
    - Same deployment_id, set_id, node_id
    - New disk_id (UUIDv4)
@@ -169,13 +169,13 @@ The binary never stored identity. The disks did. Hardware is irrelevant.
 
 ### Validation rules
 
-On boot, the binary validates format.json across all local disks:
+On boot, the binary validates disk.json across all local disks:
 
 | Check | Error |
 |---|---|
-| format.json missing on some disks but present on others | Mixed state: refuse to start |
-| format.json missing on all disks, no topology | Standalone first boot: auto-format |
-| format.json missing on all disks, topology present | Cluster first boot: topology-seeded format |
+| disk.json missing on some disks but present on others | Mixed state: refuse to start |
+| disk.json missing on all disks, no topology | Standalone first boot: auto-format |
+| disk.json missing on all disks, topology present | Cluster first boot: topology-seeded format |
 | deployment_id mismatch across local disks | Corrupt or mixed cluster: refuse to start |
 | set_id mismatch across local disks | Corrupt or mixed set: refuse to start |
 | node_id mismatch across local disks | Disks from different nodes mixed together: refuse to start |
@@ -192,7 +192,7 @@ future improvement:
 2. Exchange disk inventories
 3. Deterministic leader election picks a coordinator
 4. Coordinator assigns deployment_id, set_id, generates member list
-5. All nodes write format.json
+5. All nodes write disk.json
 6. No config file at all
 
 This is more complex but eliminates the topology file entirely. The
@@ -203,30 +203,35 @@ already exists and works.
 
 ## Layer 2: Cluster Runtime State
 
-**File**: `.abixio.sys/cluster/state.json` on every disk.
+**File**: `.abixio.sys/cluster.json` on every disk.
 
 **Responsibility**: Current operational state. Cluster summary, epoch, peer
 reachability, fencing status. This is runtime state that changes frequently.
 
-format.json provides the identity that cluster runtime state references.
+disk.json provides the identity that cluster runtime state references.
 See [cluster.md](cluster.md) for the full cluster design.
 
 ---
 
 ## Layer 3: Bucket Config
 
-**Files**: Per-bucket config files at the bucket directory root on every disk.
+**File**: `.abixio.sys/buckets/<bucket>/settings.json` on every disk.
 
-| File | Purpose |
-|---|---|
-| `.versioning.json` | Versioning state (`Enabled` / `Suspended`) |
-| `.tagging.json` | Bucket-level tags |
-| `.ec.json` | Bucket EC default (data/parity override) |
-| `.policy.json` | Bucket policy (storage only, enforcement pending) |
+**Responsibility**: Default behavior for new objects in this bucket. One file
+per bucket, containing all bucket-level config. These are policy settings, not
+identity. They influence new writes but do not affect existing objects.
 
-**Responsibility**: Default behavior for new objects in this bucket. These are
-policy files, not identity. They influence new writes but do not affect
-existing objects.
+```json
+{
+  "versioning": "Enabled",
+  "ec": { "data": 3, "parity": 3 },
+  "tags": { "env": "prod" },
+  "policy": { "Version": "2012-10-17", "Statement": [] },
+  "lifecycle": "<LifecycleConfiguration>...</LifecycleConfiguration>"
+}
+```
+
+All fields are optional. Absent means "not configured, use defaults."
 
 ### EC resolution cascade
 
@@ -234,7 +239,7 @@ EC parameters are resolved per-request at write time using this precedence:
 
 ```
 1. Per-object headers    x-amz-meta-ec-data / x-amz-meta-ec-parity   (highest)
-2. Bucket default        <bucket>/.ec.json
+2. Bucket default        .abixio.sys/buckets/<bucket>/settings.json
 3. Server default        --data / --parity CLI flags                   (lowest)
 ```
 
@@ -242,8 +247,8 @@ The resolved data/parity values are stored in `meta.json` with the object.
 After that, the object is self-describing. Changing server defaults or bucket
 config does not affect existing objects.
 
-EC config is deliberately absent from format.json. EC is policy (how to
-encode); format.json is identity (who am I).
+EC config is deliberately absent from disk.json. EC is policy (how to
+encode); disk.json is identity (who am I).
 
 See [per-object-ec.md](per-object-ec.md) for full EC documentation.
 
@@ -296,8 +301,8 @@ ordered newest-first.
 ```
 
 The `node_ids` and `disk_ids` in object metadata use the same UUIDs as
-format.json. The healer and decoder can verify that a shard is on the correct
-disk by comparing `meta.json` disk_ids against `format.json` disk_id.
+disk.json. The healer and decoder can verify that a shard is on the correct
+disk by comparing `meta.json` disk_ids against `disk.json` disk_id.
 
 ### Fields
 
@@ -332,14 +337,13 @@ each object is split into 4 shards distributed across 4 disks.
 ```
 disk0/
   .abixio.sys/
-    format.json                 # disk identity (Layer 1)
-    cluster/
-      state.json                # cluster runtime state (Layer 2)
+    disk.json                   # disk identity (Layer 1)
+    cluster.json                # cluster runtime state (Layer 2)
+    buckets/
+      bucket-name/
+        settings.json           # bucket config (Layer 3)
     multipart/                  # in-progress multipart uploads
   bucket-name/
-    .versioning.json            # optional: bucket versioning config (Layer 3)
-    .tagging.json               # optional: bucket tags (Layer 3)
-    .ec.json                    # optional: bucket EC default (Layer 3)
     object-key/
       meta.json                 # object metadata (Layer 4)
       shard.dat                 # shard data (unversioned objects)
@@ -348,14 +352,19 @@ disk0/
 
 disk1/
   .abixio.sys/
-    format.json                 # same deployment_id/set_id/node_id, different disk_id
-    cluster/
-      state.json
+    disk.json                   # same deployment_id/set_id/node_id, different disk_id
+    cluster.json
+    buckets/
+      bucket-name/
+        settings.json
   bucket-name/
     object-key/
       meta.json                 # same structure, different shard index/checksum
       shard.dat
 ```
+
+All system metadata lives under `.abixio.sys/`. Bucket data directories contain
+only user objects.
 
 Each disk holds one shard per object. The shard index and checksum differ per
 disk, but the rest of the metadata is identical.
@@ -418,7 +427,7 @@ and externally inspectable across nodes.
 
 | Current | After disk format |
 |---|---|
-| `--node-id node-1` (required for cluster) | Read from format.json (removed from CLI) |
+| `--node-id node-1` (required for cluster) | Read from disk.json (removed from CLI) |
 | `--cluster-topology` (required every boot) | One-time format seed, optional after |
 | `--data 2 --parity 2` (server default EC) | Unchanged -- policy, not identity |
 | `--disks /d1,/d2` | Unchanged -- tells binary which paths to use |

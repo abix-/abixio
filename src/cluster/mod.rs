@@ -15,7 +15,7 @@ pub mod topology;
 
 use topology::StaticTopology;
 
-const CLUSTER_STATE_FILE: &str = ".abixio.sys/cluster/state.json";
+const CLUSTER_STATE_FILE: &str = ".abixio.sys/cluster.json";
 const CLUSTER_PROBE_HEADER: &str = "x-abixio-cluster-secret";
 
 #[derive(Debug, Clone)]

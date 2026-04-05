@@ -10,7 +10,7 @@ use std::io;
 use std::collections::HashMap;
 
 use metadata::{
-    BucketInfo, EcConfig, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions,
+    BucketInfo, BucketSettings, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions,
     VersioningConfig,
 };
 
@@ -77,15 +77,12 @@ pub trait Backend: Send + Sync {
         version_id: &str,
     ) -> Result<(), StorageError>;
 
-    fn read_versioning_config(&self, bucket: &str) -> Option<VersioningConfig>;
-    fn write_versioning_config(
+    fn read_bucket_settings(&self, bucket: &str) -> BucketSettings;
+    fn write_bucket_settings(
         &self,
         bucket: &str,
-        config: &VersioningConfig,
+        settings: &BucketSettings,
     ) -> Result<(), StorageError>;
-
-    fn read_ec_config(&self, bucket: &str) -> Option<EcConfig>;
-    fn write_ec_config(&self, bucket: &str, config: &EcConfig) -> Result<(), StorageError>;
 
     fn info(&self) -> BackendInfo;
 }
@@ -184,6 +181,19 @@ pub trait Store: Send + Sync {
     fn get_ec_config(&self, bucket: &str) -> Result<Option<metadata::EcConfig>, StorageError>;
 
     fn set_ec_config(&self, bucket: &str, config: &metadata::EcConfig) -> Result<(), StorageError>;
+
+    // -- bucket settings --
+
+    fn get_bucket_settings(
+        &self,
+        bucket: &str,
+    ) -> Result<BucketSettings, StorageError>;
+
+    fn set_bucket_settings(
+        &self,
+        bucket: &str,
+        settings: &BucketSettings,
+    ) -> Result<(), StorageError>;
 
     fn disk_count(&self) -> usize;
     fn default_data(&self) -> usize;

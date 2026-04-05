@@ -57,7 +57,7 @@ AbixIO is no longer purely single-node in direction. The repo now contains a
 minimal static-topology cluster-control layer:
 
 - cluster identity and topology manifest validation
-- persisted cluster metadata in `.abixio.sys/cluster/state.json`
+- persisted cluster metadata in `.abixio.sys/cluster.json`
 - cluster admin endpoints
 - peer monitoring and quorum tracking
 - hard fencing when quorum is lost

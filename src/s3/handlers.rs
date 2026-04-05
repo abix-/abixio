@@ -815,8 +815,10 @@ impl S3Handler {
     // -- bucket tagging --
 
     async fn get_bucket_tagging(&self, bucket: &str) -> Response<BoxBody> {
-        let bucket_dir = self.bucket_tagging_path(bucket);
-        let tags = self.read_bucket_tags(&bucket_dir);
+        let tags = match self.store.get_bucket_settings(bucket) {
+            Ok(settings) => settings.tags.unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        };
         let xml_tags: Vec<TagXml> = tags
             .into_iter()
             .map(|(k, v)| TagXml { key: k, value: v })
@@ -832,7 +834,6 @@ impl S3Handler {
     }
 
     async fn put_bucket_tagging(&self, bucket: &str, req: Request<Incoming>) -> Response<BoxBody> {
-        // verify bucket exists
         match self.store.head_bucket(bucket) {
             Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
             Ok(true) => {}
@@ -855,40 +856,19 @@ impl S3Handler {
             .into_iter()
             .map(|t| (t.key, t.value))
             .collect();
-        let path = self.bucket_tagging_path(bucket);
-        match std::fs::write(&path, serde_json::to_vec(&tags).unwrap_or_default()) {
+        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        settings.tags = Some(tags);
+        match self.store.set_bucket_settings(bucket, &settings) {
             Ok(()) => empty_response(StatusCode::OK),
             Err(_) => error_response(&super::errors::ERR_INTERNAL),
         }
     }
 
     async fn delete_bucket_tagging(&self, bucket: &str) -> Response<BoxBody> {
-        let path = self.bucket_tagging_path(bucket);
-        let _ = std::fs::remove_file(&path);
+        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        settings.tags = None;
+        let _ = self.store.set_bucket_settings(bucket, &settings);
         empty_response(StatusCode::NO_CONTENT)
-    }
-
-    fn bucket_tagging_path(&self, bucket: &str) -> std::path::PathBuf {
-        // store on first disk's bucket directory
-        let disk_root = if let Some(disk) = self.store.disks().first() {
-            let info = disk.info();
-            // extract path from label "local:/path"
-            if let Some(path) = info.label.strip_prefix("local:") {
-                std::path::PathBuf::from(path)
-            } else {
-                std::path::PathBuf::from(".")
-            }
-        } else {
-            std::path::PathBuf::from(".")
-        };
-        disk_root.join(bucket).join(".tagging.json")
-    }
-
-    fn read_bucket_tags(&self, path: &std::path::Path) -> HashMap<String, String> {
-        match std::fs::read(path) {
-            Ok(data) => serde_json::from_slice(&data).unwrap_or_default(),
-            Err(_) => HashMap::new(),
-        }
     }
 
     /// Find the latest non-delete-marker version ID from meta.json.
@@ -1028,14 +1008,17 @@ impl S3Handler {
             Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
             Ok(true) => {}
         }
-        let path = self.bucket_metadata_path(bucket, ".policy.json");
-        match std::fs::read(&path) {
-            Ok(data) => Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", "application/json")
-                .body(Full::new(Bytes::from(data)))
-                .unwrap(),
-            Err(_) => error_response(&super::errors::ERR_NO_SUCH_BUCKET_POLICY),
+        let settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        match settings.policy {
+            Some(policy) => {
+                let data = serde_json::to_vec(&policy).unwrap_or_default();
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/json")
+                    .body(Full::new(Bytes::from(data)))
+                    .unwrap()
+            }
+            None => error_response(&super::errors::ERR_NO_SUCH_BUCKET_POLICY),
         }
     }
 
@@ -1062,31 +1045,19 @@ impl S3Handler {
             Some(v) if !v.is_empty() => {}
             _ => return error_response(&ERR_MALFORMED_XML),
         }
-        let path = self.bucket_metadata_path(bucket, ".policy.json");
-        match std::fs::write(&path, &body) {
+        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        settings.policy = Some(policy);
+        match self.store.set_bucket_settings(bucket, &settings) {
             Ok(()) => empty_response(StatusCode::NO_CONTENT),
             Err(_) => error_response(&super::errors::ERR_INTERNAL),
         }
     }
 
     async fn delete_bucket_policy(&self, bucket: &str) -> Response<BoxBody> {
-        let path = self.bucket_metadata_path(bucket, ".policy.json");
-        let _ = std::fs::remove_file(&path);
+        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        settings.policy = None;
+        let _ = self.store.set_bucket_settings(bucket, &settings);
         empty_response(StatusCode::NO_CONTENT)
-    }
-
-    fn bucket_metadata_path(&self, bucket: &str, filename: &str) -> std::path::PathBuf {
-        let disk_root = if let Some(disk) = self.store.disks().first() {
-            let info = disk.info();
-            if let Some(path) = info.label.strip_prefix("local:") {
-                std::path::PathBuf::from(path)
-            } else {
-                std::path::PathBuf::from(".")
-            }
-        } else {
-            std::path::PathBuf::from(".")
-        };
-        disk_root.join(bucket).join(filename)
     }
 
     // -- ACL stubs (matching MinIO: hardcoded FULL_CONTROL, no real ACL storage) --
@@ -1117,14 +1088,14 @@ impl S3Handler {
             Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
             Ok(true) => {}
         }
-        let path = self.bucket_metadata_path(bucket, ".lifecycle.xml");
-        match std::fs::read(&path) {
-            Ok(data) => Response::builder()
+        let settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        match settings.lifecycle {
+            Some(xml) => Response::builder()
                 .status(StatusCode::OK)
                 .header("Content-Type", "application/xml")
-                .body(Full::new(Bytes::from(data)))
+                .body(Full::new(Bytes::from(xml)))
                 .unwrap(),
-            Err(_) => error_response(&super::errors::ERR_NO_SUCH_LIFECYCLE),
+            None => error_response(&super::errors::ERR_NO_SUCH_LIFECYCLE),
         }
     }
 
@@ -1141,7 +1112,6 @@ impl S3Handler {
             Ok(b) => b.to_bytes(),
             Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
         };
-        // validate body contains LifecycleConfiguration
         let body_str = match std::str::from_utf8(&body) {
             Ok(s) => s,
             Err(_) => return error_response(&ERR_MALFORMED_XML),
@@ -1149,16 +1119,18 @@ impl S3Handler {
         if !body_str.contains("LifecycleConfiguration") {
             return error_response(&ERR_MALFORMED_XML);
         }
-        let path = self.bucket_metadata_path(bucket, ".lifecycle.xml");
-        match std::fs::write(&path, &body) {
+        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        settings.lifecycle = Some(body_str.to_string());
+        match self.store.set_bucket_settings(bucket, &settings) {
             Ok(()) => empty_response(StatusCode::OK),
             Err(_) => error_response(&super::errors::ERR_INTERNAL),
         }
     }
 
     async fn delete_bucket_lifecycle(&self, bucket: &str) -> Response<BoxBody> {
-        let path = self.bucket_metadata_path(bucket, ".lifecycle.xml");
-        let _ = std::fs::remove_file(&path);
+        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        settings.lifecycle = None;
+        let _ = self.store.set_bucket_settings(bucket, &settings);
         empty_response(StatusCode::NO_CONTENT)
     }
 

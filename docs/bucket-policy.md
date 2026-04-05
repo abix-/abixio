@@ -47,8 +47,8 @@ Standard AWS IAM bucket policy JSON:
 
 ## Storage
 
-Policy stored as `.policy.json` in the bucket directory on the first disk.
-Same pattern as `.versioning.json` and `.tagging.json`.
+Policy stored in `.abixio.sys/buckets/<bucket>/settings.json` under the
+`policy` field. Same file as versioning, EC, tags, and lifecycle config.
 
 Current implementation note:
 

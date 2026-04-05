@@ -103,7 +103,7 @@ restart-based reconfiguration model.
 Cluster metadata is stored under:
 
 ```text
-<disk>/.abixio.sys/cluster/state.json
+<disk>/.abixio.sys/cluster.json
 ```
 
 The server writes the same cluster-state JSON file to every local disk it owns.

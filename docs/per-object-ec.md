@@ -63,8 +63,8 @@ The EC headers are returned on GET and HEAD like all S3 custom metadata.
 
 ## Bucket EC config
 
-Set a default EC ratio for all new objects in a bucket. Stored as `.ec.json`
-on each disk alongside `.versioning.json`.
+Set a default EC ratio for all new objects in a bucket. Stored in
+`.abixio.sys/buckets/<bucket>/settings.json` under the `ec` field.
 
 ### Admin API
 
@@ -163,8 +163,11 @@ any time for new objects.
 
 ```
 disk0/
+  .abixio.sys/
+    buckets/
+      mybucket/
+        settings.json     # { "ec": { "data": 3, "parity": 3 } }
   mybucket/
-    .ec.json              # optional: { "data": 3, "parity": 3 }
     critical.txt/
       meta.json           # erasure: { data: 1, parity: 5, ... }
       shard.dat
@@ -174,7 +177,8 @@ disk0/
 ```
 
 Each object's `meta.json` is the source of truth for its EC configuration.
-The bucket-level `.ec.json` is only used as a default for new writes.
+The bucket-level `settings.json` EC config is only used as a default for new
+writes.
 
 For placement-aware objects, `meta.json` also records `epoch_id`, `set_id`,
 `node_ids`, and `disk_ids` alongside `data`, `parity`, `index`, and
