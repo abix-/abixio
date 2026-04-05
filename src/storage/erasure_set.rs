@@ -26,11 +26,9 @@ pub fn ftt_to_ec(ftt: usize, num_disks: usize) -> Result<(usize, usize), Storage
     Ok((num_disks - ftt, ftt))
 }
 
-/// Auto-compute server default EC from volume count.
-/// Default is FTT=1 (survive 1 failure) when possible.
-pub fn default_ec(num_volumes: usize) -> (usize, usize) {
-    let ftt = 1.min(num_volumes.saturating_sub(1));
-    ftt_to_ec(ftt, num_volumes).unwrap_or((1, 0))
+/// Default FTT for new buckets: FTT=1 when possible, FTT=0 for single disk.
+pub fn default_ftt(num_disks: usize) -> usize {
+    1.min(num_disks.saturating_sub(1))
 }
 
 #[derive(Debug, Clone)]
@@ -42,32 +40,16 @@ struct PlacementTopology {
 
 pub struct ErasureSet {
     disks: Vec<Box<dyn Backend>>,
-    default_data: usize,
-    default_parity: usize,
     mrf: Option<Arc<MrfQueue>>,
     placement: RwLock<PlacementTopology>,
 }
 
 impl ErasureSet {
-    pub fn new(
-        disks: Vec<Box<dyn Backend>>,
-        default_data: usize,
-        default_parity: usize,
-    ) -> Result<Self, StorageError> {
-        if default_data == 0 {
+    pub fn new(disks: Vec<Box<dyn Backend>>) -> Result<Self, StorageError> {
+        if disks.is_empty() {
             return Err(StorageError::InvalidConfig(
-                "data shards must be >= 1".to_string(),
+                "at least 1 disk is required".to_string(),
             ));
-        }
-        let total = default_data + default_parity;
-        if disks.len() < total {
-            return Err(StorageError::InvalidConfig(format!(
-                "need at least {} disks (data={} + parity={}), got {}",
-                total,
-                default_data,
-                default_parity,
-                disks.len()
-            )));
         }
         Ok(Self {
             placement: RwLock::new(PlacementTopology {
@@ -82,8 +64,6 @@ impl ErasureSet {
                     .collect(),
             }),
             disks,
-            default_data,
-            default_parity,
             mrf: None,
         })
     }
@@ -92,12 +72,20 @@ impl ErasureSet {
         &self.disks
     }
 
-    pub fn data_n(&self) -> usize {
-        self.default_data
-    }
-
-    pub fn parity_n(&self) -> usize {
-        self.default_parity
+    /// Read bucket FTT from settings and compute (data, parity).
+    /// Falls back to default FTT if bucket has no config (legacy buckets).
+    pub fn bucket_ec(&self, bucket: &str) -> (usize, usize) {
+        if let Some(ec) = self
+            .disks
+            .iter()
+            .find_map(|d| d.read_bucket_settings(bucket).ec)
+        {
+            if let Ok((d, p)) = ftt_to_ec(ec.ftt, self.disks.len()) {
+                return (d, p);
+            }
+        }
+        let ftt = default_ftt(self.disks.len());
+        ftt_to_ec(ftt, self.disks.len()).unwrap_or((1, 0))
     }
 
     pub fn set_mrf(&mut self, mrf: Arc<MrfQueue>) {
@@ -135,28 +123,14 @@ impl ErasureSet {
     }
 
     /// Resolve EC params for a write operation.
-    /// Precedence: per-object FTT > bucket FTT > server defaults.
+    /// Precedence: per-object FTT > bucket FTT.
     fn resolve_ec(&self, bucket: &str, opts: &PutOptions) -> (usize, usize) {
-        // per-object FTT
         if let Some(ftt) = opts.ec_ftt {
             if let Ok((d, p)) = ftt_to_ec(ftt, self.disks.len()) {
                 return (d, p);
             }
         }
-
-        // bucket-level FTT config
-        if let Some(ec) = self
-            .disks
-            .iter()
-            .find_map(|d| d.read_bucket_settings(bucket).ec)
-        {
-            if let Ok((d, p)) = ftt_to_ec(ec.ftt, self.disks.len()) {
-                return (d, p);
-            }
-        }
-
-        // server defaults
-        (self.default_data, self.default_parity)
+        self.bucket_ec(bucket)
     }
 
     /// Read meta from any available disk to get the object's stored EC params.
@@ -221,7 +195,7 @@ impl Store for ErasureSet {
         }
         let (data_n, parity_n) = self
             .read_ec_from_meta(bucket, key)
-            .unwrap_or((self.default_data, self.default_parity));
+            .unwrap_or_else(|| self.bucket_ec(bucket));
         let (data, meta) = read_and_decode(&self.disks, data_n, parity_n, bucket, key)?;
         Ok((data, Self::meta_to_info(bucket, key, &meta)))
     }
@@ -246,7 +220,7 @@ impl Store for ErasureSet {
         // get stored EC params for quorum calculation
         let (data_n, parity_n) = self
             .read_ec_from_meta(bucket, key)
-            .unwrap_or((self.default_data, self.default_parity));
+            .unwrap_or_else(|| self.bucket_ec(bucket));
 
         let mut successes = 0;
         let mut found = false;
@@ -286,6 +260,9 @@ impl Store for ErasureSet {
         if successes == 0 {
             return Err(StorageError::WriteQuorum);
         }
+        // auto-assign default FTT to new bucket
+        let config = EcConfig { ftt: default_ftt(self.disks.len()) };
+        let _ = self.set_ec_config(bucket, &config);
         Ok(())
     }
 
@@ -426,7 +403,7 @@ impl Store for ErasureSet {
 
         let (data_n, parity_n) = self
             .read_ec_from_meta(bucket, key)
-            .unwrap_or((self.default_data, self.default_parity));
+            .unwrap_or_else(|| self.bucket_ec(bucket));
 
         let mut successes = 0;
         let mut found = false;
@@ -541,7 +518,7 @@ impl Store for ErasureSet {
         // for versioned reads, get EC from meta (may differ from defaults)
         let (data_n, parity_n) = self
             .read_ec_from_meta(bucket, key)
-            .unwrap_or((self.default_data, self.default_parity));
+            .unwrap_or_else(|| self.bucket_ec(bucket));
         let (data, meta) =
             read_and_decode_versioned(&self.disks, data_n, parity_n, bucket, key, version_id)?;
         Ok((data, Self::meta_to_info(bucket, key, &meta)))
@@ -677,12 +654,8 @@ impl Store for ErasureSet {
         self.disks.len()
     }
 
-    fn default_data(&self) -> usize {
-        self.default_data
-    }
-
-    fn default_parity(&self) -> usize {
-        self.default_parity
+    fn bucket_ec(&self, bucket: &str) -> (usize, usize) {
+        ErasureSet::bucket_ec(self, bucket)
     }
 }
 
@@ -710,65 +683,15 @@ mod tests {
             .collect()
     }
 
-    fn make_set(paths: &[std::path::PathBuf], data: usize, parity: usize) -> ErasureSet {
-        ErasureSet::new(make_backends(paths), data, parity).unwrap()
-    }
-
-    // -- default_ec tests --
-
-    #[test]
-    fn default_ec_single_volume() {
-        assert_eq!(default_ec(1), (1, 0));
-    }
-
-    #[test]
-    fn default_ec_two_volumes() {
-        assert_eq!(default_ec(2), (1, 1));
-    }
-
-    #[test]
-    fn default_ec_four_volumes() {
-        assert_eq!(default_ec(4), (3, 1));
-    }
-
-    #[test]
-    fn default_ec_eight_volumes() {
-        assert_eq!(default_ec(8), (7, 1));
+    fn make_set(paths: &[std::path::PathBuf]) -> ErasureSet {
+        ErasureSet::new(make_backends(paths)).unwrap()
     }
 
     // -- construction tests --
 
     #[test]
-    fn new_4_disks_2_2() {
-        let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
-        assert_eq!(set.data_n(), 2);
-        assert_eq!(set.parity_n(), 2);
-    }
-
-    #[test]
-    fn new_1_disk_1_0() {
-        let (_base, paths) = make_disk_dirs(1);
-        let set = make_set(&paths, 1, 0);
-        assert_eq!(set.data_n(), 1);
-        assert_eq!(set.parity_n(), 0);
-    }
-
-    #[test]
-    fn new_more_disks_than_needed() {
-        // pool with 6 disks, default EC 2+2 -- should work now
-        let (_base, paths) = make_disk_dirs(6);
-        let set = make_set(&paths, 2, 2);
-        assert_eq!(set.disks().len(), 6);
-        assert_eq!(set.data_n(), 2);
-        assert_eq!(set.parity_n(), 2);
-    }
-
-    #[test]
-    fn new_too_few_disks_fails() {
-        let (_base, paths) = make_disk_dirs(3);
-        let backends = make_backends(&paths);
-        assert!(ErasureSet::new(backends, 2, 2).is_err());
+    fn new_empty_disks_fails() {
+        assert!(ErasureSet::new(Vec::new()).is_err());
     }
 
     // -- put + get round-trip across configs --
@@ -791,7 +714,7 @@ mod tests {
         for cfg in CONFIGS {
             let total = cfg.data + cfg.parity;
             let (_base, paths) = make_disk_dirs(total);
-            let set = make_set(&paths, cfg.data, cfg.parity);
+            let set = make_set(&paths);
             set.make_bucket("test").unwrap();
 
             let payload = b"the quick brown fox jumps over the lazy dog";
@@ -820,7 +743,7 @@ mod tests {
         for cfg in CONFIGS {
             let total = cfg.data + cfg.parity;
             let (_base, paths) = make_disk_dirs(total);
-            let set = make_set(&paths, cfg.data, cfg.parity);
+            let set = make_set(&paths);
             set.make_bucket("test").unwrap();
 
             let payload = b"head test data";
@@ -842,7 +765,7 @@ mod tests {
     fn per_object_ftt_override() {
         // 6-disk pool with default FTT=2 (4+2)
         let (_base, paths) = make_disk_dirs(6);
-        let set = make_set(&paths, 4, 2);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
 
         // write with FTT=1 (5+1, uses all 6 disks)
@@ -876,7 +799,7 @@ mod tests {
     fn per_object_ftt_max_parity() {
         // 6-disk pool, write with FTT=5 (1+5, max parity)
         let (_base, paths) = make_disk_dirs(6);
-        let set = make_set(&paths, 5, 1);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
 
         let payload = b"max parity test data";
@@ -902,13 +825,14 @@ mod tests {
     #[test]
     fn bucket_ec_config() {
         let (_base, paths) = make_disk_dirs(6);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
 
-        // no config initially
-        assert!(set.get_ec_config("test").unwrap().is_none());
+        // bucket gets default FTT=1 on creation
+        let loaded = set.get_ec_config("test").unwrap().unwrap();
+        assert_eq!(loaded.ftt, 1);
 
-        // set bucket EC config to FTT=3 (on 6 disks -> 3+3)
+        // update to FTT=3 (on 6 disks -> 3+3)
         let config = EcConfig { ftt: 3 };
         set.set_ec_config("test", &config).unwrap();
 
@@ -932,7 +856,7 @@ mod tests {
     #[test]
     fn per_object_overrides_bucket_config() {
         let (_base, paths) = make_disk_dirs(6);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
 
         // set bucket config to FTT=3 (3+3)
@@ -954,7 +878,7 @@ mod tests {
     #[test]
     fn ec_config_validation() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
 
         // ftt >= disks should fail
@@ -997,17 +921,9 @@ mod tests {
     }
 
     #[test]
-    fn default_ec_unchanged() {
-        assert_eq!(default_ec(1), (1, 0));
-        assert_eq!(default_ec(2), (1, 1));
-        assert_eq!(default_ec(4), (3, 1));
-        assert_eq!(default_ec(6), (5, 1));
-    }
-
-    #[test]
     fn resolve_ec_ftt_per_object() {
         let (_base, paths) = make_disk_dirs(6);
-        let set = make_set(&paths, 5, 1);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
 
         // FTT=2 on 6 disks should give 4+2
@@ -1024,7 +940,7 @@ mod tests {
     #[test]
     fn resolve_ec_bucket_ftt() {
         let (_base, paths) = make_disk_dirs(6);
-        let set = make_set(&paths, 5, 1);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
 
         // set bucket config with FTT=2 on 6 disks -> 4+2
@@ -1048,8 +964,9 @@ mod tests {
         for cfg in CONFIGS.iter().filter(|c| c.parity > 0) {
             let total = cfg.data + cfg.parity;
             let (_base, paths) = make_disk_dirs(total);
-            let set = make_set(&paths, cfg.data, cfg.parity);
+            let set = make_set(&paths);
             set.make_bucket("test").unwrap();
+            set.set_ec_config("test", &EcConfig { ftt: cfg.parity }).unwrap();
 
             let payload = b"resilience test data that should survive disk failures";
             let opts = PutOptions {
@@ -1079,8 +996,9 @@ mod tests {
         for cfg in CONFIGS.iter().filter(|c| c.parity > 0) {
             let total = cfg.data + cfg.parity;
             let (_base, paths) = make_disk_dirs(total);
-            let set = make_set(&paths, cfg.data, cfg.parity);
+            let set = make_set(&paths);
             set.make_bucket("test").unwrap();
+            set.set_ec_config("test", &EcConfig { ftt: cfg.parity }).unwrap();
 
             let payload = b"this should fail";
             let opts = PutOptions {
@@ -1114,7 +1032,7 @@ mod tests {
     #[test]
     fn bitrot_one_corrupt_shard_recovers() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
 
         let payload = b"bitrot test data";
@@ -1136,7 +1054,7 @@ mod tests {
     #[test]
     fn bitrot_too_many_corrupt_fails() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
 
         let payload = b"bitrot fail test";
@@ -1164,7 +1082,7 @@ mod tests {
     #[test]
     fn make_bucket_creates_on_all_disks() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("mybucket").unwrap();
         for path in &paths {
             assert!(path.join("mybucket").is_dir());
@@ -1174,7 +1092,7 @@ mod tests {
     #[test]
     fn head_bucket_true_after_create() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         assert!(!set.head_bucket("nope").unwrap());
         set.make_bucket("test").unwrap();
         assert!(set.head_bucket("test").unwrap());
@@ -1183,7 +1101,7 @@ mod tests {
     #[test]
     fn list_buckets_returns_all() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("alpha").unwrap();
         set.make_bucket("beta").unwrap();
         let buckets = set.list_buckets().unwrap();
@@ -1195,7 +1113,7 @@ mod tests {
     #[test]
     fn delete_object_removes_from_all_disks() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
@@ -1214,7 +1132,7 @@ mod tests {
     #[test]
     fn list_objects_returns_all() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
@@ -1234,7 +1152,7 @@ mod tests {
     #[test]
     fn list_objects_with_prefix() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
@@ -1261,7 +1179,7 @@ mod tests {
     #[test]
     fn list_objects_with_delimiter() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
@@ -1292,7 +1210,7 @@ mod tests {
     #[test]
     fn write_quorum_failure() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
 
         for path in &paths {
@@ -1310,7 +1228,7 @@ mod tests {
     #[test]
     fn single_disk_no_parity_write_fails_when_disk_gone() {
         let (_base, paths) = make_disk_dirs(1);
-        let set = make_set(&paths, 1, 0);
+        let set = make_set(&paths);
         set.make_bucket("test").unwrap();
 
         std::fs::remove_dir_all(&paths[0]).unwrap();

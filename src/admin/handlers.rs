@@ -14,7 +14,7 @@ use crate::query::parse_query;
 use crate::storage::Backend;
 use crate::storage::Store;
 use crate::storage::bitrot::sha256_hex;
-use crate::storage::erasure_set::{ErasureSet, default_ec};
+use crate::storage::erasure_set::ErasureSet;
 use crate::storage::pathing;
 
 type BoxBody = Full<Bytes>;
@@ -49,8 +49,6 @@ pub struct AdminHandler {
 /// Subset of server config needed by admin endpoints.
 pub struct AdminConfig {
     pub listen: String,
-    pub data_shards: usize,
-    pub parity_shards: usize,
     pub total_disks: usize,
     pub auth_enabled: bool,
     pub scan_interval: String,
@@ -67,11 +65,8 @@ impl AdminConfig {
         identity: &crate::cluster::identity::ResolvedIdentity,
         cfg: &Config,
     ) -> Self {
-        let (data_shards, parity_shards) = default_ec(cfg.volumes.len());
         Self {
             listen: cfg.listen.clone(),
-            data_shards,
-            parity_shards,
             total_disks: cfg.volumes.len(),
             auth_enabled: !cfg.no_auth,
             scan_interval: cfg.scan_interval.clone(),
@@ -132,8 +127,7 @@ impl AdminHandler {
             server: "abixio",
             version: env!("CARGO_PKG_VERSION"),
             uptime_secs: self.stats.uptime_secs(),
-            data_shards: self.config.data_shards,
-            parity_shards: self.config.parity_shards,
+            default_ftt: crate::storage::erasure_set::default_ftt(self.config.total_disks),
             total_disks: self.config.total_disks,
             listen: self.config.listen.clone(),
             auth_enabled: self.config.auth_enabled,
@@ -330,19 +324,24 @@ impl AdminHandler {
             Ok(Some(config)) => {
                 let disk_count = self.store.disk_count();
                 let (data, parity) = crate::storage::erasure_set::ftt_to_ec(config.ftt, disk_count)
-                    .unwrap_or((self.config.data_shards, self.config.parity_shards));
+                    .unwrap_or((1, 0));
                 json_response(&serde_json::json!({
                     "ftt": config.ftt,
                     "data": data,
                     "parity": parity,
                 }))
             }
-            Ok(None) => json_response(&serde_json::json!({
-                "ftt": self.config.parity_shards,
-                "data": self.config.data_shards,
-                "parity": self.config.parity_shards,
-                "source": "server_default"
-            })),
+            Ok(None) => {
+                let ftt = crate::storage::erasure_set::default_ftt(self.store.disk_count());
+                let (data, parity) = crate::storage::erasure_set::ftt_to_ec(ftt, self.store.disk_count())
+                    .unwrap_or((1, 0));
+                json_response(&serde_json::json!({
+                    "ftt": ftt,
+                    "data": data,
+                    "parity": parity,
+                    "source": "bucket_default"
+                }))
+            }
             Err(e) => error_json(map_storage_status(&e), &e.to_string()),
         }
     }
@@ -399,8 +398,6 @@ impl AdminHandler {
 
         match heal_object(
             &self.heal_disks,
-            self.config.data_shards,
-            self.config.parity_shards,
             &bucket,
             &key,
         ) {

@@ -1219,10 +1219,11 @@ impl S3Handler {
             Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
         };
 
+        let (data_n, parity_n) = self.store.bucket_ec(bucket);
         match crate::multipart::put_part(
             self.store.disks(),
-            self.store.data_n(),
-            self.store.parity_n(),
+            data_n,
+            parity_n,
             bucket,
             key,
             &upload_id,
@@ -1271,10 +1272,11 @@ impl S3Handler {
             .map(|p| (p.part_number, p.etag.clone()))
             .collect();
 
+        let (data_n, parity_n) = self.store.bucket_ec(bucket);
         match crate::multipart::complete_upload(
             self.store.disks(),
-            self.store.data_n(),
-            self.store.parity_n(),
+            data_n,
+            parity_n,
             bucket,
             key,
             &upload_id,

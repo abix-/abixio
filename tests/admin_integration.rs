@@ -39,7 +39,7 @@ async fn start_server_with_cluster(
         .iter()
         .map(|p| Box::new(LocalVolume::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
-    let mut set = ErasureSet::new(backends, 2, 2).unwrap();
+    let mut set = ErasureSet::new(backends).unwrap();
 
     let mrf = Arc::new(MrfQueue::new(1000));
     set.set_mrf(Arc::clone(&mrf));
@@ -70,8 +70,6 @@ async fn start_server_with_cluster(
 
     let admin_config = AdminConfig {
         listen: ":0".to_string(),
-        data_shards: 2,
-        parity_shards: 2,
         total_disks: 4,
         auth_enabled: false,
         scan_interval: "10m".to_string(),
@@ -126,14 +124,12 @@ async fn start_server_with_cluster(
 
 async fn start_server_pool(
     paths: &[std::path::PathBuf],
-    data: usize,
-    parity: usize,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let backends: Vec<Box<dyn Backend>> = paths
         .iter()
         .map(|p| Box::new(LocalVolume::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
-    let mut set = ErasureSet::new(backends, data, parity).unwrap();
+    let mut set = ErasureSet::new(backends).unwrap();
 
     let mrf = Arc::new(MrfQueue::new(1000));
     set.set_mrf(Arc::clone(&mrf));
@@ -164,8 +160,6 @@ async fn start_server_pool(
 
     let admin_config = AdminConfig {
         listen: ":0".to_string(),
-        data_shards: data,
-        parity_shards: parity,
         total_disks: paths.len(),
         auth_enabled: false,
         scan_interval: "10m".to_string(),
@@ -245,8 +239,7 @@ async fn admin_status_returns_json() {
 
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["server"], "abixio");
-    assert_eq!(body["data_shards"], 2);
-    assert_eq!(body["parity_shards"], 2);
+    assert_eq!(body["default_ftt"], 1);
     assert_eq!(body["total_disks"], 4);
     assert_eq!(body["auth_enabled"], false);
     assert_eq!(body["cluster"]["state"], "ready");
@@ -489,8 +482,8 @@ async fn admin_inspect_object_shows_all_shards() {
     assert_eq!(body["bucket"], "testbucket");
     assert_eq!(body["key"], "hello.txt");
     assert_eq!(body["size"], 11);
-    assert_eq!(body["erasure"]["data"], 2);
-    assert_eq!(body["erasure"]["parity"], 2);
+    assert_eq!(body["erasure"]["data"], 3);
+    assert_eq!(body["erasure"]["parity"], 1);
 
     let shards = body["shards"].as_array().unwrap();
     assert_eq!(shards.len(), 4);
@@ -592,14 +585,11 @@ async fn admin_heal_missing_shards_repairs() {
         .await
         .unwrap();
 
-    // delete shards from 2 disks (within parity tolerance)
+    // delete shard from 1 disk (within FTT=1 tolerance)
     let shards = inspect["shards"].as_array().unwrap();
     let disk0 = shards[0]["disk"].as_u64().unwrap() as usize;
-    let disk1 = shards[1]["disk"].as_u64().unwrap() as usize;
     let obj_dir0 = paths[disk0].join("testbucket").join("fixme.txt");
-    let obj_dir1 = paths[disk1].join("testbucket").join("fixme.txt");
     let _ = std::fs::remove_dir_all(&obj_dir0);
-    let _ = std::fs::remove_dir_all(&obj_dir1);
 
     // verify shards missing
     let inspect2: serde_json::Value = client
@@ -811,7 +801,7 @@ async fn s3_still_works_with_admin_enabled() {
 #[tokio::test]
 async fn admin_get_ec_config_returns_server_default() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     // create bucket
@@ -826,16 +816,15 @@ async fn admin_get_ec_config_returns_server_default() {
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["ftt"], 2);
-    assert_eq!(body["data"], 2);
-    assert_eq!(body["parity"], 2);
-    assert_eq!(body["source"], "server_default");
+    assert_eq!(body["ftt"], 1);
+    assert_eq!(body["data"], 5);
+    assert_eq!(body["parity"], 1);
 }
 
 #[tokio::test]
 async fn admin_set_and_get_ec_config() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/ecbucket")).send().await.unwrap();
@@ -871,7 +860,7 @@ async fn admin_set_and_get_ec_config() {
 #[tokio::test]
 async fn admin_set_ec_config_invalid_params() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/ecbucket")).send().await.unwrap();
@@ -906,7 +895,7 @@ async fn admin_set_ec_config_invalid_params() {
 #[tokio::test]
 async fn admin_ec_config_nonexistent_bucket_returns_404() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     let resp = client
@@ -920,7 +909,7 @@ async fn admin_ec_config_nonexistent_bucket_returns_404() {
 #[tokio::test]
 async fn admin_bucket_ec_config_affects_new_objects() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/ecobj")).send().await.unwrap();
@@ -959,7 +948,7 @@ async fn admin_bucket_ec_config_affects_new_objects() {
 #[tokio::test]
 async fn admin_inspect_object_shows_per_object_ec() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/insp")).send().await.unwrap();
@@ -995,7 +984,7 @@ async fn admin_inspect_object_shows_per_object_ec() {
 #[tokio::test]
 async fn admin_set_bucket_ec_via_ftt() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/fttadmin")).send().await.unwrap();
@@ -1034,7 +1023,7 @@ async fn admin_set_bucket_ec_via_ftt() {
 #[tokio::test]
 async fn admin_set_bucket_ec_ftt_exceeding_disks_returns_400() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/fttbadmin")).send().await.unwrap();

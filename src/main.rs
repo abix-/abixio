@@ -17,7 +17,7 @@ use abixio::s3::router;
 use abixio::storage::Backend;
 use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::remote_volume::RemoteVolume;
-use abixio::storage::erasure_set::{ErasureSet, default_ec};
+use abixio::storage::erasure_set::ErasureSet;
 use abixio::storage::storage_server::StorageServer;
 
 #[tokio::main]
@@ -100,10 +100,10 @@ async fn main() {
     let remote_count = total_backends - local_count;
     tracing::info!(local = local_count, remote = remote_count, total = total_backends, "backends ready");
 
-    let (default_data, default_parity) = default_ec(backends.len());
-    tracing::info!(data = default_data, parity = default_parity, "auto-computed EC defaults");
+    let default_ftt = abixio::storage::erasure_set::default_ftt(backends.len());
+    tracing::info!(ftt = default_ftt, disks = backends.len(), "default bucket FTT");
 
-    let mut set = match ErasureSet::new(backends, default_data, default_parity) {
+    let mut set = match ErasureSet::new(backends) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {}", e);
@@ -133,8 +133,6 @@ async fn main() {
     if let Some(rx) = mrf.take_receiver() {
         tokio::spawn(mrf_drain_worker(
             Arc::clone(&heal_disks),
-            default_data,
-            default_parity,
             Arc::clone(&mrf),
             rx,
             shutdown_rx.clone(),
@@ -144,8 +142,6 @@ async fn main() {
     // spawn background scanner
     tokio::spawn(scanner_loop(
         Arc::clone(&heal_disks),
-        default_data,
-        default_parity,
         Arc::clone(&mrf),
         scan_state,
         cfg.scan_interval_duration(),

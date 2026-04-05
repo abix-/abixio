@@ -43,11 +43,9 @@ itself.
 | Priority | Source | How to set |
 |---|---|---|
 | 1 (highest) | Per-object FTT | `x-amz-meta-ec-ftt` header on PUT |
-| 2 | Bucket FTT | Admin API: `PUT /_admin/bucket/{name}/ec?ftt=N` |
-| 3 (lowest) | Server default | Auto-computed from volume count (FTT=1) |
+| 2 (lowest) | Bucket FTT | Auto-assigned at bucket creation (FTT=1), changeable via admin API |
 
-If no override is specified, objects use the server default: FTT=1 for 2+
-volumes, FTT=0 for 1 volume.
+Every bucket gets FTT=1 at creation (FTT=0 for single-disk deployments).
 
 ## Per-object EC via S3 headers
 

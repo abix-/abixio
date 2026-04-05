@@ -21,6 +21,14 @@ async fn distributed_placement_exact_map_matches_raw_disk_state() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
+    // set bucket FTT=2 (2+2 on 4 shards used)
+    let resp = client
+        .put(endpoint(&harness.nodes[0], "/_admin/bucket/testbucket/ec?ftt=2"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
     let payload = "hello distributed placement";
     let resp = client
         .put(endpoint(&harness.nodes[1], "/testbucket/alpha.txt"))
@@ -42,13 +50,14 @@ async fn distributed_placement_exact_map_matches_raw_disk_state() {
         .await
         .unwrap();
 
-    assert_eq!(inspect["erasure"]["data"], 2);
+    // FTT=2 on 8 disks -> 6+2
+    assert_eq!(inspect["erasure"]["data"], 6);
     assert_eq!(inspect["erasure"]["parity"], 2);
     assert_eq!(inspect["erasure"]["epoch_id"], 7);
     assert_eq!(inspect["erasure"]["set_id"], "cluster-set-4x2");
 
     let shards = inspect["shards"].as_array().unwrap();
-    assert_eq!(shards.len(), 4);
+    assert_eq!(shards.len(), 8);
     let distinct_nodes = shards
         .iter()
         .map(|shard| shard["node_id"].as_str().unwrap())
@@ -70,6 +79,11 @@ async fn distributed_placement_is_identical_from_every_node() {
 
     client
         .put(endpoint(&harness.nodes[0], "/testbucket"))
+        .send()
+        .await
+        .unwrap();
+    client
+        .put(endpoint(&harness.nodes[0], "/_admin/bucket/testbucket/ec?ftt=2"))
         .send()
         .await
         .unwrap();
@@ -109,6 +123,11 @@ async fn distributed_read_survives_one_node_loss_for_2_plus_2() {
 
     client
         .put(endpoint(&harness.nodes[0], "/testbucket"))
+        .send()
+        .await
+        .unwrap();
+    client
+        .put(endpoint(&harness.nodes[0], "/_admin/bucket/testbucket/ec?ftt=2"))
         .send()
         .await
         .unwrap();

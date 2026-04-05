@@ -348,7 +348,7 @@ impl ClusterHarness {
                 )) as Box<dyn Backend>
             })
             .collect::<Vec<_>>();
-        let mut set = ErasureSet::new(backends, 2, 2).unwrap();
+        let mut set = ErasureSet::new(backends).unwrap();
         set.set_mrf(Arc::new(MrfQueue::new(1000)));
         set.set_placement_topology(7, "cluster-set-4x2", placement_volumes.to_vec())
             .unwrap();
@@ -428,8 +428,6 @@ async fn start_server(
         heal_stats,
         AdminConfig {
             listen: ":0".to_string(),
-            data_shards: 2,
-            parity_shards: 2,
             total_disks: 8,
             auth_enabled: false,
             scan_interval: "10m".to_string(),

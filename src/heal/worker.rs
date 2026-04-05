@@ -37,8 +37,6 @@ enum ShardStatus {
 /// EC params are derived from the object's stored metadata (per-object EC).
 pub fn heal_object(
     disks: &[Box<dyn Backend>],
-    default_data: usize,
-    default_parity: usize,
     bucket: &str,
     key: &str,
 ) -> Result<HealResult, StorageError> {
@@ -53,11 +51,11 @@ pub fn heal_object(
         }
     }
 
-    // derive EC params from stored metadata, fall back to defaults
+    // derive EC params from stored metadata
     let first_meta = reads.iter().flatten().next().map(|(_, m)| m);
     let (data_n, parity_n) = match first_meta {
         Some(m) => (m.erasure.data, m.erasure.parity),
-        None => (default_data, default_parity),
+        None => return Err(StorageError::ObjectNotFound),
     };
     let total = data_n + parity_n;
 
@@ -171,8 +169,6 @@ fn find_consensus_meta(
 /// MRF drain worker: pulls entries from the queue and heals them.
 pub async fn mrf_drain_worker(
     disks: Arc<Vec<Box<dyn Backend>>>,
-    data_n: usize,
-    parity_n: usize,
     mrf: Arc<MrfQueue>,
     mut rx: tokio::sync::mpsc::Receiver<MrfEntry>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
@@ -184,7 +180,7 @@ pub async fn mrf_drain_worker(
                     let disks = Arc::clone(&disks);
                     let bucket = entry.bucket.clone();
                     let key = entry.key.clone();
-                    move || heal_object(&disks, data_n, parity_n, &bucket, &key)
+                    move || heal_object(&disks, &bucket, &key)
                 })
                 .await;
 
@@ -231,8 +227,6 @@ pub async fn mrf_drain_worker(
 /// shard integrity, and enqueues degraded objects to the MRF queue.
 pub async fn scanner_loop(
     disks: Arc<Vec<Box<dyn Backend>>>,
-    data_n: usize,
-    parity_n: usize,
     mrf: Arc<MrfQueue>,
     scan_state: Arc<ScanState>,
     scan_interval: Duration,
@@ -245,7 +239,7 @@ pub async fn scanner_loop(
         let scan_state2 = Arc::clone(&scan_state);
 
         let _ = tokio::task::spawn_blocking(move || {
-            run_scan_cycle(&scan_disks, data_n, parity_n, &scan_mrf, &scan_state2);
+            run_scan_cycle(&scan_disks, &scan_mrf, &scan_state2);
         })
         .await;
 
@@ -262,8 +256,6 @@ pub async fn scanner_loop(
 /// Single scan cycle: enumerate all buckets/objects, check integrity.
 fn run_scan_cycle(
     disks: &[Box<dyn Backend>],
-    data_n: usize,
-    parity_n: usize,
     mrf: &MrfQueue,
     scan_state: &ScanState,
 ) {
@@ -285,7 +277,7 @@ fn run_scan_cycle(
             }
 
             // check shard health across all disks
-            if object_needs_healing(disks, data_n, parity_n, bucket, key) {
+            if object_needs_healing(disks, bucket, key) {
                 let _ = mrf.enqueue(MrfEntry {
                     bucket: bucket.clone(),
                     key: key.clone(),
@@ -301,8 +293,6 @@ fn run_scan_cycle(
 /// EC params are read from the object's stored metadata.
 fn object_needs_healing(
     disks: &[Box<dyn Backend>],
-    _default_data: usize,
-    _default_parity: usize,
     bucket: &str,
     key: &str,
 ) -> bool {
@@ -367,8 +357,8 @@ mod tests {
             .collect()
     }
 
-    fn make_set(paths: &[std::path::PathBuf], data: usize, parity: usize) -> ErasureSet {
-        ErasureSet::new(make_backends(paths), data, parity).unwrap()
+    fn make_set(paths: &[std::path::PathBuf]) -> ErasureSet {
+        ErasureSet::new(make_backends(paths)).unwrap()
     }
 
     fn put_test_object(set: &ErasureSet, bucket: &str, key: &str, payload: &[u8]) {
@@ -383,18 +373,18 @@ mod tests {
     #[test]
     fn heal_healthy_object_returns_healthy() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         put_test_object(&set, "test", "key", b"heal test data");
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, 2, 2, "test", "key").unwrap();
+        let result = heal_object(&disks, "test", "key").unwrap();
         assert!(matches!(result, HealResult::Healthy));
     }
 
     #[test]
     fn heal_missing_shard_repairs() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         put_test_object(&set, "test", "key", b"heal missing shard");
 
         // delete shard from one disk
@@ -404,7 +394,7 @@ mod tests {
         }
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, 2, 2, "test", "key").unwrap();
+        let result = heal_object(&disks, "test", "key").unwrap();
         assert!(matches!(result, HealResult::Repaired { shards_fixed } if shards_fixed >= 1));
 
         // verify the object is now fully readable
@@ -415,7 +405,7 @@ mod tests {
     #[test]
     fn heal_corrupt_shard_repairs() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         put_test_object(&set, "test", "key", b"heal corrupt shard");
 
         // corrupt shard.dat on disk 0
@@ -425,7 +415,7 @@ mod tests {
         }
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, 2, 2, "test", "key").unwrap();
+        let result = heal_object(&disks, "test", "key").unwrap();
         assert!(matches!(result, HealResult::Repaired { shards_fixed } if shards_fixed >= 1));
 
         // verify data integrity after heal
@@ -436,7 +426,7 @@ mod tests {
     #[test]
     fn heal_too_many_missing_is_unrecoverable() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         put_test_object(&set, "test", "key", b"unrecoverable");
 
         // delete 3 of 4 disk shards (parity=2, so max tolerable is 2)
@@ -448,7 +438,7 @@ mod tests {
         }
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, 2, 2, "test", "key");
+        let result = heal_object(&disks, "test", "key");
         // either Unrecoverable or ReadQuorum error -- both mean "can't heal"
         match result {
             Ok(HealResult::Unrecoverable) => {}
@@ -459,9 +449,18 @@ mod tests {
 
     #[test]
     fn heal_missing_two_shards_repairs() {
+        use crate::storage::metadata::EcConfig;
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         put_test_object(&set, "test", "key", b"two missing shards");
+        // upgrade bucket to FTT=2 (2+2) so we can test 2-disk failure
+        set.set_ec_config("test", &EcConfig { ftt: 2 }).unwrap();
+        // rewrite with FTT=2
+        set.put_object("test", "key", b"two missing shards", PutOptions {
+            content_type: "text/plain".to_string(),
+            ec_ftt: Some(2),
+            ..Default::default()
+        }).unwrap();
 
         // delete 2 of 4 disk shards (exactly at parity limit)
         for i in 0..2 {
@@ -472,7 +471,7 @@ mod tests {
         }
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, 2, 2, "test", "key").unwrap();
+        let result = heal_object(&disks, "test", "key").unwrap();
         assert!(matches!(result, HealResult::Repaired { shards_fixed } if shards_fixed == 2));
 
         // verify full integrity
@@ -483,21 +482,21 @@ mod tests {
     #[test]
     fn heal_nonexistent_object_returns_not_found() {
         let (_base, paths) = make_disk_dirs(4);
-        let _set = make_set(&paths, 2, 2);
+        let _set = make_set(&paths);
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, 2, 2, "test", "nope");
+        let result = heal_object(&disks, "test", "nope");
         assert!(result.is_err());
     }
 
     #[test]
     fn object_needs_healing_detects_missing_shard() {
         let (_base, paths) = make_disk_dirs(4);
-        let set = make_set(&paths, 2, 2);
+        let set = make_set(&paths);
         put_test_object(&set, "test", "key", b"check healing");
 
         let disks = make_backends(&paths);
-        assert!(!object_needs_healing(&disks, 2, 2, "test", "key"));
+        assert!(!object_needs_healing(&disks, "test", "key"));
 
         // delete one shard
         let obj_dir = paths[0].join("test").join("key");
@@ -505,17 +504,17 @@ mod tests {
             std::fs::remove_dir_all(&obj_dir).unwrap();
         }
 
-        assert!(object_needs_healing(&disks, 2, 2, "test", "key"));
+        assert!(object_needs_healing(&disks, "test", "key"));
     }
 
     #[test]
     fn heal_single_disk_no_parity() {
         let (_base, paths) = make_disk_dirs(1);
-        let set = make_set(&paths, 1, 0);
+        let set = make_set(&paths);
         put_test_object(&set, "test", "key", b"no parity");
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, 1, 0, "test", "key").unwrap();
+        let result = heal_object(&disks, "test", "key").unwrap();
         assert!(matches!(result, HealResult::Healthy));
     }
 }

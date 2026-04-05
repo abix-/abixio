@@ -36,7 +36,7 @@ async fn start_server_with_cluster(
         .iter()
         .map(|p| Box::new(LocalVolume::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
-    let set = Arc::new(ErasureSet::new(backends, 2, 2).unwrap());
+    let set = Arc::new(ErasureSet::new(backends).unwrap());
     let cluster = Arc::new(
         ClusterManager::new(ClusterConfig {
             node_id: "test-node".to_string(),
@@ -83,14 +83,12 @@ async fn start_server_with_cluster(
 
 async fn start_server_pool(
     paths: &[std::path::PathBuf],
-    data: usize,
-    parity: usize,
 ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let backends: Vec<Box<dyn Backend>> = paths
         .iter()
         .map(|p| Box::new(LocalVolume::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
-    let set = Arc::new(ErasureSet::new(backends, data, parity).unwrap());
+    let set = Arc::new(ErasureSet::new(backends).unwrap());
     let cluster = Arc::new(
         ClusterManager::new(ClusterConfig {
             node_id: "test-node".to_string(),
@@ -2849,7 +2847,7 @@ async fn bucket_policy_delete_idempotent() {
 #[tokio::test]
 async fn per_object_ec_headers_on_put_and_get() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     // create bucket
@@ -2887,7 +2885,7 @@ async fn per_object_ec_headers_on_put_and_get() {
 #[tokio::test]
 async fn per_object_ec_invalid_params_returns_400() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/ectest")).send().await.unwrap();
@@ -2916,7 +2914,7 @@ async fn per_object_ec_invalid_params_returns_400() {
 #[tokio::test]
 async fn per_object_ec_mixed_ec_in_same_bucket() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/mixed")).send().await.unwrap();
@@ -2982,7 +2980,7 @@ async fn per_object_ec_mixed_ec_in_same_bucket() {
 #[tokio::test]
 async fn per_object_ec_delete_mixed_ec_objects() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/delmix")).send().await.unwrap();
@@ -3035,7 +3033,7 @@ async fn per_object_ec_delete_mixed_ec_objects() {
 #[tokio::test]
 async fn per_object_ec_survives_disk_failures() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/resilient")).send().await.unwrap();
@@ -3072,7 +3070,7 @@ async fn per_object_ec_survives_disk_failures() {
 async fn per_object_ec_default_uses_pool_subset() {
     // 6 disks, default EC 2+2 -- should only use 4 of 6 disks
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/pooltest")).send().await.unwrap();
@@ -3093,7 +3091,7 @@ async fn per_object_ec_default_uses_pool_subset() {
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.bytes().await.unwrap().as_ref(), b"pool test data");
 
-    // count how many disks have the object (should be exactly 4 = 2+2)
+    // default FTT=1 on 6 disks -> 5+1, uses all 6 disks
     let mut disks_with_obj = 0;
     for p in &paths {
         if p.join("pooltest").join("obj").join("meta.json").exists() {
@@ -3101,8 +3099,8 @@ async fn per_object_ec_default_uses_pool_subset() {
         }
     }
     assert_eq!(
-        disks_with_obj, 4,
-        "default EC 2+2 should use exactly 4 of 6 disks"
+        disks_with_obj, 6,
+        "default FTT=1 on 6 disks -> 5+1 should use all 6 disks"
     );
 }
 
@@ -3113,7 +3111,7 @@ async fn per_object_ec_default_uses_pool_subset() {
 #[tokio::test]
 async fn ftt_header_sets_correct_ec() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/fttbucket")).send().await.unwrap();
@@ -3141,7 +3139,7 @@ async fn ftt_header_sets_correct_ec() {
 #[tokio::test]
 async fn ftt_zero_means_no_parity() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/ftt0bucket")).send().await.unwrap();
@@ -3177,7 +3175,7 @@ async fn ftt_zero_means_no_parity() {
 #[tokio::test]
 async fn ftt_exceeding_disks_returns_400() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/fttbadbucket")).send().await.unwrap();
@@ -3196,7 +3194,7 @@ async fn ftt_exceeding_disks_returns_400() {
 #[tokio::test]
 async fn ftt_object_survives_expected_failures() {
     let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
 
     client.put(url(&addr, "/fttsurvive")).send().await.unwrap();

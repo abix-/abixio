@@ -132,9 +132,9 @@ On later boots, the node reloads identity from disk and checks quorum. If quorum
 
 ## Erasure Coding
 
-AbixIO uses failures-to-tolerate (FTT) as the primary EC interface. FTT is the number of volume failures an object can survive. The system computes the optimal data/parity layout automatically.
+Every bucket has an FTT (failures to tolerate) setting. FTT is the number of volume failures an object can survive. New buckets default to FTT=1. The system computes optimal data/parity from FTT and disk count.
 
-| Volumes | Default FTT | Auto EC | Behavior |
+| Volumes | Bucket FTT | Auto EC | Behavior |
 |---|---|---|---|
 | 1 | 0 | `1+0` | Plain object storage. No redundancy. |
 | 2 | 1 | `1+1` | Mirror. Survives 1 failure. |
@@ -155,7 +155,7 @@ Override per bucket through the admin API:
 curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?ftt=2"
 ```
 
-Precedence: per-object FTT > bucket FTT > server default.
+Precedence: per-object FTT > bucket FTT.
 
 ## S3 API Coverage
 
