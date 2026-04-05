@@ -68,6 +68,8 @@ src/
     errors.rs             # S3 error codes + XML + error mapping
   admin/
     handlers.rs           # Admin API handlers (status, disks, healing, inspect)
+  multipart/
+    mod.rs                # multipart upload state, part encode/decode, assembly
   heal/
     mod.rs
     mrf.rs                # MRF queue (bounded channel, dedup)
@@ -86,6 +88,7 @@ docs/
   error-responses.md      # error XML format, codes, request ID
   healing.md              # erasure healing, MRF, scanner
   encryption.md           # encryption design (pending)
+  multipart-upload.md     # multipart upload lifecycle
   s3-compliance.md        # S3 API compliance audit
 ```
 

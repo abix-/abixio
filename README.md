@@ -48,16 +48,17 @@ Works with AWS CLI, rclone, MinIO client, boto3, or any S3-compatible tool.
 
 ## S3 API coverage
 
-20 of ~100 S3 API operations implemented. The implemented endpoints are
-well-tested (155 tests) but the overall API surface coverage is low.
+26 of ~100 S3 API operations implemented. 175 tests.
 See [docs/s3-compliance.md](docs/s3-compliance.md) for the full audit.
 
 **Implemented:** ListBuckets, CreateBucket, HeadBucket, DeleteBucket,
 ListObjectsV2, PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects,
 CopyObject, Get/Put/DeleteObjectTagging, Get/Put/DeleteBucketTagging,
-PutBucketVersioning, GetBucketVersioning, ListObjectVersions.
+PutBucketVersioning, GetBucketVersioning, ListObjectVersions,
+CreateMultipartUpload, UploadPart, CompleteMultipartUpload,
+AbortMultipartUpload, ListParts, ListMultipartUploads.
 
-**Not implemented:** Multipart upload, bucket policies, lifecycle rules,
+**Not implemented:** Bucket policies, lifecycle rules,
 encryption config, replication, cloud storage backends.
 
 ## Documentation
@@ -71,6 +72,7 @@ encryption config, replication, cloud storage backends.
 | [presigned-urls.md](docs/presigned-urls.md) | Presigned URL authentication |
 | [conditional-requests.md](docs/conditional-requests.md) | If-Match, If-None-Match, etc. |
 | [error-responses.md](docs/error-responses.md) | Error XML format, codes, request ID |
+| [multipart-upload.md](docs/multipart-upload.md) | Multipart upload lifecycle and disk layout |
 | [healing.md](docs/healing.md) | Erasure healing, MRF queue, scanner |
 | [s3-compliance.md](docs/s3-compliance.md) | S3 API compliance audit |
 

@@ -50,7 +50,7 @@ These are S3 features that self-hosted object storage servers commonly skip.
 
 | Category | Operations | Rating | Notes |
 |---|---|---|---|
-| Multipart upload | CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload, ListMultipartUploads, ListParts | 1/10 | Required for files >5GB. Should implement eventually. |
+| Multipart upload | CreateMultipartUpload, UploadPart, CompleteMultipartUpload, AbortMultipartUpload, ListMultipartUploads, ListParts | 8/10 | All 6 endpoints implemented. Each part erasure-encoded. 16 integration tests. |
 | Object lock / retention | GetObjectRetention, PutObjectRetention, GetObjectLegalHold, PutObjectLegalHold, GetObjectLockConfiguration, PutObjectLockConfiguration | 1/10 | Governance/compliance. Not in current scope. |
 | Bucket CORS | GetBucketCors, PutBucketCors, DeleteBucketCors | 1/10 | Relevant if abixio is accessed from browsers. |
 | Bucket ACL | GetBucketAcl, PutBucketAcl, GetObjectAcl, PutObjectAcl | 1/10 | Legacy. AWS recommends policies over ACLs. |
@@ -136,7 +136,7 @@ How complete our responses are compared to what S3 clients expect.
 
 ### Overall S3 compliance: 4/10
 
-abixio implements 20 of ~100 S3 API operations. The 20 it implements are
+abixio implements 26 of ~100 S3 API operations. The 26 it implements are
 solid (auth, conditionals, presigned URLs, tagging, batch delete, copy,
 range requests, custom metadata) but the missing surface is large: no
 multipart upload (blocks files >5GB), no versioning, no policies, no
