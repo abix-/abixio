@@ -33,7 +33,7 @@ What is still missing or broken:
 - No consensus-backed control plane such as Raft
 - Cluster mode is covered by integration tests but not battle-tested at scale
 
-If you need a production S3-compatible object store today, use [MinIO](https://github.com/minio/minio) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
+If you need a production S3-compatible object store today, start with [RustFS](https://github.com/rustfs/rustfs). It is solid, but it is also much closer to a MinIO-style design. [SeaweedFS](https://github.com/seaweedfs/seaweedfs) is also a strong option if its model fits your workload better.
 
 ## What AbixIO Server Is
 
