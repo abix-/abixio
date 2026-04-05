@@ -222,6 +222,8 @@ mod tests {
         let resp = ErrorResponse {
             code: "NoSuchKey".to_string(),
             message: "The specified key does not exist".to_string(),
+            resource: "/mybucket/mykey".to_string(),
+            request_id: "ABC123".to_string(),
         };
         let xml = xml_to_string(&resp).unwrap();
         assert!(xml.contains("Error"));

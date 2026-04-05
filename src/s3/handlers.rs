@@ -7,10 +7,10 @@ use hyper::{Method, Request, Response, StatusCode};
 use quick_xml::de::from_str as xml_from_str;
 use quick_xml::se::to_string as xml_to_string;
 
-use super::auth::{AuthConfig, verify_sig_v4};
+use super::auth::{AuthConfig, is_presigned, verify_presigned_v4, verify_sig_v4};
 use super::errors::{
-    ERR_ACCESS_DENIED, ERR_INVALID_RANGE, ERR_MALFORMED_XML, ERR_METHOD_NOT_ALLOWED, S3Error,
-    error_to_xml, map_error,
+    ERR_ACCESS_DENIED, ERR_INVALID_RANGE, ERR_MALFORMED_XML, ERR_METHOD_NOT_ALLOWED,
+    ERR_PRECONDITION_FAILED, S3Error, error_to_xml, make_request_id, map_error,
 };
 use super::response::*;
 use crate::admin::handlers::AdminHandler;
@@ -36,12 +36,23 @@ fn ok_body(body: Vec<u8>) -> Response<BoxBody> {
 }
 
 fn error_response(err: &S3Error) -> Response<BoxBody> {
-    let xml = error_to_xml(err);
-    Response::builder()
+    error_response_ctx(err, "", "")
+}
+
+fn error_response_ctx(err: &S3Error, request_id: &str, resource: &str) -> Response<BoxBody> {
+    let xml = error_to_xml(err, request_id, resource);
+    let mut resp = Response::builder()
         .status(StatusCode::from_u16(err.http_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
         .header("Content-Type", "application/xml")
         .body(Full::new(Bytes::from(xml)))
-        .unwrap()
+        .unwrap();
+    if !request_id.is_empty() {
+        resp.headers_mut().insert(
+            "x-amz-request-id",
+            request_id.parse().expect("valid header value"),
+        );
+    }
+    resp
 }
 
 fn empty_response(status: StatusCode) -> Response<BoxBody> {
@@ -65,10 +76,17 @@ impl S3Handler {
     }
 
     pub async fn dispatch(&self, req: Request<Incoming>) -> Response<BoxBody> {
+        let request_id = make_request_id();
+
         // auth check
         if !self.auth.no_auth
             && let Err(resp) = self.check_auth(&req).await
         {
+            let mut resp = resp;
+            resp.headers_mut().insert(
+                "x-amz-request-id",
+                request_id.parse().expect("valid header value"),
+            );
             return resp;
         }
 
@@ -98,7 +116,7 @@ impl S3Handler {
 
         let is_tagging = query.contains("tagging");
 
-        match (bucket, key, &method) {
+        let mut resp = match (bucket, key, &method) {
             ("", _, &Method::GET) => self.list_buckets().await,
 
             // bucket tagging (must precede bucket catch-alls)
@@ -121,23 +139,19 @@ impl S3Handler {
 
             (b, k, &Method::PUT) => self.put_object(b, k, req).await,
             (b, k, &Method::GET) => self.get_object(b, k, &req).await,
-            (b, k, &Method::HEAD) => self.head_object(b, k).await,
+            (b, k, &Method::HEAD) => self.head_object(b, k, &req).await,
             (b, k, &Method::DELETE) => self.delete_object(b, k).await,
             _ => error_response(&ERR_METHOD_NOT_ALLOWED),
-        }
+        };
+
+        resp.headers_mut().insert(
+            "x-amz-request-id",
+            request_id.parse().expect("valid header value"),
+        );
+        resp
     }
 
     async fn check_auth(&self, req: &Request<Incoming>) -> Result<(), Response<BoxBody>> {
-        let auth_header = req
-            .headers()
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-
-        if auth_header.is_empty() {
-            return Err(error_response(&ERR_ACCESS_DENIED));
-        }
-
         let method = req.method().as_str();
         let path = req.uri().path();
         let query = req.uri().query().unwrap_or("");
@@ -147,6 +161,32 @@ impl S3Handler {
             .iter()
             .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
+
+        // check for presigned URL auth (query params)
+        if is_presigned(query) {
+            return match verify_presigned_v4(
+                method,
+                path,
+                query,
+                &headers,
+                &self.auth.access_key,
+                &self.auth.secret_key,
+            ) {
+                Ok(()) => Ok(()),
+                Err(_) => Err(error_response(&ERR_ACCESS_DENIED)),
+            };
+        }
+
+        // check for header-based auth
+        let auth_header = req
+            .headers()
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+
+        if auth_header.is_empty() {
+            return Err(error_response(&ERR_ACCESS_DENIED));
+        }
 
         let body_hash = headers
             .iter()
@@ -330,6 +370,11 @@ impl S3Handler {
             Err(e) => return error_response(&map_error(&e)),
         };
 
+        // check conditional request headers
+        if let Some(resp) = check_preconditions(req.headers(), &info.etag, info.created_at) {
+            return resp;
+        }
+
         let total_size = data.len() as u64;
         let range_header = req
             .headers()
@@ -368,9 +413,12 @@ impl S3Handler {
         builder.body(Full::new(Bytes::from(body_bytes))).unwrap()
     }
 
-    async fn head_object(&self, bucket: &str, key: &str) -> Response<BoxBody> {
+    async fn head_object(&self, bucket: &str, key: &str, req: &Request<Incoming>) -> Response<BoxBody> {
         match self.store.head_object(bucket, key) {
             Ok(info) => {
+                if let Some(resp) = check_preconditions(req.headers(), &info.etag, info.created_at) {
+                    return resp;
+                }
                 let mut builder = Response::builder()
                     .status(StatusCode::OK)
                     .header("Content-Type", &info.content_type)
@@ -780,4 +828,107 @@ fn format_http_date(unix_secs: u64) -> String {
         "{}, {:02} {} {:04} {:02}:{:02}:{:02} GMT",
         dow, day, month_name, year, hour, min, sec
     )
+}
+
+/// Parse RFC 7231 HTTP-date: "Thu, 01 Jan 2024 00:00:00 GMT"
+fn parse_http_date(s: &str) -> Option<u64> {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+
+    // "Thu, 01 Jan 2024 00:00:00 GMT"
+    let s = s.trim();
+    let parts: Vec<&str> = s.split_whitespace().collect();
+    if parts.len() != 6 {
+        return None;
+    }
+    // parts: ["Thu,", "01", "Jan", "2024", "00:00:00", "GMT"]
+    let day: u64 = parts[1].parse().ok()?;
+    let month_idx = MONTHS.iter().position(|&m| m == parts[2])?;
+    let year: u64 = parts[3].parse().ok()?;
+    let time_parts: Vec<&str> = parts[4].split(':').collect();
+    if time_parts.len() != 3 {
+        return None;
+    }
+    let hour: u64 = time_parts[0].parse().ok()?;
+    let min: u64 = time_parts[1].parse().ok()?;
+    let sec: u64 = time_parts[2].parse().ok()?;
+
+    // compute unix timestamp (same approach as format_http_date reverse)
+    let mut total_days = 0u64;
+    for y in 1970..year {
+        let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+        total_days += if leap { 366 } else { 365 };
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let month_lengths: [u64; 12] = if leap {
+        [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    } else {
+        [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    };
+    for i in 0..month_idx {
+        total_days += month_lengths[i];
+    }
+    total_days += day - 1;
+
+    Some(total_days * 86400 + hour * 3600 + min * 60 + sec)
+}
+
+/// Check conditional request headers (If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since).
+/// Returns Some(response) if a precondition triggers, None if request should proceed.
+fn check_preconditions(
+    req_headers: &hyper::HeaderMap,
+    etag: &str,
+    last_modified: u64,
+) -> Option<Response<BoxBody>> {
+    let quoted_etag = format!("\"{}\"", etag);
+
+    // If-None-Match: return 304 if ETag matches
+    if let Some(val) = req_headers.get("if-none-match").and_then(|v| v.to_str().ok()) {
+        let val = val.trim().trim_matches('"');
+        if val == etag || val == quoted_etag || val == "*" {
+            return Some(
+                Response::builder()
+                    .status(StatusCode::NOT_MODIFIED)
+                    .header("ETag", &quoted_etag)
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+            );
+        }
+    }
+
+    // If-Modified-Since: return 304 if not modified
+    if let Some(val) = req_headers.get("if-modified-since").and_then(|v| v.to_str().ok()) {
+        if let Some(since) = parse_http_date(val) {
+            // object is not modified if last_modified <= since (with 1s tolerance)
+            if last_modified <= since {
+                return Some(
+                    Response::builder()
+                        .status(StatusCode::NOT_MODIFIED)
+                        .header("ETag", &quoted_etag)
+                        .body(Full::new(Bytes::new()))
+                        .unwrap(),
+                );
+            }
+        }
+    }
+
+    // If-Match: return 412 if ETag doesn't match
+    if let Some(val) = req_headers.get("if-match").and_then(|v| v.to_str().ok()) {
+        let val = val.trim().trim_matches('"');
+        if val != "*" && val != etag && val != quoted_etag {
+            return Some(error_response(&ERR_PRECONDITION_FAILED));
+        }
+    }
+
+    // If-Unmodified-Since: return 412 if modified since
+    if let Some(val) = req_headers.get("if-unmodified-since").and_then(|v| v.to_str().ok()) {
+        if let Some(since) = parse_http_date(val) {
+            if last_modified > since {
+                return Some(error_response(&ERR_PRECONDITION_FAILED));
+            }
+        }
+    }
+
+    None
 }

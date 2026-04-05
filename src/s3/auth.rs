@@ -114,6 +114,168 @@ pub fn verify_sig_v4(
     }
 }
 
+/// Check if a query string contains presigned URL parameters.
+pub fn is_presigned(query: &str) -> bool {
+    query.contains("X-Amz-Algorithm") || query.contains("X-Amz-Credential")
+}
+
+/// Verify AWS Signature V4 presigned URL.
+/// Query params: X-Amz-Algorithm, X-Amz-Credential, X-Amz-Date, X-Amz-Expires,
+///               X-Amz-SignedHeaders, X-Amz-Signature
+#[allow(clippy::too_many_arguments)]
+pub fn verify_presigned_v4(
+    method: &str,
+    path: &str,
+    query: &str,
+    headers: &[(String, String)],
+    access_key: &str,
+    secret_key: &str,
+) -> Result<(), String> {
+    let params = parse_query_params(query);
+
+    let algorithm = params.get("X-Amz-Algorithm").ok_or("missing X-Amz-Algorithm")?;
+    if *algorithm != "AWS4-HMAC-SHA256" {
+        return Err("unsupported algorithm".to_string());
+    }
+
+    let credential = params.get("X-Amz-Credential").ok_or("missing X-Amz-Credential")?;
+    let amz_date = params.get("X-Amz-Date").ok_or("missing X-Amz-Date")?;
+    let expires_str = params.get("X-Amz-Expires").ok_or("missing X-Amz-Expires")?;
+    let signed_headers_str = params.get("X-Amz-SignedHeaders").ok_or("missing X-Amz-SignedHeaders")?;
+    let provided_sig = params.get("X-Amz-Signature").ok_or("missing X-Amz-Signature")?;
+
+    // parse credential: access_key/date/region/s3/aws4_request
+    let cred_parts: Vec<&str> = credential.split('/').collect();
+    if cred_parts.len() != 5 {
+        return Err("invalid credential format".to_string());
+    }
+    let req_access_key = cred_parts[0];
+    let date = cred_parts[1];
+    let region = cred_parts[2];
+
+    if req_access_key != access_key {
+        return Err("access key mismatch".to_string());
+    }
+
+    // parse and check date
+    let req_time = parse_amz_date(amz_date).map_err(|_| "invalid X-Amz-Date".to_string())?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // check not in the future by more than 15 min
+    if req_time > now + 15 * 60 {
+        return Err("request date is in the future".to_string());
+    }
+
+    // check expiration
+    let expires: u64 = expires_str.parse().map_err(|_| "invalid X-Amz-Expires".to_string())?;
+    if expires > 604800 {
+        return Err("expires too large (max 7 days)".to_string());
+    }
+    if now > req_time + expires {
+        return Err("presigned URL has expired".to_string());
+    }
+
+    // build canonical query string (exclude X-Amz-Signature)
+    let canonical_qs = canonical_query_presigned(query);
+
+    // build canonical headers
+    let signed_headers: Vec<&str> = signed_headers_str.split(';').collect();
+    let canonical_hdrs = build_canonical_headers(headers, &signed_headers);
+
+    // build canonical request
+    // presigned URLs use UNSIGNED-PAYLOAD
+    let canonical_request = format!(
+        "{}\n{}\n{}\n{}\n{}\n{}",
+        method,
+        canonical_uri(path),
+        canonical_qs,
+        canonical_hdrs,
+        signed_headers_str,
+        "UNSIGNED-PAYLOAD"
+    );
+
+    // string to sign
+    let credential_scope = format!("{}/{}/s3/aws4_request", date, region);
+    let canonical_request_hash = sha256_hex(canonical_request.as_bytes());
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{}\n{}\n{}",
+        amz_date, credential_scope, canonical_request_hash
+    );
+
+    // derive signing key and compute signature
+    let signing_key = derive_signing_key(secret_key, date, region);
+    let computed_sig = hmac_sha256_hex(&signing_key, string_to_sign.as_bytes());
+
+    // constant-time compare
+    if computed_sig
+        .as_bytes()
+        .ct_eq(provided_sig.as_bytes())
+        .into()
+    {
+        Ok(())
+    } else {
+        Err("signature mismatch".to_string())
+    }
+}
+
+fn parse_query_params(query: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if query.is_empty() {
+        return map;
+    }
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            map.insert(
+                percent_decode(k),
+                percent_decode(v),
+            );
+        }
+    }
+    map
+}
+
+fn percent_decode(s: &str) -> String {
+    let mut result = Vec::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(byte) = u8::from_str_radix(
+                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
+                16,
+            ) {
+                result.push(byte);
+                i += 3;
+                continue;
+            }
+        }
+        result.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(result).unwrap_or_default()
+}
+
+/// Build canonical query string for presigned URLs, excluding X-Amz-Signature.
+fn canonical_query_presigned(query: &str) -> String {
+    if query.is_empty() {
+        return String::new();
+    }
+    let mut pairs: Vec<(&str, &str)> = query
+        .split('&')
+        .filter_map(|p| p.split_once('=').or(Some((p, ""))))
+        .filter(|(k, _)| *k != "X-Amz-Signature")
+        .collect();
+    pairs.sort();
+    pairs
+        .iter()
+        .map(|(k, v)| format!("{}={}", k, v))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
 fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -466,5 +628,109 @@ mod tests {
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("skew"));
+    }
+
+    // helper: build presigned URL query string
+    fn presign_query(
+        method: &str,
+        path: &str,
+        access_key: &str,
+        secret_key: &str,
+        date: &str,
+        amz_date: &str,
+        region: &str,
+        expires: u64,
+    ) -> String {
+        let credential = format!("{}/{}/{}/s3/aws4_request", access_key, date, region);
+        let signed_headers = "host";
+
+        // build canonical query (without signature, sorted)
+        let mut query_parts = vec![
+            format!("X-Amz-Algorithm=AWS4-HMAC-SHA256"),
+            format!("X-Amz-Credential={}", credential),
+            format!("X-Amz-Date={}", amz_date),
+            format!("X-Amz-Expires={}", expires),
+            format!("X-Amz-SignedHeaders={}", signed_headers),
+        ];
+        query_parts.sort();
+        let canonical_qs = query_parts.join("&");
+
+        let headers = vec![("host".to_string(), "localhost:9000".to_string())];
+        let canonical_hdrs = build_canonical_headers(&headers, &["host"]);
+        let canonical_request = format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            method,
+            canonical_uri(path),
+            canonical_qs,
+            canonical_hdrs,
+            signed_headers,
+            "UNSIGNED-PAYLOAD"
+        );
+
+        let credential_scope = format!("{}/{}/s3/aws4_request", date, region);
+        let cr_hash = sha256_hex(canonical_request.as_bytes());
+        let string_to_sign = format!(
+            "AWS4-HMAC-SHA256\n{}\n{}\n{}",
+            amz_date, credential_scope, cr_hash
+        );
+
+        let signing_key = derive_signing_key(secret_key, date, region);
+        let signature = hmac_sha256_hex(&signing_key, string_to_sign.as_bytes());
+
+        format!("{}&X-Amz-Signature={}", canonical_qs, signature)
+    }
+
+    #[test]
+    fn verify_presigned_valid() {
+        let (date, amz_date) = current_amz_timestamps();
+        let query = presign_query(
+            "GET", "/test/key", "myaccesskey", "mysecretkey",
+            &date, &amz_date, "us-east-1", 3600,
+        );
+        let headers = vec![("host".to_string(), "localhost:9000".to_string())];
+        let result = verify_presigned_v4(
+            "GET", "/test/key", &query, &headers,
+            "myaccesskey", "mysecretkey",
+        );
+        assert!(result.is_ok(), "expected ok, got: {:?}", result);
+    }
+
+    #[test]
+    fn verify_presigned_expired() {
+        // use a date far in the past with 1 second expiry
+        let date = "20200101";
+        let amz_date = "20200101T000000Z";
+        let query = presign_query(
+            "GET", "/test/key", "myaccesskey", "mysecretkey",
+            date, amz_date, "us-east-1", 1,
+        );
+        let headers = vec![("host".to_string(), "localhost:9000".to_string())];
+        let result = verify_presigned_v4(
+            "GET", "/test/key", &query, &headers,
+            "myaccesskey", "mysecretkey",
+        );
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expired"));
+    }
+
+    #[test]
+    fn verify_presigned_bad_key() {
+        let (date, amz_date) = current_amz_timestamps();
+        let query = presign_query(
+            "GET", "/test/key", "myaccesskey", "mysecretkey",
+            &date, &amz_date, "us-east-1", 3600,
+        );
+        let headers = vec![("host".to_string(), "localhost:9000".to_string())];
+        let result = verify_presigned_v4(
+            "GET", "/test/key", &query, &headers,
+            "wrongkey", "mysecretkey",
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_presigned_detects_params() {
+        assert!(is_presigned("X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=key"));
+        assert!(!is_presigned("prefix=foo&delimiter=/"));
     }
 }

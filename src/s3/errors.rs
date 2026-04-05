@@ -64,6 +64,18 @@ pub const ERR_MALFORMED_XML: S3Error = S3Error {
     http_status: 400,
 };
 
+pub const ERR_PRECONDITION_FAILED: S3Error = S3Error {
+    code: "PreconditionFailed",
+    message: "At least one of the preconditions you specified did not hold",
+    http_status: 412,
+};
+
+pub const ERR_EXPIRED_PRESIGN: S3Error = S3Error {
+    code: "AccessDenied",
+    message: "Request has expired",
+    http_status: 403,
+};
+
 pub const ERR_ACCESS_DENIED: S3Error = S3Error {
     code: "AccessDenied",
     message: "Access Denied",
@@ -77,20 +89,34 @@ pub struct ErrorResponse {
     pub code: String,
     #[serde(rename = "Message")]
     pub message: String,
+    #[serde(rename = "Resource", skip_serializing_if = "String::is_empty")]
+    pub resource: String,
+    #[serde(rename = "RequestId", skip_serializing_if = "String::is_empty")]
+    pub request_id: String,
 }
 
-pub fn error_to_xml(err: &S3Error) -> String {
+pub fn error_to_xml(err: &S3Error, request_id: &str, resource: &str) -> String {
     let resp = ErrorResponse {
         code: err.code.to_string(),
         message: err.message.to_string(),
+        resource: resource.to_string(),
+        request_id: request_id.to_string(),
     };
     // quick-xml serialize
     xml_to_string(&resp).unwrap_or_else(|_| {
         format!(
-            "<Error><Code>{}</Code><Message>{}</Message></Error>",
-            err.code, err.message
+            "<Error><Code>{}</Code><Message>{}</Message><RequestId>{}</RequestId><Resource>{}</Resource></Error>",
+            err.code, err.message, request_id, resource
         )
     })
+}
+
+pub fn make_request_id() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{:X}", nanos)
 }
 
 pub fn map_error(err: &StorageError) -> S3Error {
@@ -113,9 +139,11 @@ mod tests {
 
     #[test]
     fn error_to_xml_produces_valid_xml() {
-        let xml = error_to_xml(&ERR_NO_SUCH_BUCKET);
+        let xml = error_to_xml(&ERR_NO_SUCH_BUCKET, "ABC123", "/mybucket");
         assert!(xml.contains("NoSuchBucket"));
         assert!(xml.contains("The specified bucket does not exist"));
+        assert!(xml.contains("ABC123"));
+        assert!(xml.contains("/mybucket"));
     }
 
     #[test]

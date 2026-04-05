@@ -18,8 +18,8 @@ These are routed in `src/s3/handlers.rs` dispatch table.
 | HeadBucket | `HEAD /{bucket}` | `head_bucket` | 8/10 | Works. Returns 200 or 404. |
 | ListObjectsV2 | `GET /{bucket}` | `list_objects_handler` | 7/10 | Supports prefix, delimiter, max-keys. Has pagination (continuation token). Missing: list-type=2 query validation, encoding-type, start-after, fetch-owner. |
 | PutObject | `PUT /{bucket}/{key}` | `put_object` | 8/10 | Reads full body, stores with content-type and custom metadata (x-amz-meta-*). Returns ETag. Missing: content-MD5 validation, storage class, tagging headers. |
-| GetObject | `GET /{bucket}/{key}` | `get_object` | 8/10 | Returns body with Content-Type, Content-Length, ETag, Last-Modified (RFC 7231), Accept-Ranges, custom metadata. Supports Range requests (206 Partial Content). Missing: If-Match/If-None-Match conditionals. |
-| HeadObject | `HEAD /{bucket}/{key}` | `head_object` | 8/10 | Returns Content-Type, Content-Length, ETag, Last-Modified (RFC 7231), Accept-Ranges, custom metadata. Missing: storage class, version ID, encryption info. |
+| GetObject | `GET /{bucket}/{key}` | `get_object` | 9/10 | Returns body with Content-Type, Content-Length, ETag, Last-Modified (RFC 7231), Accept-Ranges, custom metadata. Supports Range requests and conditional headers (If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since). |
+| HeadObject | `HEAD /{bucket}/{key}` | `head_object` | 9/10 | Returns Content-Type, Content-Length, ETag, Last-Modified (RFC 7231), Accept-Ranges, custom metadata. Supports conditional headers. Missing: storage class, version ID, encryption info. |
 | DeleteObject | `DELETE /{bucket}/{key}` | `delete_object` | 8/10 | Returns 204 No Content. Missing: version ID support, MFA delete. |
 | DeleteBucket | `DELETE /{bucket}` | `delete_bucket_handler` | 8/10 | Returns 204 No Content. Only deletes empty buckets (returns 409 BucketNotEmpty otherwise). Matches S3 spec. |
 | DeleteObjects (batch) | `POST /{bucket}?delete` | `delete_objects` | 8/10 | Parses XML request body, deletes each key, returns XML with deleted/error results. Up to 1000 keys per request. |
@@ -119,9 +119,9 @@ How complete our responses are compared to what S3 clients expect.
 | Aspect | S3 spec | abixio | Gap |
 |---|---|---|---|
 | XML error body | `<Error><Code>...</Code><Message>...</Message></Error>` | yes | -- |
-| Error codes | standard S3 error codes | partial (6 codes defined) | missing many codes |
-| `RequestId` in errors | required | not returned | minor gap |
-| `Resource` in errors | recommended | not returned | minor gap |
+| Error codes | standard S3 error codes | partial (10 codes defined) | covers common cases |
+| `RequestId` in errors | required | yes (XML body + `x-amz-request-id` header) | -- |
+| `Resource` in errors | recommended | yes (in XML body) | -- |
 
 ## Auth
 
@@ -130,7 +130,7 @@ How complete our responses are compared to what S3 clients expect.
 | SigV4 verification | required | yes (`src/s3/auth.rs`) | 8/10 |
 | Anonymous access | optional | yes (configurable `no_auth`) | 8/10 |
 | SigV4 chunked transfer | optional | not supported | 3/10 |
-| Presigned URL validation | optional | not tested | unknown |
+| Presigned URL validation | optional | yes (SigV4 query params) | 8/10 |
 
 ## Summary
 
@@ -145,8 +145,10 @@ Response headers follow RFC 7231 (HTTP-date format). Everything else returns 405
 
 | Priority | What | Why |
 |---|---|---|
-| **Should** | Structured error responses | Return S3 error codes (AccessDenied, NoSuchBucket, etc.) with RequestId and Resource fields. |
+| ~~**Should**~~ | ~~Structured error responses~~ | Done. RequestId and Resource in XML + x-amz-request-id header. |
 | ~~**Later**~~ | ~~Object tagging~~ | Done. Object and bucket tagging implemented. |
+| ~~**Later**~~ | ~~Presigned URL validation~~ | Done. SigV4 query param auth with expiration check. |
+| ~~**Later**~~ | ~~Conditional requests~~ | Done. If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since. |
 | **Later** | Versioning | Version browser support. |
 | **Later** | Multipart upload | Required for files >5GB. |
 | **Later** | Bucket policies | Access control. |
