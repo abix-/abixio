@@ -32,7 +32,7 @@ Current reality as of 2026-04-05:
 | Area | What you get |
 |---|---|
 | **S3 API** | Standard object storage access for AWS CLI, rclone, boto3, MinIO client, and custom tools |
-| **Erasure coding** | Per-object data/parity control with object, bucket, and server defaults |
+| **Erasure coding** | Per-object FTT (failures to tolerate) with bucket defaults |
 | **Storage model** | Volume-pool design across local and remote volumes |
 | **Topology** | Single-node through multi-node deployment under one storage model |
 | **Clustering** | Node identity exchange, persisted membership, quorum tracking, and fencing |

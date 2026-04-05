@@ -64,7 +64,7 @@ Key properties:
 
 - 1 volume minimum, scale up by adding volumes
 - Single-node and clustered deployments are both first-class operating modes
-- Per-object erasure coding with object, bucket, or server defaults
+- Per-object erasure coding with FTT (failures to tolerate) and bucket defaults
 - Pluggable storage backends via the `Backend` trait
 - Self-describing volumes with identity stored on disk
 - Node-based cluster formation with no master server

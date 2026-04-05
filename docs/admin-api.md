@@ -16,8 +16,8 @@ body with an `error` field.
 | `/_admin/heal` | GET | MRF queue and scanner statistics |
 | `/_admin/heal?bucket=X&key=Y` | POST | Trigger manual heal for one object |
 | `/_admin/object?bucket=X&key=Y` | GET | Shard-level object inspection |
-| `/_admin/bucket/{name}/ec` | GET | Get bucket EC config (or server default) |
-| `/_admin/bucket/{name}/ec?data=N&parity=N` | PUT | Set bucket EC default |
+| `/_admin/bucket/{name}/ec` | GET | Get bucket FTT config |
+| `/_admin/bucket/{name}/ec?ftt=N` | PUT | Set bucket FTT |
 | `/_admin/cluster/status` | GET | Cluster summary and current topology |
 | `/_admin/cluster/nodes` | GET | Current node view |
 | `/_admin/cluster/epochs` | GET | Epoch snapshots tracked by the local node |
@@ -36,8 +36,7 @@ curl http://localhost:10000/_admin/status
   "server": "abixio",
   "version": "0.1.0",
   "uptime_secs": 3600,
-  "data_shards": 2,
-  "parity_shards": 2,
+  "default_ftt": 1,
   "total_disks": 4,
   "listen": ":10000",
   "auth_enabled": true,
@@ -65,8 +64,7 @@ curl http://localhost:10000/_admin/status
 | `server` | string | Always `"abixio"` |
 | `version` | string | Cargo package version |
 | `uptime_secs` | u64 | Seconds since server start |
-| `data_shards` | usize | Auto-computed default data shard count |
-| `parity_shards` | usize | Auto-computed default parity shard count |
+| `default_ftt` | usize | Default FTT assigned to new buckets |
 | `total_disks` | usize | Number of disks in pool |
 | `listen` | string | Listen address from config |
 | `auth_enabled` | bool | True unless `--no-auth` was passed |
@@ -270,45 +268,34 @@ externally visible to operators and tests.
 
 ## GET /_admin/bucket/{name}/ec
 
-Get the EC configuration for a bucket. Returns the bucket-level override
-if set, otherwise returns the server default with `"source": "server_default"`.
+Get the FTT configuration for a bucket. Every bucket has FTT (auto-assigned at creation, default FTT=1). Response includes the computed data/parity for the current disk count.
 
 ```bash
 curl http://localhost:10000/_admin/bucket/mybucket/ec
 ```
 
-**Bucket override set:**
 ```json
 {
-  "data": 3,
-  "parity": 3
+  "ftt": 1,
+  "data": 5,
+  "parity": 1
 }
 ```
 
-**No override (server default):**
-```json
-{
-  "data": 2,
-  "parity": 2,
-  "source": "server_default"
-}
-```
+## PUT /_admin/bucket/{name}/ec?ftt=N
 
-## PUT /_admin/bucket/{name}/ec?data=N&parity=N
-
-Set a default EC ratio for new objects in a bucket. Stored in
-`.abixio.sys/buckets/<bucket>/settings.json`. Does not affect existing objects.
+Set the FTT for a bucket. Does not affect existing objects.
 
 ```bash
-curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=3&parity=3"
+curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?ftt=2"
 ```
 
 ### Error cases
 
 | Case | HTTP | Response |
 |---|---|---|
-| Missing `data` or `parity` | 400 | `{"error": "<detail>"}` |
-| Invalid EC params | 400 | `{"error": "<detail>"}` |
+| Missing `ftt` | 400 | `{"error": "missing ftt parameter"}` |
+| FTT >= disk count | 400 | `{"error": "<detail>"}` |
 | Cluster fenced | 503 | `{"error": "cluster is fenced"}` |
 
 ## GET /_admin/cluster/status
@@ -444,7 +431,7 @@ backends for volumes on other nodes. The `ErasureSet` treats all backends
 identically. See [cluster.md](cluster.md) for the full cluster design.
 
 See [per-object-ec.md](per-object-ec.md) for the full EC precedence chain
-(per-object header > bucket config > server default).
+(per-object FTT > bucket FTT).
 
 ## Implementation
 

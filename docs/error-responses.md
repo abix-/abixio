@@ -42,7 +42,7 @@ Matches MinIO's approach: `fmt.Sprintf("%X", t.UnixNano())`.
 | `ServiceUnavailable` | 503 | Node is fenced or cluster is not ready to serve |
 | `AccessDenied` | 403 | Auth failure or expired presigned URL |
 | `PreconditionFailed` | 412 | If-Match or If-Unmodified-Since failed |
-| `InvalidRequest` | 400 | Invalid per-object EC params (data=0 or data+parity > disk count) |
+| `InvalidRequest` | 400 | Invalid per-object FTT (ftt >= disk count) |
 | `NoSuchBucketPolicy` | 404 | Bucket policy is missing |
 | `PolicyTooLarge` | 400 | Bucket policy exceeds the maximum document size |
 | `NoSuchLifecycleConfiguration` | 404 | Lifecycle configuration is missing |

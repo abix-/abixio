@@ -127,7 +127,7 @@ This is the clearest current differentiator.
 
 AbixIO allows the data/parity ratio to vary per object:
 
-`object header > bucket config > server default`
+`per-object FTT > bucket FTT`
 
 That is a materially different storage story from the usual server-level or
 pool-level redundancy model.

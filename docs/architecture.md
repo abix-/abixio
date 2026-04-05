@@ -33,14 +33,14 @@ cluster-control direction.
    MinIO's `xl.meta` pattern. See [storage-layout.md](storage-layout.md).
 
 8. **Per-object erasure coding.** Each object owns its data/parity ratio, stored
-   in `meta.json`. The encode path resolves EC per-request (object header > bucket
-   config > server default). The decode and heal paths read EC from metadata.
+   in `meta.json`. The encode path resolves EC per-request (per-object FTT >
+   bucket FTT). The decode and heal paths read EC from metadata.
    Objects with different EC ratios coexist in the same bucket and disk pool.
    See [per-object-ec.md](per-object-ec.md).
 
-9. **Volume pool model.** Volumes form a pool across all nodes. Objects select a
-   subset via hash-based permutation. Pool can have more volumes than any single
-   object's data+parity, spreading I/O across nodes.
+9. **Volume pool model.** Volumes form a pool across all nodes. Objects use all
+   volumes by default. FTT determines the data/parity split, spreading I/O
+   across nodes.
 
 10. **Self-describing volumes.** Every volume carries `.abixio.sys/volume.json`
     with its identity (deployment, set, node, volume UUIDs) and the full erasure

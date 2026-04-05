@@ -62,7 +62,7 @@ curl -X PUT -T bigfile.bin \
   -H "x-amz-meta-ec-ftt: 1" \
   http://localhost:10000/mybucket/bigfile.bin
 
-# no headers: uses bucket default or server default
+# no headers: uses bucket FTT (default: 1)
 curl -X PUT -d "normal data" \
   http://localhost:10000/mybucket/normal.txt
 ```
@@ -99,51 +99,40 @@ Response format:
 }
 ```
 
-If no bucket config is set, the GET endpoint returns the auto-computed server
-defaults with `"source": "server_default"`.
+Every bucket gets FTT=1 at creation. The GET endpoint always returns a config.
 
 ## Volume pool model
 
-AbixIO volumes form a pool. The auto-computed server default uses all volumes
-(e.g., 6 volumes = `5+1`). Per-bucket EC can select a smaller subset.
+AbixIO volumes form a pool. FTT determines the data/parity split. All volumes
+are used for every object.
 
 ```bash
-# 6-volume pool, auto-computes 5+1 default
+# 6-volume pool, bucket default FTT=1 -> 5+1
 abixio --volumes /d{1...6}
 
-# set bucket to use 2+2 instead (4 of 6 volumes per object)
-curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=2&parity=2"
+# set bucket to FTT=2 -> 4+2
+curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?ftt=2"
 ```
 
-Each object selects a subset of volumes from the pool.
-
-In the single-node path this is a deterministic backend subset. In the
-placement-aware path the same EC choice is combined with stable placement
-metadata.
-
-Single-node example:
-
-```
-full_permutation = hash_order("bucket/key", 6)  # e.g. [3,1,0,5,2,4]
-selected_disks = full_permutation[..4]            # [3,1,0,5] for data=2,parity=2
-```
-
-Different objects land on different disk subsets, spreading I/O across the pool.
+In the single-node path, shard distribution is a deterministic backend
+permutation. In the placement-aware path, the same FTT choice is combined
+with stable placement metadata including `epoch_id`, `set_id`, `node_ids`,
+and `volume_ids`.
 
 ### Example configurations
 
-| Pool | Default EC | Object EC | Disks used | Fault tolerance |
+| Pool | Bucket FTT | Object FTT | EC layout | Fault tolerance |
 |---|---|---|---|---|
-| 4 disks | 2+2 | (default) | 4 of 4 | 2 failures |
-| 6 disks | 2+2 | (default) | 4 of 6 | 2 failures |
-| 6 disks | 2+2 | 1+5 | 6 of 6 | 5 failures |
-| 6 disks | 2+2 | 4+2 | 6 of 6 | 2 failures, 2x throughput |
-| 8 disks | 2+2 | 1+1 | 2 of 8 | 1 failure, minimal overhead |
+| 4 disks | 1 (default) | -- | 3+1 | 1 failure |
+| 6 disks | 1 (default) | -- | 5+1 | 1 failure |
+| 6 disks | 1 | FTT=5 | 1+5 | 5 failures |
+| 6 disks | 2 | -- | 4+2 | 2 failures |
+| 8 disks | 1 (default) | -- | 7+1 | 1 failure |
 
 ## How reads work
 
 The decode path reads `erasure.data` and `erasure.parity` from the object's
-`meta.json`. It does not use the server or bucket defaults. This means:
+`meta.json`. It does not consult bucket FTT. This means:
 
 - Objects written with EC 1+5 are always read with EC 1+5
 - Changing volume count does not affect existing objects

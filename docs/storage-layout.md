@@ -194,13 +194,14 @@ EC parameters are resolved per-request at write time using this precedence:
 
 ```
 1. Per-object FTT        x-amz-meta-ec-ftt header on PUT               (highest)
-2. Bucket FTT            .abixio.sys/buckets/<bucket>/settings.json
-3. Server default        auto-computed from volume count (FTT=1)        (lowest)
+2. Bucket FTT            .abixio.sys/buckets/<bucket>/settings.json     (lowest)
 ```
 
+Every bucket gets FTT=1 at creation (FTT=0 for single-disk deployments).
+
 The resolved data/parity values are stored in `meta.json` with the object.
-After that, the object is self-describing. Changing server defaults or bucket
-config does not affect existing objects.
+After that, the object is self-describing. Changing bucket FTT does not
+affect existing objects.
 
 EC config is deliberately absent from volume.json. EC is policy (how to
 encode); volume.json is identity (who am I).
@@ -218,7 +219,7 @@ shard placement, checksums, user metadata, tags.
 
 Key rule: object metadata stores **resolved** values. The EC cascade is
 evaluated once at write time. The result is baked into meta.json. Reads and
-heals never consult bucket config or server defaults -- they use the stored
+heals never consult bucket FTT -- they use the stored
 values.
 
 ### meta.json
