@@ -320,11 +320,11 @@ impl AdminHandler {
         if let Err(e) = pathing::validate_bucket_name(bucket) {
             return error_json(StatusCode::BAD_REQUEST, &e.to_string());
         }
-        match self.store.get_ec_config(bucket) {
-            Ok(Some(config)) => json_response(&config),
+        match self.store.get_ftt(bucket) {
+            Ok(Some(ftt)) => json_response(&serde_json::json!({ "ftt": ftt })),
             Ok(None) => {
                 let ftt = crate::storage::volume_pool::default_ftt(self.store.disk_count());
-                json_response(&crate::storage::metadata::EcConfig { ftt })
+                json_response(&serde_json::json!({ "ftt": ftt }))
             }
             Err(e) => error_json(map_storage_status(&e), &e.to_string()),
         }
@@ -345,9 +345,8 @@ impl AdminHandler {
         if let Err(e) = crate::storage::volume_pool::ftt_to_ec(ftt, self.store.disk_count()) {
             return error_json(StatusCode::BAD_REQUEST, &e.to_string());
         }
-        let config = crate::storage::metadata::EcConfig { ftt };
-        match self.store.set_ec_config(bucket, &config) {
-            Ok(()) => json_response(&config),
+        match self.store.set_ftt(bucket, ftt) {
+            Ok(()) => json_response(&serde_json::json!({ "ftt": ftt })),
             Err(e) => error_json(StatusCode::BAD_REQUEST, &e.to_string()),
         }
     }

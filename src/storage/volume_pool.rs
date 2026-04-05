@@ -4,7 +4,7 @@ use super::Backend;
 use super::erasure_decode::{read_and_decode, read_and_decode_multipart, read_and_decode_versioned};
 use super::erasure_encode::{encode_and_write_versioned, encode_and_write_with_mrf};
 use super::metadata::{
-    BucketInfo, BucketSettings, EcConfig, ListOptions, ListResult, ObjectInfo, ObjectMeta,
+    BucketInfo, BucketSettings, ListOptions, ListResult, ObjectInfo, ObjectMeta,
     PutOptions, VersioningConfig,
 };
 use super::pathing;
@@ -75,12 +75,12 @@ impl VolumePool {
     /// Read bucket FTT from settings and compute (data, parity).
     /// Falls back to default FTT if bucket has no config (legacy buckets).
     pub fn bucket_ec(&self, bucket: &str) -> (usize, usize) {
-        if let Some(ec) = self
+        if let Some(ftt) = self
             .disks
             .iter()
-            .find_map(|d| d.read_bucket_settings(bucket).ec)
+            .find_map(|d| d.read_bucket_settings(bucket).ftt)
         {
-            if let Ok((d, p)) = ftt_to_ec(ec.ftt, self.disks.len()) {
+            if let Ok((d, p)) = ftt_to_ec(ftt, self.disks.len()) {
                 return (d, p);
             }
         }
@@ -274,8 +274,7 @@ impl Store for VolumePool {
             return Err(StorageError::WriteQuorum);
         }
         // auto-assign default FTT to new bucket
-        let config = EcConfig { ftt: default_ftt(self.disks.len()) };
-        let _ = self.set_ec_config(bucket, &config);
+        let _ = self.set_ftt(bucket, default_ftt(self.disks.len()));
         Ok(())
     }
 
@@ -588,32 +587,32 @@ impl Store for VolumePool {
         Ok(result)
     }
 
-    // -- per-bucket EC config --
+    // -- per-bucket FTT --
 
-    fn get_ec_config(&self, bucket: &str) -> Result<Option<EcConfig>, StorageError> {
+    fn get_ftt(&self, bucket: &str) -> Result<Option<usize>, StorageError> {
         pathing::validate_bucket_name(bucket)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
         for disk in &self.disks {
             let settings = disk.read_bucket_settings(bucket);
-            if settings.ec.is_some() {
-                return Ok(settings.ec);
+            if settings.ftt.is_some() {
+                return Ok(settings.ftt);
             }
         }
         Ok(None)
     }
 
-    fn set_ec_config(&self, bucket: &str, config: &EcConfig) -> Result<(), StorageError> {
+    fn set_ftt(&self, bucket: &str, ftt: usize) -> Result<(), StorageError> {
         pathing::validate_bucket_name(bucket)?;
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
-        ftt_to_ec(config.ftt, self.disks.len())?;
+        ftt_to_ec(ftt, self.disks.len())?;
         let mut successes = 0;
         for disk in &self.disks {
             let mut settings = disk.read_bucket_settings(bucket);
-            settings.ec = Some(config.clone());
+            settings.ftt = Some(ftt);
             if disk.write_bucket_settings(bucket, &settings).is_ok() {
                 successes += 1;
             }
@@ -842,16 +841,15 @@ mod tests {
         set.make_bucket("test").unwrap();
 
         // bucket gets default FTT=1 on creation
-        let loaded = set.get_ec_config("test").unwrap().unwrap();
-        assert_eq!(loaded.ftt, 1);
+        let loaded = set.get_ftt("test").unwrap().unwrap();
+        assert_eq!(loaded, 1);
 
         // update to FTT=3 (on 6 disks -> 3+3)
-        let config = EcConfig { ftt: 3 };
-        set.set_ec_config("test", &config).unwrap();
+        set.set_ftt("test", 3).unwrap();
 
         // verify it's stored
-        let loaded = set.get_ec_config("test").unwrap().unwrap();
-        assert_eq!(loaded, config);
+        let loaded = set.get_ftt("test").unwrap().unwrap();
+        assert_eq!(loaded, 3);
 
         // write object -- should use bucket FTT=3 -> 3+3
         let payload = b"bucket ec test";
@@ -873,7 +871,7 @@ mod tests {
         set.make_bucket("test").unwrap();
 
         // set bucket config to FTT=3 (3+3)
-        set.set_ec_config("test", &EcConfig { ftt: 3 }).unwrap();
+        set.set_ftt("test", 3).unwrap();
 
         // write with per-object FTT=1 override (5+1)
         let opts = PutOptions {
@@ -895,12 +893,12 @@ mod tests {
         set.make_bucket("test").unwrap();
 
         // ftt >= disks should fail
-        assert!(set.set_ec_config("test", &EcConfig { ftt: 4 }).is_err());
-        assert!(set.set_ec_config("test", &EcConfig { ftt: 5 }).is_err());
+        assert!(set.set_ftt("test", 4).is_err());
+        assert!(set.set_ftt("test", 5).is_err());
 
         // valid ftt should succeed
-        assert!(set.set_ec_config("test", &EcConfig { ftt: 1 }).is_ok());
-        assert!(set.set_ec_config("test", &EcConfig { ftt: 3 }).is_ok());
+        assert!(set.set_ftt("test", 1).is_ok());
+        assert!(set.set_ftt("test", 3).is_ok());
     }
 
     // -- FTT mapping --
@@ -957,8 +955,7 @@ mod tests {
         set.make_bucket("test").unwrap();
 
         // set bucket config with FTT=2 on 6 disks -> 4+2
-        let config = EcConfig { ftt: 2 };
-        set.set_ec_config("test", &config).unwrap();
+        set.set_ftt("test", 2).unwrap();
 
         // write with no per-object EC -- should use bucket config 4+2
         let opts = PutOptions {
@@ -979,7 +976,7 @@ mod tests {
             let (_base, paths) = make_disk_dirs(total);
             let set = make_set(&paths);
             set.make_bucket("test").unwrap();
-            set.set_ec_config("test", &EcConfig { ftt: cfg.parity }).unwrap();
+            set.set_ftt("test", cfg.parity).unwrap();
 
             let payload = b"resilience test data that should survive disk failures";
             let opts = PutOptions {
@@ -1011,7 +1008,7 @@ mod tests {
             let (_base, paths) = make_disk_dirs(total);
             let set = make_set(&paths);
             set.make_bucket("test").unwrap();
-            set.set_ec_config("test", &EcConfig { ftt: cfg.parity }).unwrap();
+            set.set_ftt("test", cfg.parity).unwrap();
 
             let payload = b"this should fail";
             let opts = PutOptions {

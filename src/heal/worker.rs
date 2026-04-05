@@ -449,12 +449,11 @@ mod tests {
 
     #[test]
     fn heal_missing_two_shards_repairs() {
-        use crate::storage::metadata::EcConfig;
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
         put_test_object(&set, "test", "key", b"two missing shards");
         // upgrade bucket to FTT=2 (2+2) so we can test 2-disk failure
-        set.set_ec_config("test", &EcConfig { ftt: 2 }).unwrap();
+        set.set_ftt("test", 2).unwrap();
         // rewrite with FTT=2
         set.put_object("test", "key", b"two missing shards", PutOptions {
             content_type: "text/plain".to_string(),

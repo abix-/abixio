@@ -76,8 +76,8 @@ src/
   config.rs               # Config struct (clap derive) + {N...M} range expansion
   query.rs                # URL query string parsing
   storage/
-    mod.rs                # Backend trait, Store trait, StorageError, BackendInfo, EcConfig
-    metadata.rs           # ObjectMetaFile, ObjectMeta, ErasureMeta, EcConfig, PutOptions
+    mod.rs                # Backend trait, Store trait, StorageError, BackendInfo
+    metadata.rs           # ObjectMetaFile, ObjectMeta, ErasureMeta, PutOptions
     bitrot.rs             # sha256_hex(), md5_hex()
     local_volume.rs       # LocalVolume: Backend impl for local directories
     remote_volume.rs      # RemoteVolume: Backend impl over HTTP (internode RPC)

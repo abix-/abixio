@@ -179,7 +179,7 @@ identity. They influence new writes but do not affect existing objects.
 ```json
 {
   "versioning": "Enabled",
-  "ec": { "ftt": 3 },
+  "ftt": 3,
   "tags": { "env": "prod" },
   "policy": { "Version": "2012-10-17", "Statement": [] },
   "lifecycle": "<LifecycleConfiguration>...</LifecycleConfiguration>"

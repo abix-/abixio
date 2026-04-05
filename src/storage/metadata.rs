@@ -128,13 +128,6 @@ pub struct VersioningConfig {
     pub status: String, // "Enabled", "Suspended", or absent
 }
 
-// -- per-bucket erasure coding config --
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct EcConfig {
-    pub ftt: usize,
-}
-
 // -- consolidated bucket settings --
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -142,7 +135,7 @@ pub struct BucketSettings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub versioning: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub ec: Option<EcConfig>,
+    pub ftt: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tags: Option<HashMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]

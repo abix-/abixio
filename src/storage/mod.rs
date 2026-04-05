@@ -181,11 +181,11 @@ pub trait Store: Send + Sync {
         prefix: &str,
     ) -> Result<Vec<(String, Vec<ObjectMeta>)>, StorageError>;
 
-    // -- per-bucket EC config --
+    // -- per-bucket FTT --
 
-    fn get_ec_config(&self, bucket: &str) -> Result<Option<metadata::EcConfig>, StorageError>;
+    fn get_ftt(&self, bucket: &str) -> Result<Option<usize>, StorageError>;
 
-    fn set_ec_config(&self, bucket: &str, config: &metadata::EcConfig) -> Result<(), StorageError>;
+    fn set_ftt(&self, bucket: &str, ftt: usize) -> Result<(), StorageError>;
 
     // -- bucket settings --
 
