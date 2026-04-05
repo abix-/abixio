@@ -1703,3 +1703,473 @@ fn extract_xml_value(xml: &str, tag: &str) -> String {
     }
     panic!("tag <{}> not found in: {}", tag, xml);
 }
+
+/// Helper: create upload, return upload_id
+async fn create_upload(client: &reqwest::Client, addr: &SocketAddr, bucket: &str, key: &str) -> String {
+    let resp = client
+        .post(url(addr, &format!("/{}/{}?uploads", bucket, key)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    extract_xml_value(&body, "UploadId")
+}
+
+/// Helper: upload a part, return etag
+async fn upload_part(
+    client: &reqwest::Client,
+    addr: &SocketAddr,
+    bucket: &str,
+    key: &str,
+    upload_id: &str,
+    part_number: i32,
+    data: &[u8],
+) -> String {
+    let resp = client
+        .put(url_with_query(
+            addr,
+            &format!("/{}/{}", bucket, key),
+            &[("uploadId", upload_id), ("partNumber", &part_number.to_string())],
+        ))
+        .body(data.to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "upload_part {} failed", part_number);
+    resp.headers()["etag"].to_str().unwrap().to_string()
+}
+
+// --- Comprehensive multipart tests ---
+
+#[tokio::test]
+async fn multipart_each_upload_gets_unique_id() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let id1 = create_upload(&client, &addr, "tb", "key").await;
+    let id2 = create_upload(&client, &addr, "tb", "key").await;
+    let id3 = create_upload(&client, &addr, "tb", "other").await;
+    assert_ne!(id1, id2, "same key should get different upload IDs");
+    assert_ne!(id1, id3);
+    assert_ne!(id2, id3);
+}
+
+#[tokio::test]
+async fn multipart_upload_part_returns_correct_etag() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+
+    let data = b"hello world";
+    let expected_md5 = format!("\"{}\"", md5_hex(data));
+    let etag = upload_part(&client, &addr, "tb", "key", &uid, 1, data).await;
+    assert_eq!(etag, expected_md5, "part etag should be MD5 of part data");
+}
+
+#[tokio::test]
+async fn multipart_overwrite_part_number() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+
+    // upload part 1 twice with different data
+    let _etag1a = upload_part(&client, &addr, "tb", "key", &uid, 1, b"first").await;
+    let etag1b = upload_part(&client, &addr, "tb", "key", &uid, 1, b"second").await;
+    let etag2 = upload_part(&client, &addr, "tb", "key", &uid, 2, b"part2").await;
+
+    // complete with the overwritten part 1
+    let complete_xml = format!(
+        r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
+        etag1b, etag2
+    );
+    let resp = client
+        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .body(complete_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // verify content uses second upload of part 1
+    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "secondpart2");
+}
+
+#[tokio::test]
+async fn multipart_non_sequential_part_numbers() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+
+    // upload parts 3, 1, 7 (non-sequential, out of order)
+    let etag3 = upload_part(&client, &addr, "tb", "key", &uid, 3, b"CCC").await;
+    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"AAA").await;
+    let etag7 = upload_part(&client, &addr, "tb", "key", &uid, 7, b"GGG").await;
+
+    // complete in order 1, 3, 7
+    let complete_xml = format!(
+        r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>3</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>7</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
+        etag1, etag3, etag7
+    );
+    let resp = client
+        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .body(complete_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "AAACCCGGG");
+}
+
+#[tokio::test]
+async fn multipart_large_parts() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+
+    // 1MB parts
+    let part1: Vec<u8> = vec![b'A'; 1024 * 1024];
+    let part2: Vec<u8> = vec![b'B'; 1024 * 1024];
+
+    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, &part1).await;
+    let etag2 = upload_part(&client, &addr, "tb", "key", &uid, 2, &part2).await;
+
+    let complete_xml = format!(
+        r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
+        etag1, etag2
+    );
+    let resp = client
+        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .body(complete_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // verify size and content
+    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers()["content-length"], "2097152"); // 2MB
+    let body = resp.bytes().await.unwrap();
+    assert_eq!(body.len(), 2 * 1024 * 1024);
+    assert!(body[0..1024].iter().all(|&b| b == b'A'));
+    assert!(body[1024 * 1024..1024 * 1024 + 1024].iter().all(|&b| b == b'B'));
+}
+
+#[tokio::test]
+async fn multipart_complete_with_missing_part_fails() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"data").await;
+
+    // try to complete with part 1 and non-existent part 2
+    let complete_xml = format!(
+        r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>"missing"</ETag></Part></CompleteMultipartUpload>"#,
+        etag1
+    );
+    let resp = client
+        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .body(complete_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), 200, "should fail with missing part");
+}
+
+#[tokio::test]
+async fn multipart_complete_malformed_xml_fails() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+
+    let resp = client
+        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .body("not xml")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn multipart_list_parts_shows_sizes() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+    upload_part(&client, &addr, "tb", "key", &uid, 1, b"short").await;
+    upload_part(&client, &addr, "tb", "key", &uid, 2, &vec![b'x'; 10000]).await;
+
+    let resp = client
+        .get(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Size>5</Size>"), "part 1 size: {}", body);
+    assert!(body.contains("<Size>10000</Size>"), "part 2 size: {}", body);
+    assert!(body.contains("<UploadId>"), "should include upload ID: {}", body);
+    assert!(body.contains("<Bucket>tb</Bucket>"));
+    assert!(body.contains("<Key>key</Key>"));
+}
+
+#[tokio::test]
+async fn multipart_abort_then_complete_fails() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"data").await;
+
+    // abort
+    let resp = client
+        .delete(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    // try to complete after abort
+    let complete_xml = format!(
+        r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
+        etag1
+    );
+    let resp = client
+        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .body(complete_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), 200, "complete after abort should fail");
+}
+
+#[tokio::test]
+async fn multipart_completed_object_survives_head_and_delete() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"multipart-data").await;
+
+    let complete_xml = format!(
+        r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
+        etag1
+    );
+    client
+        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .body(complete_xml)
+        .send()
+        .await
+        .unwrap();
+
+    // HEAD should work
+    let resp = client.head(url(&addr, "/tb/key")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers()["content-length"], "14");
+
+    // object should appear in list
+    let resp = client.get(url(&addr, "/tb?list-type=2")).send().await.unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Key>key</Key>"), "object should be listed: {}", body);
+
+    // delete should work
+    let resp = client.delete(url(&addr, "/tb/key")).send().await.unwrap();
+    assert_eq!(resp.status(), 204);
+
+    // GET after delete should 404
+    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn multipart_upload_does_not_appear_as_object_until_complete() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "invisible").await;
+    upload_part(&client, &addr, "tb", "invisible", &uid, 1, b"data").await;
+
+    // object should NOT appear in listing yet
+    let resp = client.get(url(&addr, "/tb?list-type=2")).send().await.unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(!body.contains("invisible"), "in-progress upload should not be listed: {}", body);
+
+    // GET should 404
+    let resp = client.get(url(&addr, "/tb/invisible")).send().await.unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn multipart_list_uploads_after_complete_is_empty() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"data").await;
+
+    // should show in list
+    let resp = client.get(url(&addr, "/tb?uploads")).send().await.unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains(&uid), "upload should be listed before complete");
+
+    // complete
+    let complete_xml = format!(
+        r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
+        etag1
+    );
+    client
+        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .body(complete_xml)
+        .send()
+        .await
+        .unwrap();
+
+    // should NOT show in list after complete
+    let resp = client.get(url(&addr, "/tb?uploads")).send().await.unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(!body.contains(&uid), "upload should be gone after complete: {}", body);
+}
+
+#[tokio::test]
+async fn multipart_list_uploads_after_abort_is_empty() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+
+    // abort
+    client
+        .delete(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client.get(url(&addr, "/tb?uploads")).send().await.unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(!body.contains(&uid), "upload should be gone after abort: {}", body);
+}
+
+#[tokio::test]
+async fn multipart_complete_etag_is_multipart_format() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"aaa").await;
+    let etag2 = upload_part(&client, &addr, "tb", "key", &uid, 2, b"bbb").await;
+
+    let complete_xml = format!(
+        r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
+        etag1, etag2
+    );
+    let resp = client
+        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .body(complete_xml)
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    let etag = extract_xml_value(&body, "ETag");
+
+    // multipart etag format: "md5-N" where N is part count
+    assert!(etag.contains("-2"), "multipart etag should end with -2: {}", etag);
+}
+
+#[tokio::test]
+async fn multipart_single_part_upload() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"only-part").await;
+
+    let complete_xml = format!(
+        r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
+        etag1
+    );
+    let resp = client
+        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .body(complete_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "only-part");
+}
+
+#[tokio::test]
+async fn multipart_empty_part() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"data").await;
+    let etag2 = upload_part(&client, &addr, "tb", "key", &uid, 2, b"").await;
+
+    let complete_xml = format!(
+        r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
+        etag1, etag2
+    );
+    let resp = client
+        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .body(complete_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "data");
+}
+
+fn md5_hex(data: &[u8]) -> String {
+    use md5::{Digest, Md5};
+    let mut hasher = Md5::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
