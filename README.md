@@ -2,9 +2,9 @@
 
 ## Why AbixIO
 
-S3-compatible object stores all inherit the same MinIO model: identical nodes, uniform erasure sets, one parity ratio for the whole pool. AbixIO breaks that.
+MinIO and its closest descendants (RustFS) require identical nodes within a pool and fix parity at the erasure-set level. AbixIO drops both constraints.
 
-**Per-object fault tolerance.** Your critical config file gets 1+5 erasure coding. Your bulk logs get 3+1. Same bucket, same disks. No other S3 store does this.
+**Per-object fault tolerance.** Your critical config file gets 1+5 erasure coding. Your bulk logs get 3+1. Same bucket, same disks. Arbitrary data/parity ratios set inline per object via headers.
 
 **Heterogeneous everything.** Mixed disk counts, mixed node sizes, mixed volume types. One flat pool. Think vSAN meets S3.
 
