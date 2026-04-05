@@ -16,6 +16,7 @@ use super::errors::{
 use super::response::*;
 use crate::admin::handlers::AdminHandler;
 use crate::cluster::{ClusterManager, cluster_probe_header};
+use crate::storage::storage_server::StorageServer;
 use crate::query::parse_query;
 use crate::storage::Store;
 use crate::storage::erasure_set::ErasureSet;
@@ -25,6 +26,7 @@ pub struct S3Handler {
     store: Arc<ErasureSet>,
     auth: AuthConfig,
     admin: Option<Arc<AdminHandler>>,
+    storage_server: Option<Arc<StorageServer>>,
     cluster: Arc<ClusterManager>,
 }
 
@@ -72,6 +74,7 @@ impl S3Handler {
             store,
             auth,
             admin: None,
+            storage_server: None,
             cluster,
         }
     }
@@ -80,9 +83,21 @@ impl S3Handler {
         self.admin = Some(admin);
     }
 
+    pub fn set_storage_server(&mut self, server: Arc<StorageServer>) {
+        self.storage_server = Some(server);
+    }
+
     pub async fn dispatch(&self, req: Request<Incoming>) -> Response<BoxBody> {
         let request_id = make_request_id();
         let path = req.uri().path().trim_start_matches('/').to_string();
+
+        // internode storage RPC (has its own JWT auth)
+        if path.starts_with("_storage/v1/") {
+            if let Some(server) = &self.storage_server {
+                return server.dispatch(req).await;
+            }
+            return error_response(&ERR_METHOD_NOT_ALLOWED);
+        }
 
         if path == "_admin/cluster/status" && self.cluster_probe_authorized(&req) {
             if let Some(admin) = &self.admin {

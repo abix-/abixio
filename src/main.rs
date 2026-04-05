@@ -17,6 +17,7 @@ use abixio::s3::router;
 use abixio::storage::Backend;
 use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::erasure_set::{ErasureSet, default_ec};
+use abixio::storage::storage_server::StorageServer;
 
 #[tokio::main]
 async fn main() {
@@ -146,8 +147,25 @@ async fn main() {
         Arc::clone(&cluster),
     ));
 
+    // build storage server for internode RPC
+    let local_volumes_map: std::collections::HashMap<String, LocalVolume> = volume_paths
+        .iter()
+        .filter_map(|p| {
+            LocalVolume::new(p.as_path())
+                .ok()
+                .map(|v| (p.display().to_string(), v))
+        })
+        .collect();
+    let storage_server = Arc::new(StorageServer::new(
+        local_volumes_map,
+        auth.access_key.clone(),
+        auth.secret_key.clone(),
+        auth.no_auth,
+    ));
+
     let mut handler = S3Handler::new(set, auth, cluster);
     handler.set_admin(admin);
+    handler.set_storage_server(storage_server);
     let handler = Arc::new(handler);
     let addr = parse_listen_addr(&cfg.listen);
 
