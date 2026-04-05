@@ -4,7 +4,7 @@
 
 MinIO and its closest descendants (RustFS) require identical nodes within a pool and fix parity at the erasure-set level. AbixIO drops both constraints.
 
-**Per-object fault tolerance.** Your critical config file gets FTT=5 (survives 5 disk failures). Your bulk logs get FTT=1. Same bucket, same disks. One header per object.
+**Per-object fault tolerance.** Set failures to tolerate per object. Your critical config survives 5 disk failures. Your bulk logs tolerate 1. Same bucket, same disks. One header.
 
 **Heterogeneous everything.** Mixed disk counts, mixed node sizes, mixed volume types. One flat pool. Think vSAN meets S3.
 
