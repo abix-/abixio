@@ -86,6 +86,10 @@ S3 Select, cloud storage backends.
 | [healing.md](docs/healing.md) | Erasure healing, MRF queue, scanner |
 | [s3-compliance.md](docs/s3-compliance.md) | Full S3 API compliance audit (all 72 operations) |
 
+## Related
+
+- **[abixio-ui](https://github.com/abix-/abixio-ui)** -- native desktop S3 manager and AbixIO admin UI. Browse, upload, manage objects. Auto-detects AbixIO servers for disk health, healing, and shard inspection.
+
 ## License
 
 [GNU General Public License v3.0](LICENSE)
