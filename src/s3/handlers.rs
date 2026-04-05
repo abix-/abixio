@@ -125,6 +125,7 @@ impl S3Handler {
         let is_lifecycle = query.contains("lifecycle");
         let is_cors = query.contains("cors");
         let is_acl = query.contains("acl");
+        let is_notification = query.contains("notification");
 
         let mut resp = match (bucket, key, &method) {
             ("", _, &Method::GET) => self.list_buckets().await,
@@ -145,6 +146,15 @@ impl S3Handler {
             (_, "", &Method::GET) if is_cors => error_response(&super::errors::ERR_NO_SUCH_CORS),
             (_, "", &Method::PUT) if is_cors => error_response(&super::errors::ERR_NOT_IMPLEMENTED),
             (_, "", &Method::DELETE) if is_cors => error_response(&super::errors::ERR_NOT_IMPLEMENTED),
+
+            // bucket notification (stub -- returns empty config on GET, 501 on PUT)
+            (_, "", &Method::GET) if is_notification => {
+                let xml = r#"<NotificationConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"></NotificationConfiguration>"#;
+                ok_body(xml.as_bytes().to_vec())
+            }
+            (_, "", &Method::PUT) if is_notification => {
+                error_response(&super::errors::ERR_NOT_IMPLEMENTED)
+            }
 
             // bucket ACL (stubs matching MinIO -- hardcoded FULL_CONTROL)
             (_, "", &Method::GET) if is_acl => self.get_acl_stub().await,

@@ -2340,6 +2340,41 @@ async fn bucket_cors_delete_returns_501() {
     assert_eq!(resp.status(), 501);
 }
 
+// --- Bucket notification (stubs) ---
+
+#[tokio::test]
+async fn bucket_notification_get_returns_empty_config() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .get(url(&addr, "/tb?notification"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("NotificationConfiguration"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn bucket_notification_put_returns_501() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb?notification"))
+        .body("<NotificationConfiguration/>")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 501);
+}
+
 // --- ACL stubs (matching MinIO) ---
 
 #[tokio::test]

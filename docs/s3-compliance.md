@@ -3,7 +3,7 @@
 Authoritative audit of every S3 API operation. Compared against MinIO's
 72 unique handler routes in `cmd/api-router.go`.
 
-abixio implements **39 of 72** operations. 194 tests.
+abixio implements **41 of 72** operations. 196 tests.
 
 ## All operations
 
@@ -40,8 +40,8 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 | GetBucketReplication | `GET /{bucket}?replication` | No | 0/10 | |
 | PutBucketReplication | `PUT /{bucket}?replication` | No | 0/10 | |
 | DeleteBucketReplication | `DELETE /{bucket}?replication` | No | 0/10 | |
-| GetBucketNotification | `GET /{bucket}?notification` | No | 0/10 | |
-| PutBucketNotification | `PUT /{bucket}?notification` | No | 0/10 | |
+| GetBucketNotification | `GET /{bucket}?notification` | Stub | 3/10 | Returns empty config XML. 2.0 item. |
+| PutBucketNotification | `PUT /{bucket}?notification` | Stub | 3/10 | Returns 501. 2.0 item. |
 | GetBucketLogging | `GET /{bucket}?logging` | No | 0/10 | |
 | GetBucketWebsite | `GET /{bucket}?website` | No | 0/10 | |
 | DeleteBucketWebsite | `DELETE /{bucket}?website` | No | 0/10 | |
@@ -139,7 +139,7 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 
 ## Summary
 
-39 of 72 operations (54%). 194 tests.
+41 of 72 operations (57%). 196 tests.
 
 Not implemented: encryption config, replication, notifications,
 object lock/retention, ACLs, S3 Select.
