@@ -115,9 +115,20 @@ impl S3Handler {
         };
 
         let is_tagging = query.contains("tagging");
+        let is_versioning = query.contains("versioning");
+        let is_versions = query.contains("versions");
 
         let mut resp = match (bucket, key, &method) {
             ("", _, &Method::GET) => self.list_buckets().await,
+
+            // bucket versioning config
+            (b, "", &Method::GET) if is_versioning => self.get_bucket_versioning(b).await,
+            (b, "", &Method::PUT) if is_versioning => self.put_bucket_versioning(b, req).await,
+
+            // list object versions
+            (b, "", &Method::GET) if is_versions => {
+                self.list_object_versions_handler(b, &req).await
+            }
 
             // bucket tagging (must precede bucket catch-alls)
             (b, "", &Method::GET) if is_tagging => self.get_bucket_tagging(b).await,
@@ -140,7 +151,7 @@ impl S3Handler {
             (b, k, &Method::PUT) => self.put_object(b, k, req).await,
             (b, k, &Method::GET) => self.get_object(b, k, &req).await,
             (b, k, &Method::HEAD) => self.head_object(b, k, &req).await,
-            (b, k, &Method::DELETE) => self.delete_object(b, k).await,
+            (b, k, &Method::DELETE) => self.delete_object(b, k, &query).await,
             _ => error_response(&ERR_METHOD_NOT_ALLOWED),
         };
 
@@ -349,13 +360,87 @@ impl S3Handler {
             user_metadata,
             ..Default::default()
         };
-        match self.store.put_object(bucket, key, &body, opts) {
-            Ok(info) => Response::builder()
+
+        // check if versioning is enabled for this bucket
+        let versioning = self.store.get_versioning_config(bucket).ok().flatten();
+        let versioning_enabled = versioning
+            .as_ref()
+            .map(|c| c.status == "Enabled")
+            .unwrap_or(false);
+        let versioning_suspended = versioning
+            .as_ref()
+            .map(|c| c.status == "Suspended")
+            .unwrap_or(false);
+
+        if versioning_enabled || versioning_suspended {
+            let version_id = if versioning_enabled {
+                uuid::Uuid::new_v4().to_string()
+            } else {
+                "null".to_string()
+            };
+
+            // write versioned shard to all disks
+            let info = match self.store.put_object(bucket, key, &body, opts) {
+                Ok(i) => i,
+                Err(e) => return error_response(&map_error(&e)),
+            };
+
+            // write versioned shard data
+            for disk in self.store.disks() {
+                let mut meta = match disk.stat_object(bucket, key) {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+                meta.version_id = version_id.clone();
+                let shard_data = match disk.read_shard(bucket, key) {
+                    Ok((d, _)) => d,
+                    Err(_) => continue,
+                };
+                let _ = disk.write_versioned_shard(bucket, key, &version_id, &shard_data, &meta);
+            }
+
+            // update version index on all disks
+            for disk in self.store.disks() {
+                let mut entries = disk.read_version_index(bucket, key).unwrap_or_default();
+                // if suspended and there's an existing "null" version, remove it
+                if versioning_suspended {
+                    entries.retain(|e| e.version_id != "null");
+                }
+                // mark all existing as not latest
+                for e in &mut entries {
+                    e.is_latest = false;
+                }
+                // add new version at front
+                entries.insert(
+                    0,
+                    crate::storage::metadata::VersionEntry {
+                        version_id: version_id.clone(),
+                        is_latest: true,
+                        is_delete_marker: false,
+                        created_at: info.created_at,
+                        size: info.size,
+                        etag: info.etag.clone(),
+                    },
+                );
+                let _ = disk.write_version_index(bucket, key, &entries);
+            }
+
+            Response::builder()
                 .status(StatusCode::OK)
                 .header("ETag", format!("\"{}\"", info.etag))
+                .header("x-amz-version-id", &version_id)
                 .body(Full::new(Bytes::new()))
-                .unwrap(),
-            Err(e) => error_response(&map_error(&e)),
+                .unwrap()
+        } else {
+            // unversioned: overwrite as before
+            match self.store.put_object(bucket, key, &body, opts) {
+                Ok(info) => Response::builder()
+                    .status(StatusCode::OK)
+                    .header("ETag", format!("\"{}\"", info.etag))
+                    .body(Full::new(Bytes::new()))
+                    .unwrap(),
+                Err(e) => error_response(&map_error(&e)),
+            }
         }
     }
 
@@ -365,9 +450,21 @@ impl S3Handler {
         key: &str,
         req: &Request<Incoming>,
     ) -> Response<BoxBody> {
-        let (data, info) = match self.store.get_object(bucket, key) {
-            Ok(r) => r,
-            Err(e) => return error_response(&map_error(&e)),
+        // check for ?versionId=X
+        let query_str = req.uri().query().unwrap_or("");
+        let params = parse_query(query_str);
+        let version_id = params.get("versionId").cloned();
+
+        let (data, info) = if let Some(vid) = &version_id {
+            match self.store.get_object_version(bucket, key, vid) {
+                Ok(r) => r,
+                Err(e) => return error_response(&map_error(&e)),
+            }
+        } else {
+            match self.store.get_object(bucket, key) {
+                Ok(r) => r,
+                Err(e) => return error_response(&map_error(&e)),
+            }
         };
 
         // check conditional request headers
@@ -406,6 +503,9 @@ impl S3Handler {
         if let Some(cr) = content_range {
             builder = builder.header("Content-Range", cr);
         }
+        if !info.version_id.is_empty() {
+            builder = builder.header("x-amz-version-id", &info.version_id);
+        }
         for (k, v) in &info.user_metadata {
             builder = builder.header(k.as_str(), v.as_str());
         }
@@ -437,10 +537,70 @@ impl S3Handler {
         }
     }
 
-    async fn delete_object(&self, bucket: &str, key: &str) -> Response<BoxBody> {
-        match self.store.delete_object(bucket, key) {
-            Ok(()) => empty_response(StatusCode::NO_CONTENT),
-            Err(e) => error_response(&map_error(&e)),
+    async fn delete_object(&self, bucket: &str, key: &str, query: &str) -> Response<BoxBody> {
+        let params = parse_query(query);
+        let version_id = params.get("versionId").cloned();
+
+        // if versionId specified, permanently delete that version
+        if let Some(vid) = version_id {
+            match self.store.delete_object_version(bucket, key, &vid) {
+                Ok(()) => {
+                    let mut resp = empty_response(StatusCode::NO_CONTENT);
+                    resp.headers_mut().insert(
+                        "x-amz-version-id",
+                        vid.parse().expect("valid header"),
+                    );
+                    return resp;
+                }
+                Err(e) => return error_response(&map_error(&e)),
+            }
+        }
+
+        // check if versioning is enabled
+        let versioning = self.store.get_versioning_config(bucket).ok().flatten();
+        let versioned = versioning
+            .as_ref()
+            .map(|c| c.status == "Enabled" || c.status == "Suspended")
+            .unwrap_or(false);
+
+        if versioned {
+            // add delete marker instead of actually deleting
+            let marker_id = uuid::Uuid::new_v4().to_string();
+            let now = crate::storage::metadata::unix_timestamp_secs();
+            for disk in self.store.disks() {
+                let mut entries = disk.read_version_index(bucket, key).unwrap_or_default();
+                for e in &mut entries {
+                    e.is_latest = false;
+                }
+                entries.insert(
+                    0,
+                    crate::storage::metadata::VersionEntry {
+                        version_id: marker_id.clone(),
+                        is_latest: true,
+                        is_delete_marker: true,
+                        created_at: now,
+                        size: 0,
+                        etag: String::new(),
+                    },
+                );
+                let _ = disk.write_version_index(bucket, key, &entries);
+            }
+            let mut resp = empty_response(StatusCode::NO_CONTENT);
+            resp.headers_mut().insert(
+                "x-amz-delete-marker",
+                "true".parse().expect("valid header"),
+            );
+            resp.headers_mut().insert(
+                "x-amz-version-id",
+                marker_id.parse().expect("valid header"),
+            );
+            resp
+        } else {
+            // unversioned: actually delete
+            match self.store.delete_object(bucket, key) {
+                Ok(()) => empty_response(StatusCode::NO_CONTENT),
+                Err(e) => error_response(&map_error(&e)),
+            }
         }
     }
 
@@ -640,6 +800,121 @@ impl S3Handler {
         match std::fs::read(path) {
             Ok(data) => serde_json::from_slice(&data).unwrap_or_default(),
             Err(_) => HashMap::new(),
+        }
+    }
+
+    // -- bucket versioning --
+
+    async fn get_bucket_versioning(&self, bucket: &str) -> Response<BoxBody> {
+        match self.store.get_versioning_config(bucket) {
+            Ok(config) => {
+                let status = config.map(|c| c.status);
+                let xml_config = VersioningConfigXml {
+                    xmlns: Some(S3_XMLNS.to_string()),
+                    status,
+                };
+                match xml_to_string(&xml_config) {
+                    Ok(xml) => ok_body(xml.into_bytes()),
+                    Err(_) => error_response(&super::errors::ERR_INTERNAL),
+                }
+            }
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    async fn put_bucket_versioning(
+        &self,
+        bucket: &str,
+        req: Request<Incoming>,
+    ) -> Response<BoxBody> {
+        let body = match req.collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+        let body_str = match std::str::from_utf8(&body) {
+            Ok(s) => s,
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+        let config: VersioningConfigXml = match xml_from_str(body_str) {
+            Ok(c) => c,
+            Err(_) => return error_response(&ERR_MALFORMED_XML),
+        };
+        let status = config.status.unwrap_or_default();
+        if status != "Enabled" && status != "Suspended" {
+            return error_response(&ERR_MALFORMED_XML);
+        }
+        let vc = crate::storage::metadata::VersioningConfig {
+            status: status.clone(),
+        };
+        match self.store.set_versioning_config(bucket, &vc) {
+            Ok(()) => empty_response(StatusCode::OK),
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    // -- list object versions --
+
+    async fn list_object_versions_handler(
+        &self,
+        bucket: &str,
+        req: &Request<Incoming>,
+    ) -> Response<BoxBody> {
+        let query_str = req.uri().query().unwrap_or("");
+        let params = parse_query(query_str);
+        let prefix = params.get("prefix").cloned().unwrap_or_default();
+        let key_marker = params.get("key-marker").cloned().unwrap_or_default();
+        let version_id_marker = params
+            .get("version-id-marker")
+            .cloned()
+            .unwrap_or_default();
+        let max_keys: usize = params
+            .get("max-keys")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1000);
+
+        match self.store.list_object_versions(bucket, &prefix) {
+            Ok(entries) => {
+                let mut versions = Vec::new();
+                let mut delete_markers = Vec::new();
+                for (key, ver_entries) in &entries {
+                    for ve in ver_entries {
+                        if ve.is_delete_marker {
+                            delete_markers.push(DeleteMarkerXml {
+                                key: key.clone(),
+                                version_id: ve.version_id.clone(),
+                                is_latest: ve.is_latest,
+                                last_modified: format_timestamp(ve.created_at),
+                            });
+                        } else {
+                            versions.push(VersionXml {
+                                key: key.clone(),
+                                version_id: ve.version_id.clone(),
+                                is_latest: ve.is_latest,
+                                last_modified: format_timestamp(ve.created_at),
+                                etag: format!("\"{}\"", ve.etag),
+                                size: ve.size,
+                                storage_class: "STANDARD".to_string(),
+                            });
+                        }
+                    }
+                }
+                let result = ListVersionsResultXml {
+                    xmlns: S3_XMLNS.to_string(),
+                    name: bucket.to_string(),
+                    prefix,
+                    key_marker,
+                    version_id_marker,
+                    max_keys,
+                    is_truncated: false,
+                    versions,
+                    delete_markers,
+                };
+                match xml_to_string(&result) {
+                    Ok(xml) => ok_body(xml.into_bytes()),
+                    Err(_) => error_response(&super::errors::ERR_INTERNAL),
+                }
+            }
+            Err(e) => error_response(&map_error(&e)),
         }
     }
 

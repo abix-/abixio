@@ -157,6 +157,72 @@ pub struct TagXml {
     pub value: String,
 }
 
+// -- Versioning config --
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename = "VersioningConfiguration")]
+pub struct VersioningConfigXml {
+    #[serde(rename = "@xmlns", skip_serializing_if = "Option::is_none", default)]
+    pub xmlns: Option<String>,
+    #[serde(rename = "Status", skip_serializing_if = "Option::is_none", default)]
+    pub status: Option<String>,
+}
+
+// -- ListVersionsResult --
+
+#[derive(Debug, Serialize)]
+#[serde(rename = "ListVersionsResult")]
+pub struct ListVersionsResultXml {
+    #[serde(rename = "@xmlns")]
+    pub xmlns: String,
+    #[serde(rename = "Name")]
+    pub name: String,
+    #[serde(rename = "Prefix")]
+    pub prefix: String,
+    #[serde(rename = "KeyMarker")]
+    pub key_marker: String,
+    #[serde(rename = "VersionIdMarker")]
+    pub version_id_marker: String,
+    #[serde(rename = "MaxKeys")]
+    pub max_keys: usize,
+    #[serde(rename = "IsTruncated")]
+    pub is_truncated: bool,
+    #[serde(rename = "Version", skip_serializing_if = "Vec::is_empty")]
+    pub versions: Vec<VersionXml>,
+    #[serde(rename = "DeleteMarker", skip_serializing_if = "Vec::is_empty")]
+    pub delete_markers: Vec<DeleteMarkerXml>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct VersionXml {
+    #[serde(rename = "Key")]
+    pub key: String,
+    #[serde(rename = "VersionId")]
+    pub version_id: String,
+    #[serde(rename = "IsLatest")]
+    pub is_latest: bool,
+    #[serde(rename = "LastModified")]
+    pub last_modified: String,
+    #[serde(rename = "ETag")]
+    pub etag: String,
+    #[serde(rename = "Size")]
+    pub size: u64,
+    #[serde(rename = "StorageClass")]
+    pub storage_class: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DeleteMarkerXml {
+    #[serde(rename = "Key")]
+    pub key: String,
+    #[serde(rename = "VersionId")]
+    pub version_id: String,
+    #[serde(rename = "IsLatest")]
+    pub is_latest: bool,
+    #[serde(rename = "LastModified")]
+    pub last_modified: String,
+}
+
 pub const S3_XMLNS: &str = "http://s3.amazonaws.com/doc/2006-03-01/";
 
 pub fn default_owner() -> Owner {
