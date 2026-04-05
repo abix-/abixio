@@ -16,6 +16,7 @@ use abixio::s3::handlers::S3Handler;
 use abixio::s3::router;
 use abixio::storage::Backend;
 use abixio::storage::local_volume::LocalVolume;
+use abixio::storage::remote_volume::RemoteVolume;
 use abixio::storage::erasure_set::{ErasureSet, default_ec};
 use abixio::storage::storage_server::StorageServer;
 
@@ -51,17 +52,50 @@ async fn main() {
         "identity resolved"
     );
 
-    let backends: Vec<Box<dyn Backend>> = match volume_paths
-        .iter()
-        .map(|p| LocalVolume::new(p.as_path()).map(|d| Box::new(d) as Box<dyn Backend>))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: {}", e);
-            std::process::exit(1);
+    // build mixed local + remote backends from identity
+    let access_key = std::env::var("ABIXIO_ACCESS_KEY").unwrap_or_default();
+    let secret_key = std::env::var("ABIXIO_SECRET_KEY").unwrap_or_default();
+
+    let mut backends: Vec<Box<dyn Backend>> = Vec::new();
+    for nv in &identity.node_volumes {
+        if nv.node_id == identity.node_id {
+            // local volumes
+            for vp in &nv.volume_paths {
+                match LocalVolume::new(std::path::Path::new(vp)) {
+                    Ok(v) => backends.push(Box::new(v)),
+                    Err(e) => {
+                        eprintln!("error: local volume {}: {}", vp, e);
+                        std::process::exit(1);
+                    }
+                }
+            }
+        } else {
+            // remote volumes
+            for vp in &nv.volume_paths {
+                backends.push(Box::new(RemoteVolume::new(
+                    nv.endpoint.clone(),
+                    vp.clone(),
+                    access_key.clone(),
+                    secret_key.clone(),
+                    cfg.no_auth,
+                )));
+            }
         }
-    };
+    }
+
+    if backends.is_empty() {
+        eprintln!("error: no backends available");
+        std::process::exit(1);
+    }
+
+    let total_backends = backends.len();
+    let local_count = identity.node_volumes.iter()
+        .filter(|nv| nv.node_id == identity.node_id)
+        .map(|nv| nv.volume_paths.len())
+        .sum::<usize>();
+    let remote_count = total_backends - local_count;
+    tracing::info!(local = local_count, remote = remote_count, total = total_backends, "backends ready");
+
     let (default_data, default_parity) = default_ec(backends.len());
     tracing::info!(data = default_data, parity = default_parity, "auto-computed EC defaults");
 
@@ -115,8 +149,8 @@ async fn main() {
     ));
 
     let auth = AuthConfig {
-        access_key: std::env::var("ABIXIO_ACCESS_KEY").unwrap_or_default(),
-        secret_key: std::env::var("ABIXIO_SECRET_KEY").unwrap_or_default(),
+        access_key: access_key.clone(),
+        secret_key: secret_key.clone(),
         no_auth: cfg.no_auth,
     };
 

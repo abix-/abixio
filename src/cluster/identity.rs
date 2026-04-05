@@ -20,6 +20,7 @@ pub struct NodeIdentity {
 pub struct VolumeEntry {
     pub volume_id: String,
     pub index: u32,
+    pub path: String,
 }
 
 /// Resolved cluster identity after boot + node exchange.
@@ -32,6 +33,15 @@ pub struct ResolvedIdentity {
     pub nodes: Vec<String>,
     pub disk_paths: Vec<PathBuf>,
     pub all_members: Vec<SetMember>,
+    /// node_id -> (advertise_endpoint, vec of volume paths)
+    pub node_volumes: Vec<NodeVolumes>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeVolumes {
+    pub node_id: String,
+    pub endpoint: String,
+    pub volume_paths: Vec<String>,
 }
 
 /// Boot sequence: load or format volumes, then resolve identity.
@@ -55,9 +65,11 @@ pub async fn resolve_identity(
         advertise: advertise.clone(),
         volumes: formats
             .iter()
-            .map(|f| VolumeEntry {
+            .enumerate()
+            .map(|(i, f)| VolumeEntry {
                 volume_id: f.volume_id.clone(),
                 index: f.volume_index,
+                path: disk_paths[i].display().to_string(),
             })
             .collect(),
     };
@@ -78,6 +90,11 @@ pub async fn resolve_identity(
         let set_id = uuid::Uuid::new_v4().to_string();
         let members = build_members(&[local_identity.clone()]);
         finalize_volumes(disk_paths, &mut formats, &deployment_id, &set_id, members.clone())?;
+        let node_volumes = vec![NodeVolumes {
+            node_id: node_id.clone(),
+            endpoint: advertise.clone(),
+            volume_paths: disk_paths.iter().map(|p| p.display().to_string()).collect(),
+        }];
         return Ok(ResolvedIdentity {
             node_id,
             deployment_id,
@@ -86,6 +103,7 @@ pub async fn resolve_identity(
             nodes: Vec::new(),
             disk_paths: disk_paths.to_vec(),
             all_members: members,
+            node_volumes,
         });
     }
 
@@ -94,6 +112,15 @@ pub async fn resolve_identity(
         let deployment_id = formats[0].deployment_id.clone().unwrap();
         let set_id = formats[0].set_id.clone().unwrap();
         let members = formats[0].erasure_set.as_ref().unwrap().members.clone();
+        // rebuild node_volumes from members + nodes list
+        // we know our own paths; remote paths will be discovered via probes
+        let node_volumes = build_node_volumes_from_members(
+            &node_id,
+            &advertise,
+            disk_paths,
+            &members,
+            nodes,
+        );
         return Ok(ResolvedIdentity {
             node_id,
             deployment_id,
@@ -102,6 +129,7 @@ pub async fn resolve_identity(
             nodes: nodes.to_vec(),
             disk_paths: disk_paths.to_vec(),
             all_members: members,
+            node_volumes,
         });
     }
 
@@ -169,6 +197,15 @@ pub async fn resolve_identity(
         .map(|id| id.advertise.clone())
         .collect();
 
+    let node_volumes: Vec<NodeVolumes> = all_identities
+        .iter()
+        .map(|id| NodeVolumes {
+            node_id: id.node_id.clone(),
+            endpoint: id.advertise.clone(),
+            volume_paths: id.volumes.iter().map(|v| v.path.clone()).collect(),
+        })
+        .collect();
+
     Ok(ResolvedIdentity {
         node_id,
         deployment_id,
@@ -177,6 +214,7 @@ pub async fn resolve_identity(
         nodes: peer_endpoints,
         disk_paths: disk_paths.to_vec(),
         all_members: members,
+        node_volumes,
     })
 }
 
@@ -221,6 +259,60 @@ fn set_id_for(sorted_node_ids: &[String]) -> String {
     format!("set-{}", hex::encode(&digest[..8]))
 }
 
+/// Rebuild node_volumes from persisted members + the --nodes list.
+/// For the local node, we know the disk_paths. For remote nodes, we use
+/// the node endpoint from --nodes and the volume paths aren't known yet
+/// (they'll be resolved when the remote StorageServer is probed).
+fn build_node_volumes_from_members(
+    local_node_id: &str,
+    local_advertise: &str,
+    local_disk_paths: &[PathBuf],
+    members: &[SetMember],
+    nodes: &[String],
+) -> Vec<NodeVolumes> {
+    use std::collections::HashMap;
+
+    // group members by node_id
+    let mut by_node: HashMap<String, Vec<String>> = HashMap::new();
+    for m in members {
+        by_node.entry(m.node_id.clone()).or_default().push(m.volume_id.clone());
+    }
+
+    let mut result = Vec::new();
+
+    // local node
+    if by_node.contains_key(local_node_id) {
+        result.push(NodeVolumes {
+            node_id: local_node_id.to_string(),
+            endpoint: local_advertise.to_string(),
+            volume_paths: local_disk_paths.iter().map(|p| p.display().to_string()).collect(),
+        });
+    }
+
+    // remote nodes -- match by position in the sorted node list
+    // we don't know remote paths from persisted state, so we use volume_id as placeholder
+    for (nid, vol_ids) in &by_node {
+        if nid == local_node_id {
+            continue;
+        }
+        // find matching endpoint from --nodes (best effort: use first unmatched)
+        let endpoint = nodes.iter()
+            .find(|n| {
+                let trimmed = n.trim_end_matches('/');
+                trimmed != local_advertise.trim_end_matches('/')
+            })
+            .cloned()
+            .unwrap_or_default();
+        result.push(NodeVolumes {
+            node_id: nid.clone(),
+            endpoint,
+            volume_paths: vol_ids.clone(),
+        });
+    }
+
+    result
+}
+
 fn derive_advertise(listen: &str) -> String {
     // convert ":10000" or "0.0.0.0:10000" to "http://hostname:10000"
     let addr = if listen.starts_with(':') {
@@ -260,12 +352,12 @@ mod tests {
             NodeIdentity {
                 node_id: "z-node".to_string(),
                 advertise: "http://z:10000".to_string(),
-                volumes: vec![VolumeEntry { volume_id: "v1".to_string(), index: 0 }],
+                volumes: vec![VolumeEntry { volume_id: "v1".to_string(), index: 0, path: "/d1".to_string() }],
             },
             NodeIdentity {
                 node_id: "a-node".to_string(),
                 advertise: "http://a:10000".to_string(),
-                volumes: vec![VolumeEntry { volume_id: "v2".to_string(), index: 0 }],
+                volumes: vec![VolumeEntry { volume_id: "v2".to_string(), index: 0, path: "/d2".to_string() }],
             },
         ];
         let members = build_members(&ids);
