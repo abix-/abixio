@@ -25,8 +25,15 @@ volume, lose nothing. Any S3 client works out of the box.
 
 ## Status
 
-**Alpha.** Erasure-coded storage with internode shard RPC is implemented and
-tested (262 tests). The S3 API covers the core operations (57% of the spec).
+**Early development. Not production-ready.**
+
+This project is 2 days old (first commit 2026-04-04). It is ~11k lines of Rust
+across 71 commits, written almost entirely by AI with human direction. The core
+storage engine works against real S3 clients, but the project has no releases,
+no packaging, no user base, and no field hours.
+
+95 automated tests (unit + integration). The S3 API covers 41 of 72 operations
+(57% of the spec).
 
 What works today:
 - Erasure-coded object storage across local and remote volumes
@@ -35,11 +42,22 @@ What works today:
 - Quorum-aware fencing (unsafe nodes stop serving)
 - Deterministic placement metadata in object shards
 - Background healing (MRF queue + integrity scanner)
+- Object versioning, tagging, multipart upload, presigned URLs
+- Bucket policy and lifecycle configuration storage
 
-What does not work yet:
-- Live topology changes or rebalance
-- Consensus-backed control plane (Raft or equivalent)
-- Encryption at rest
+What is honest:
+- No production deployment has ever run this code
+- No benchmarks, no load testing, no failure injection testing
+- Object tagging returns errors in the latest build (found by abixio-ui integration tests)
+- Chunked transfer encoding is not properly stripped in relay paths
+- Bucket delete fails when versioned objects exist
+- No encryption at rest
+- No live topology changes or rebalance
+- No consensus-backed control plane (Raft or equivalent)
+- Cluster mode is tested in integration tests but not battle-tested at scale
+
+If you need a production S3-compatible object store today, use
+[MinIO](https://github.com/minio/minio) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
 
 ## Quick start
 
