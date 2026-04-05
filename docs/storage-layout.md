@@ -23,7 +23,7 @@ external configuration.
 AbixIO has four metadata layers. Each has a single responsibility.
 
 ```
-Layer 1: Disk Identity         .abixio.sys/disk.json                        "Who is this disk?"
+Layer 1: Volume Identity       .abixio.sys/volume.json                        "Who is this volume?"
 Layer 2: Cluster Runtime       .abixio.sys/cluster.json                     "What is this node doing right now?"
 Layer 3: Bucket Config         .abixio.sys/buckets/<bucket>/settings.json   "How should new objects behave?"
 Layer 4: Object Metadata       <bucket>/<key>/meta.json                     "What is this object and where are its shards?"
@@ -31,14 +31,14 @@ Layer 4: Object Metadata       <bucket>/<key>/meta.json                     "Wha
 
 ---
 
-## Layer 1: Disk Identity
+## Layer 1: Volume Identity
 
-**File**: `.abixio.sys/disk.json` on every disk.
+**File**: `.abixio.sys/volume.json` on every volume.
 
-**Responsibility**: Permanent identity. Who is this disk, what cluster and
+**Responsibility**: Permanent identity. Who is this volume, what cluster and
 erasure set does it belong to, and who are all the other members.
 
-### disk.json schema
+### volume.json schema
 
 | Field | Type | Description |
 |---|---|---|
@@ -46,8 +46,8 @@ erasure set does it belong to, and who are all the other members.
 | `deployment_id` | UUID | Cluster-wide identifier. Same on every disk in the cluster |
 | `set_id` | UUID | Erasure set identifier. Same on every disk in the set |
 | `node_id` | UUID | Node identifier. Same on every disk owned by this node |
-| `disk_id` | UUID | Globally unique disk identifier |
-| `disk_index` | u32 | This disk's position in the erasure set member list |
+| `volume_id` | UUID | Globally unique volume identifier |
+| `volume_index` | u32 | This volume's position in the erasure set member list |
 | `created_at` | u64 | Unix timestamp when this disk was formatted |
 | `erasure_set.members` | array | Full set membership (see below) |
 
@@ -55,8 +55,8 @@ Each member in `erasure_set.members`:
 
 | Field | Type | Description |
 |---|---|---|
-| `disk_id` | UUID | The member disk's unique identifier |
-| `node_id` | UUID | The node that owns this member disk |
+| `volume_id` | UUID | The member volume's unique identifier |
+| `node_id` | UUID | The node that owns this member volume |
 | `index` | u32 | Position in the erasure set |
 
 **Does NOT store**:
@@ -72,15 +72,15 @@ Each member in `erasure_set.members`:
   "deployment_id": "a1b2c3d4-0000-0000-0000-000000000000",
   "set_id": "e5f6a7b8-0000-0000-0000-000000000000",
   "node_id": "11111111-0000-0000-0000-000000000000",
-  "disk_id": "aaaaaaaa-0000-0000-0000-000000000000",
-  "disk_index": 0,
+  "volume_id": "aaaaaaaa-0000-0000-0000-000000000000",
+  "volume_index": 0,
   "created_at": 1712300000,
   "erasure_set": {
     "members": [
-      { "disk_id": "aaaaaaaa-0000-0000-0000-000000000000", "node_id": "11111111-0000-0000-0000-000000000000", "index": 0 },
-      { "disk_id": "bbbbbbbb-0000-0000-0000-000000000000", "node_id": "11111111-0000-0000-0000-000000000000", "index": 1 },
-      { "disk_id": "cccccccc-0000-0000-0000-000000000000", "node_id": "22222222-0000-0000-0000-000000000000", "index": 2 },
-      { "disk_id": "dddddddd-0000-0000-0000-000000000000", "node_id": "22222222-0000-0000-0000-000000000000", "index": 3 }
+      { "volume_id": "aaaaaaaa-0000-0000-0000-000000000000", "node_id": "11111111-0000-0000-0000-000000000000", "index": 0 },
+      { "volume_id": "bbbbbbbb-0000-0000-0000-000000000000", "node_id": "11111111-0000-0000-0000-000000000000", "index": 1 },
+      { "volume_id": "cccccccc-0000-0000-0000-000000000000", "node_id": "22222222-0000-0000-0000-000000000000", "index": 2 },
+      { "volume_id": "dddddddd-0000-0000-0000-000000000000", "node_id": "22222222-0000-0000-0000-000000000000", "index": 3 }
     ]
   }
 }
@@ -95,7 +95,7 @@ disk is enough to reconstruct the cluster's identity.
 deployment_id       one per cluster, all disks share it
   set_id            one per erasure set, all disks in the set share it
     node_id         one per node, all disks on a node share it
-      disk_id       one per physical disk, globally unique
+      volume_id       one per volume, globally unique
 ```
 
 All four are UUIDv4, generated at format time, immutable after that.
@@ -105,14 +105,14 @@ All four are UUIDv4, generated at format time, immutable after that.
 **First boot (standalone)**:
 
 1. Operator starts `abixio --disks /d1,/d2,/d3,/d4 --data 2 --parity 2`
-2. Binary checks each disk for `.abixio.sys/disk.json`
+2. Binary checks each disk for `.abixio.sys/volume.json`
 3. No format found on any disk -- this is a first boot
 4. Generate UUIDs: one `deployment_id`, one `set_id`, one `node_id`, one
-   `disk_id` per disk
-5. Write `disk.json` to every disk with the full member list
+   `volume_id` per disk
+5. Write `volume.json` to every disk with the full member list
 6. Proceed to serve
 
-On subsequent boots, the binary reads disk.json and derives identity. No
+On subsequent boots, the binary reads volume.json and derives identity. No
 `--node-id` needed. `--data`/`--parity` are server-default EC policy.
 
 **First boot (multi-node, topology-seeded)**:
@@ -122,17 +122,17 @@ other's identities. For v1, a static topology file seeds the initial format.
 
 1. Operator writes a topology file with node entries and disk paths
 2. Each node starts with `abixio --disks ... --cluster-topology topology.json`
-3. Binary checks disks for disk.json -- none found
+3. Binary checks disks for volume.json -- none found
 4. Binary reads the topology file and matches this node by disk paths:
    - Normalize local `--disks` paths
    - Find the topology node whose disk paths match
    - Error if zero matches or multiple matches
 5. Generate UUIDs: `deployment_id` and `set_id` are derived deterministically
    from the topology file's `cluster_id` and `set_id` (so all nodes generate
-   the same values independently). `node_id` and `disk_id` are derived
-   deterministically from the topology node_id/disk_id strings (so the same
+   the same values independently). `node_id` and `volume_id` are derived
+   deterministically from the topology node_id/volume_id strings (so the same
    topology always produces the same UUIDs)
-6. Write disk.json to every local disk with the full set membership
+6. Write volume.json to every local disk with the full set membership
 7. Proceed to serve
 
 After formatting, the topology file is no longer required. Subsequent boots
@@ -141,7 +141,7 @@ validated against the on-disk format as a safety check.
 
 **Subsequent boot**:
 
-1. Binary reads disk.json from each disk
+1. Binary reads volume.json from each disk
 2. Validates all disks agree on deployment_id, set_id, node_id
 3. Derives identity from format -- no CLI identity flags needed
 4. If `--cluster-topology` is present, validate it matches on-disk format
@@ -151,35 +151,35 @@ validated against the on-disk format as a safety check.
 
 1. Physically move disks to new hardware
 2. Start abixio binary with `--disks` pointing to the moved disks
-3. Binary reads disk.json, discovers this node's identity
-4. Peers recognize the node by its persisted node_id and disk_ids
+3. Binary reads volume.json, discovers this node's identity
+4. Peers recognize the node by its persisted node_id and volume_ids
 5. Node comes online
 
 The binary never stored identity. The disks did. Hardware is irrelevant.
 
 **Disk replacement**:
 
-1. New blank disk has no disk.json
+1. New blank disk has no volume.json
 2. Operator (or future automation) formats the new disk with:
    - Same deployment_id, set_id, node_id
-   - New disk_id (UUIDv4)
+   - New volume_id (UUIDv4)
    - Updated member list
 3. All other disks in the set update their member lists (epoch bump)
 4. Healer reconstructs missing shards onto the new disk
 
 ### Validation rules
 
-On boot, the binary validates disk.json across all local disks:
+On boot, the binary validates volume.json across all local disks:
 
 | Check | Error |
 |---|---|
-| disk.json missing on some disks but present on others | Mixed state: refuse to start |
-| disk.json missing on all disks, no topology | Standalone first boot: auto-format |
-| disk.json missing on all disks, topology present | Cluster first boot: topology-seeded format |
+| volume.json missing on some disks but present on others | Mixed state: refuse to start |
+| volume.json missing on all disks, no topology | Standalone first boot: auto-format |
+| volume.json missing on all disks, topology present | Cluster first boot: topology-seeded format |
 | deployment_id mismatch across local disks | Corrupt or mixed cluster: refuse to start |
 | set_id mismatch across local disks | Corrupt or mixed set: refuse to start |
 | node_id mismatch across local disks | Disks from different nodes mixed together: refuse to start |
-| disk_id duplicated | Corrupt: refuse to start |
+| volume_id duplicated | Corrupt: refuse to start |
 | member list inconsistent across local disks | Stale member list: warn, use newest |
 | format version unsupported | Refuse to start with upgrade message |
 
@@ -192,7 +192,7 @@ future improvement:
 2. Exchange disk inventories
 3. Deterministic leader election picks a coordinator
 4. Coordinator assigns deployment_id, set_id, generates member list
-5. All nodes write disk.json
+5. All nodes write volume.json
 6. No config file at all
 
 This is more complex but eliminates the topology file entirely. The
@@ -208,7 +208,7 @@ already exists and works.
 **Responsibility**: Current operational state. Cluster summary, epoch, peer
 reachability, fencing status. This is runtime state that changes frequently.
 
-disk.json provides the identity that cluster runtime state references.
+volume.json provides the identity that cluster runtime state references.
 See [cluster.md](cluster.md) for the full cluster design.
 
 ---
@@ -247,8 +247,8 @@ The resolved data/parity values are stored in `meta.json` with the object.
 After that, the object is self-describing. Changing server defaults or bucket
 config does not affect existing objects.
 
-EC config is deliberately absent from disk.json. EC is policy (how to
-encode); disk.json is identity (who am I).
+EC config is deliberately absent from volume.json. EC is policy (how to
+encode); volume.json is identity (who am I).
 
 See [per-object-ec.md](per-object-ec.md) for full EC documentation.
 
@@ -287,7 +287,7 @@ ordered newest-first.
         "epoch_id": 7,
         "set_id": "e5f6a7b8-0000-0000-0000-000000000000",
         "node_ids": ["11111111-...", "22222222-...", "33333333-...", "44444444-..."],
-        "disk_ids": ["aaaaaaaa-...", "cccccccc-...", "eeeeeeee-...", "gggggggg-..."]
+        "volume_ids": ["aaaaaaaa-...", "cccccccc-...", "eeeeeeee-...", "gggggggg-..."]
       },
       "checksum": "abc123def456...",
       "user_metadata": { "x-amz-meta-author": "alice" },
@@ -300,9 +300,9 @@ ordered newest-first.
 }
 ```
 
-The `node_ids` and `disk_ids` in object metadata use the same UUIDs as
-disk.json. The healer and decoder can verify that a shard is on the correct
-disk by comparing `meta.json` disk_ids against `disk.json` disk_id.
+The `node_ids` and `volume_ids` in object metadata use the same UUIDs as
+volume.json. The healer and decoder can verify that a shard is on the correct
+disk by comparing `meta.json` volume_ids against `volume.json` volume_id.
 
 ### Fields
 
@@ -319,7 +319,7 @@ disk by comparing `meta.json` disk_ids against `disk.json` disk_id.
 | `erasure.epoch_id` | Placement epoch recorded with the object |
 | `erasure.set_id` | Placement set identity recorded with the object |
 | `erasure.node_ids` | Ordered node identity for each shard |
-| `erasure.disk_ids` | Ordered disk identity for each shard |
+| `erasure.volume_ids` | Ordered disk identity for each shard |
 | `checksum` | SHA-256 hex of THIS shard's data (for bitrot detection) |
 | `user_metadata` | Custom `x-amz-meta-*` headers from the PUT request |
 | `tags` | Object tags (key-value pairs) |
@@ -337,7 +337,7 @@ each object is split into 4 shards distributed across 4 disks.
 ```
 disk0/
   .abixio.sys/
-    disk.json                   # disk identity (Layer 1)
+    volume.json                   # disk identity (Layer 1)
     cluster.json                # cluster runtime state (Layer 2)
     buckets/
       bucket-name/
@@ -352,7 +352,7 @@ disk0/
 
 disk1/
   .abixio.sys/
-    disk.json                   # same deployment_id/set_id/node_id, different disk_id
+    volume.json                   # same deployment_id/set_id/node_id, different volume_id
     cluster.json
     buckets/
       bucket-name/
@@ -413,12 +413,12 @@ The `distribution` array maps shard indices to disk indices. It is a
 deterministic mapping recorded with the object. In the single-node path it is
 derived from a backend permutation. In the placement-aware path it is tied to
 the active placement decision and accompanied by `epoch_id`, `set_id`,
-`node_ids`, and `disk_ids`.
+`node_ids`, and `volume_ids`.
 
 Example with 4 disks: `distribution: [2, 0, 3, 1]` means shard 0 is on
 disk 2, shard 1 is on disk 0, shard 2 is on disk 3, shard 3 is on disk 1.
 
-For placement-aware objects, `node_ids` and `disk_ids` make that layout stable
+For placement-aware objects, `node_ids` and `volume_ids` make that layout stable
 and externally inspectable across nodes.
 
 ---
@@ -427,7 +427,7 @@ and externally inspectable across nodes.
 
 | Current | After disk format |
 |---|---|
-| `--node-id node-1` (required for cluster) | Read from disk.json (removed from CLI) |
+| `--node-id node-1` (required for cluster) | Read from volume.json (removed from CLI) |
 | `--cluster-topology` (required every boot) | One-time format seed, optional after |
 | `--data 2 --parity 2` (server default EC) | Unchanged -- policy, not identity |
 | `--disks /d1,/d2` | Unchanged -- tells binary which paths to use |

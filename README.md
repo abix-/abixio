@@ -66,18 +66,18 @@ Example topology manifest:
       "node_id": "node-1",
       "advertise_s3": "http://node-1.lan:9000",
       "advertise_cluster": "http://node-1.lan:9000",
-      "disks": [
-        { "disk_id": "disk-1a", "path": "/srv/abixio/node-1/d1" },
-        { "disk_id": "disk-1b", "path": "/srv/abixio/node-1/d2" }
+      "volumes": [
+        { "volume_id": "vol-1a", "path": "/srv/abixio/node-1/d1" },
+        { "volume_id": "vol-1b", "path": "/srv/abixio/node-1/d2" }
       ]
     },
     {
       "node_id": "node-2",
       "advertise_s3": "http://node-2.lan:9000",
       "advertise_cluster": "http://node-2.lan:9000",
-      "disks": [
-        { "disk_id": "disk-2a", "path": "/srv/abixio/node-2/d1" },
-        { "disk_id": "disk-2b", "path": "/srv/abixio/node-2/d2" }
+      "volumes": [
+        { "volume_id": "vol-2a", "path": "/srv/abixio/node-2/d1" },
+        { "volume_id": "vol-2b", "path": "/srv/abixio/node-2/d2" }
       ]
     }
   ]
@@ -89,7 +89,6 @@ Start a node with the shared manifest:
 ```bash
 ./target/release/abixio \
   --listen 0.0.0.0:9000 \
-  --node-id node-1 \
   --cluster-topology /etc/abixio/cluster.json \
   --disks /srv/abixio/node-1/d1,/srv/abixio/node-1/d2 \
   --data 2 --parity 2
@@ -98,8 +97,7 @@ Start a node with the shared manifest:
 When `--cluster-topology` is set:
 
 - `cluster_id`, `epoch_id`, peer list, and advertised endpoints come from the manifest
-- local `--node-id` must exist in the manifest
-- local `--disks` must exactly match the manifest entries for that node
+- node identity is auto-detected by matching local `--disks` against the manifest
 - nodes fence if they lose safe cluster contact
 
 ## Configuration
@@ -168,7 +166,7 @@ S3 Select, cloud storage backends.
 | [architecture.md](docs/architecture.md) | Design principles, project structure, MinIO comparison |
 | [cluster.md](docs/cluster.md) | Cluster control design, quorum model, fencing, current limitations |
 | [static-topology.md](docs/static-topology.md) | Static topology manifest schema, startup rules, and restart-based reconfiguration |
-| [storage-layout.md](docs/storage-layout.md) | Disk layout, meta.json format, erasure distribution |
+| [storage-layout.md](docs/storage-layout.md) | On-disk metadata layers, volume identity, directory structure |
 | [versioning.md](docs/versioning.md) | S3 object versioning lifecycle |
 | [tagging.md](docs/tagging.md) | Object and bucket tagging |
 | [presigned-urls.md](docs/presigned-urls.md) | Presigned URL authentication |

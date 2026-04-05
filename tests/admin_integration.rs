@@ -346,8 +346,8 @@ async fn admin_cluster_topology_returns_disks() {
         .await
         .unwrap();
 
-    let disks = body["topology"]["disks"].as_array().unwrap();
-    assert_eq!(disks.len(), 4);
+    let volumes = body["topology"]["volumes"].as_array().unwrap();
+    assert_eq!(volumes.len(), 4);
     assert_eq!(body["topology"]["cluster_id"].as_str().unwrap().starts_with("abixio-"), true);
 }
 

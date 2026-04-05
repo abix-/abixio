@@ -14,7 +14,7 @@ The reference test topology is fixed:
 - default cluster rule: if a node loses control-plane quorum, it fences and
   stops serving
 
-The planner names every disk with a stable `(node_id, disk_id)` pair and stores
+The planner names every disk with a stable `(node_id, volume_id)` pair and stores
 that identity inside shard metadata.
 
 ## Placement Rule

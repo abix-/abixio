@@ -56,10 +56,10 @@ async fn distributed_placement_exact_map_matches_raw_disk_state() {
     assert_eq!(distinct_nodes.len(), 4);
 
     for shard in shards {
-        let disk_id = shard["disk_id"].as_str().unwrap();
-        let obj_dir = harness.shard_root(disk_id).join("testbucket").join("alpha.txt");
-        assert!(obj_dir.join("shard.dat").exists(), "missing shard data for {}", disk_id);
-        assert!(obj_dir.join("meta.json").exists(), "missing meta for {}", disk_id);
+        let volume_id = shard["volume_id"].as_str().unwrap();
+        let obj_dir = harness.shard_root(volume_id).join("testbucket").join("alpha.txt");
+        assert!(obj_dir.join("shard.dat").exists(), "missing shard data for {}", volume_id);
+        assert!(obj_dir.join("meta.json").exists(), "missing meta for {}", volume_id);
     }
 }
 

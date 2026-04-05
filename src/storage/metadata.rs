@@ -49,7 +49,7 @@ pub struct ErasureMeta {
     #[serde(default)]
     pub node_ids: Vec<String>,
     #[serde(default)]
-    pub disk_ids: Vec<String>,
+    pub volume_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -143,7 +143,7 @@ impl ObjectMeta {
             && self.erasure.epoch_id == other.erasure.epoch_id
             && self.erasure.set_id == other.erasure.set_id
             && self.erasure.node_ids == other.erasure.node_ids
-            && self.erasure.disk_ids == other.erasure.disk_ids
+            && self.erasure.volume_ids == other.erasure.volume_ids
             && self.user_metadata == other.user_metadata
             && self.tags == other.tags
     }
@@ -191,11 +191,11 @@ mod tests {
                     "node-3".to_string(),
                     "node-4".to_string(),
                 ],
-                disk_ids: vec![
-                    "disk-a".to_string(),
-                    "disk-b".to_string(),
-                    "disk-c".to_string(),
-                    "disk-d".to_string(),
+                volume_ids: vec![
+                    "vol-a".to_string(),
+                    "vol-b".to_string(),
+                    "vol-c".to_string(),
+                    "vol-d".to_string(),
                 ],
             },
             checksum: "abc123".to_string(),

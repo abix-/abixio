@@ -69,8 +69,8 @@ pub struct ClusterNodeStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ClusterDiskStatus {
-    pub disk_id: String,
+pub struct ClusterVolumeStatus {
+    pub volume_id: String,
     pub node_id: String,
     pub path: String,
 }
@@ -89,7 +89,7 @@ pub struct ClusterTopology {
     pub cluster_id: String,
     pub epoch: ClusterEpoch,
     pub nodes: Vec<ClusterNodeStatus>,
-    pub disks: Vec<ClusterDiskStatus>,
+    pub volumes: Vec<ClusterVolumeStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,7 +253,7 @@ impl ClusterManager {
         epoch_id: u64,
         leader_id: impl Into<String>,
         nodes: Vec<ClusterNodeStatus>,
-        disks: Vec<ClusterDiskStatus>,
+        volumes: Vec<ClusterVolumeStatus>,
     ) {
         let leader_id = leader_id.into();
         let mut guard = self.state.write().unwrap();
@@ -293,7 +293,7 @@ impl ClusterManager {
             reachable_voters,
         };
         guard.topology.nodes = nodes;
-        guard.topology.disks = disks;
+        guard.topology.volumes = volumes;
         let current_epoch = guard.topology.epoch.clone();
         if guard.epochs.is_empty() {
             guard.epochs.push(current_epoch);
@@ -535,17 +535,17 @@ impl ClusterManager {
             .as_ref()
             .and_then(|topology| topology.topology_hash().ok());
         guard.topology.cluster_id = guard.summary.cluster_id.clone();
-        guard.topology.disks = self
+        guard.topology.volumes = self
             .config
             .topology
             .as_ref()
-            .map(StaticTopology::disk_statuses)
+            .map(StaticTopology::volume_statuses)
             .unwrap_or_else(|| {
                 self.config
                     .disk_paths
                     .iter()
-                    .map(|path| ClusterDiskStatus {
-                        disk_id: disk_id_for(&self.config.node_id, path),
+                    .map(|path| ClusterVolumeStatus {
+                        volume_id: volume_id_for(&self.config.node_id, path),
                         node_id: self.config.node_id.clone(),
                         path: path.display().to_string(),
                     })
@@ -639,16 +639,16 @@ fn initial_state(config: &ClusterConfig, cluster_id: &str) -> PersistedClusterSt
                     last_heartbeat_unix_secs: committed_at,
                 }]
             }),
-        disks: config
+        volumes: config
             .topology
             .as_ref()
-            .map(StaticTopology::disk_statuses)
+            .map(StaticTopology::volume_statuses)
             .unwrap_or_else(|| {
                 config
                     .disk_paths
                     .iter()
-                    .map(|path| ClusterDiskStatus {
-                        disk_id: disk_id_for(&config.node_id, path),
+                    .map(|path| ClusterVolumeStatus {
+                        volume_id: volume_id_for(&config.node_id, path),
                         node_id: config.node_id.clone(),
                         path: path.display().to_string(),
                     })
@@ -683,12 +683,12 @@ fn cluster_id_for(node_id: &str, peers: &[String]) -> String {
     format!("abixio-{}", hex::encode(&digest[..8]))
 }
 
-fn disk_id_for(node_id: &str, path: &Path) -> String {
+fn volume_id_for(node_id: &str, path: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(node_id.as_bytes());
     hasher.update(path.display().to_string().as_bytes());
     let digest = hasher.finalize();
-    format!("disk-{}", hex::encode(&digest[..8]))
+    format!("vol-{}", hex::encode(&digest[..8]))
 }
 
 fn normalize_peers(peers: &[String]) -> Vec<String> {
@@ -737,7 +737,7 @@ pub fn cluster_probe_header() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::topology::{StaticTopology, TopologyDisk, TopologyNode};
+    use super::topology::{StaticTopology, TopologyVolume, TopologyNode};
     use http_body_util::Full;
     use hyper::body::{Bytes, Incoming};
     use hyper::server::conn::http1;
@@ -776,8 +776,8 @@ mod tests {
                     node_id: "node-a".to_string(),
                     advertise_s3: "http://127.0.0.1:9000".to_string(),
                     advertise_cluster: "http://127.0.0.1:9000".to_string(),
-                    disks: vec![TopologyDisk {
-                        disk_id: "disk-a".to_string(),
+                    volumes: vec![TopologyVolume {
+                        volume_id: "vol-a".to_string(),
                         path: disk,
                     }],
                 },
@@ -785,8 +785,8 @@ mod tests {
                     node_id: "node-b".to_string(),
                     advertise_s3: "http://127.0.0.1:9001".to_string(),
                     advertise_cluster: "http://127.0.0.1:9001".to_string(),
-                    disks: vec![TopologyDisk {
-                        disk_id: "disk-b".to_string(),
+                    volumes: vec![TopologyVolume {
+                        volume_id: "vol-b".to_string(),
                         path: PathBuf::from("C:/cluster/node-b-disk"),
                     }],
                 },
@@ -925,7 +925,7 @@ mod tests {
         assert_eq!(summary.epoch_id, 7);
         assert!(summary.topology_hash.is_some());
         assert_eq!(manager.nodes().len(), 2);
-        assert_eq!(manager.topology().disks.len(), 2);
+        assert_eq!(manager.topology().volumes.len(), 2);
     }
 
     #[tokio::test]

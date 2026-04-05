@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PlacementDisk {
+pub struct PlacementVolume {
     pub backend_index: usize,
     pub node_id: String,
-    pub disk_id: String,
+    pub volume_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -15,7 +15,7 @@ pub struct PlacementShard {
     pub index: usize,
     pub backend_index: usize,
     pub node_id: String,
-    pub disk_id: String,
+    pub volume_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,11 +31,11 @@ pub struct PlacementRecord {
 pub struct PlacementPlanner {
     epoch_id: u64,
     set_id: String,
-    disks: Vec<PlacementDisk>,
+    disks: Vec<PlacementVolume>,
 }
 
 impl PlacementPlanner {
-    pub fn new(epoch_id: u64, set_id: impl Into<String>, disks: Vec<PlacementDisk>) -> Self {
+    pub fn new(epoch_id: u64, set_id: impl Into<String>, disks: Vec<PlacementVolume>) -> Self {
         Self {
             epoch_id,
             set_id: set_id.into(),
@@ -43,7 +43,7 @@ impl PlacementPlanner {
         }
     }
 
-    pub fn disks(&self) -> &[PlacementDisk] {
+    pub fn disks(&self) -> &[PlacementVolume] {
         &self.disks
     }
 
@@ -73,7 +73,7 @@ impl PlacementPlanner {
             "{}:{}:{}/{}",
             self.epoch_id, self.set_id, bucket, key
         );
-        let mut per_node: BTreeMap<&str, Vec<&PlacementDisk>> = BTreeMap::new();
+        let mut per_node: BTreeMap<&str, Vec<&PlacementVolume>> = BTreeMap::new();
         for disk in &self.disks {
             per_node.entry(&disk.node_id).or_default().push(disk);
         }
@@ -83,11 +83,11 @@ impl PlacementPlanner {
             |node_id| format!("node:{}:{}", key_material, node_id),
         );
 
-        let mut ordered_disks: BTreeMap<&str, Vec<&PlacementDisk>> = BTreeMap::new();
+        let mut ordered_disks: BTreeMap<&str, Vec<&PlacementVolume>> = BTreeMap::new();
         for (node_id, disks) in per_node {
             ordered_disks.insert(
                 node_id,
-                stable_order(disks, |disk| format!("disk:{}:{}", key_material, disk.disk_id)),
+                stable_order(disks, |disk| format!("disk:{}:{}", key_material, disk.volume_id)),
             );
         }
 
@@ -133,7 +133,7 @@ impl PlacementPlanner {
                     index,
                     backend_index: disk.backend_index,
                     node_id: disk.node_id.clone(),
-                    disk_id: disk.disk_id.clone(),
+                    volume_id: disk.volume_id.clone(),
                 })
                 .collect(),
         })
@@ -166,10 +166,10 @@ mod tests {
         for node in 0..4 {
             for disk in 0..2 {
                 let backend_index = node * 2 + disk;
-                disks.push(PlacementDisk {
+                disks.push(PlacementVolume {
                     backend_index,
                     node_id: format!("node-{}", node + 1),
-                    disk_id: format!("node-{}-disk-{}", node + 1, disk + 1),
+                    volume_id: format!("node-{}-disk-{}", node + 1, disk + 1),
                 });
             }
         }
@@ -211,7 +211,7 @@ mod tests {
                 let disks = record
                     .shards
                     .iter()
-                    .map(|shard| shard.disk_id.clone())
+                    .map(|shard| shard.volume_id.clone())
                     .collect::<Vec<_>>();
                 let distinct = disks.iter().collect::<BTreeSet<_>>().len();
                 assert_eq!(distinct, data + parity);
@@ -238,7 +238,7 @@ mod tests {
             let record = planner.plan("bucket", &key, 2, 2).unwrap();
             for shard in record.shards {
                 *per_node.entry(shard.node_id).or_default() += 1;
-                *per_disk.entry(shard.disk_id).or_default() += 1;
+                *per_disk.entry(shard.volume_id).or_default() += 1;
             }
         }
 

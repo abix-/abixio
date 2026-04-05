@@ -16,7 +16,7 @@ Placement-aware objects also record:
 - `epoch_id`
 - `set_id`
 - `node_ids`
-- `disk_ids`
+- `volume_ids`
 
 Those fields identify where each shard belongs, in addition to the EC ratio
 itself.
@@ -181,5 +181,5 @@ The bucket-level `settings.json` EC config is only used as a default for new
 writes.
 
 For placement-aware objects, `meta.json` also records `epoch_id`, `set_id`,
-`node_ids`, and `disk_ids` alongside `data`, `parity`, `index`, and
+`node_ids`, and `volume_ids` alongside `data`, `parity`, `index`, and
 `distribution`.

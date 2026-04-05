@@ -434,11 +434,11 @@ mod tests {
                     "node-3".to_string(),
                     "node-4".to_string(),
                 ],
-                disk_ids: vec![
-                    "disk-a".to_string(),
-                    "disk-b".to_string(),
-                    "disk-c".to_string(),
-                    "disk-d".to_string(),
+                volume_ids: vec![
+                    "vol-a".to_string(),
+                    "vol-b".to_string(),
+                    "vol-c".to_string(),
+                    "vol-d".to_string(),
                 ],
             },
             checksum: "deadbeef".to_string(),

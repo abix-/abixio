@@ -5,9 +5,9 @@ use std::sync::{Arc, RwLock};
 
 use abixio::admin::HealStats;
 use abixio::admin::handlers::{AdminConfig, AdminHandler};
-use abixio::cluster::{ClusterConfig, ClusterDiskStatus, ClusterManager, ClusterNodeStatus, ServiceState};
-use abixio::cluster::placement::PlacementDisk;
-use abixio::cluster::topology::{StaticTopology, TopologyDisk, TopologyNode};
+use abixio::cluster::{ClusterConfig, ClusterVolumeStatus, ClusterManager, ClusterNodeStatus, ServiceState};
+use abixio::cluster::placement::PlacementVolume;
+use abixio::cluster::topology::{StaticTopology, TopologyVolume, TopologyNode};
 use abixio::heal::mrf::MrfQueue;
 use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
@@ -231,7 +231,7 @@ pub struct ClusterHarness {
     _tmp: TempDir,
     pub nodes: Vec<TestNode>,
     pub disk_paths: Vec<PathBuf>,
-    pub placement_disks: Vec<PlacementDisk>,
+    pub placement_volumes: Vec<PlacementVolume>,
     controller: AvailabilityController,
 }
 
@@ -242,7 +242,7 @@ impl ClusterHarness {
         let controller = AvailabilityController::new(&node_ids);
 
         let mut disk_paths = Vec::new();
-        let mut placement_disks = Vec::new();
+        let mut placement_volumes = Vec::new();
         for node_index in 0..4 {
             for disk_index in 0..2 {
                 let root = tmp
@@ -251,10 +251,10 @@ impl ClusterHarness {
                 std::fs::create_dir_all(&root).unwrap();
                 let backend_index = disk_paths.len();
                 disk_paths.push(root.clone());
-                placement_disks.push(PlacementDisk {
+                placement_volumes.push(PlacementVolume {
                     backend_index,
                     node_id: format!("node-{}", node_index + 1),
-                    disk_id: format!("node-{}-disk-{}", node_index + 1, disk_index + 1),
+                    volume_id: format!("node-{}-vol-{}", node_index + 1, disk_index + 1),
                 });
             }
         }
@@ -268,12 +268,12 @@ impl ClusterHarness {
                     node_id: format!("node-{}", node_index + 1),
                     advertise_s3: "http://127.0.0.1:0".to_string(),
                     advertise_cluster: "http://127.0.0.1:0".to_string(),
-                    disks: (0..2)
+                    volumes: (0..2)
                         .map(|disk_index| {
                             let backend_index = node_index * 2 + disk_index;
-                            TopologyDisk {
-                                disk_id: format!(
-                                    "node-{}-disk-{}",
+                            TopologyVolume {
+                                volume_id: format!(
+                                    "node-{}-vol-{}",
                                     node_index + 1,
                                     disk_index + 1
                                 ),
@@ -294,7 +294,7 @@ impl ClusterHarness {
                 - 1;
             let store = Arc::new(Self::build_store(
                 &disk_paths,
-                &placement_disks,
+                &placement_volumes,
                 controller.clone(),
             ));
             let cluster = Arc::new(
@@ -325,7 +325,7 @@ impl ClusterHarness {
             _tmp: tmp,
             nodes,
             disk_paths,
-            placement_disks,
+            placement_volumes,
             controller,
         };
         harness.sync_topology();
@@ -334,10 +334,10 @@ impl ClusterHarness {
 
     fn build_store(
         disk_paths: &[PathBuf],
-        placement_disks: &[PlacementDisk],
+        placement_volumes: &[PlacementVolume],
         controller: AvailabilityController,
     ) -> ErasureSet {
-        let backends = placement_disks
+        let backends = placement_volumes
             .iter()
             .map(|disk| {
                 Box::new(ControlledBackend::new(
@@ -349,7 +349,7 @@ impl ClusterHarness {
             .collect::<Vec<_>>();
         let mut set = ErasureSet::new(backends, 2, 2).unwrap();
         set.set_mrf(Arc::new(MrfQueue::new(1000)));
-        set.set_placement_topology(7, "cluster-set-4x2", placement_disks.to_vec())
+        set.set_placement_topology(7, "cluster-set-4x2", placement_volumes.to_vec())
             .unwrap();
         set
     }
@@ -374,10 +374,10 @@ impl ClusterHarness {
             })
             .collect::<Vec<_>>();
         let disks = self
-            .placement_disks
+            .placement_volumes
             .iter()
-            .map(|disk| ClusterDiskStatus {
-                disk_id: disk.disk_id.clone(),
+            .map(|disk| ClusterVolumeStatus {
+                volume_id: disk.volume_id.clone(),
                 node_id: disk.node_id.clone(),
                 path: self.disk_paths[disk.backend_index].display().to_string(),
             })
@@ -403,11 +403,11 @@ impl ClusterHarness {
         self.nodes[index].cluster.force_fence(reason);
     }
 
-    pub fn shard_root(&self, disk_id: &str) -> PathBuf {
+    pub fn shard_root(&self, volume_id: &str) -> PathBuf {
         let disk = self
-            .placement_disks
+            .placement_volumes
             .iter()
-            .find(|disk| disk.disk_id == disk_id)
+            .find(|disk| disk.volume_id == volume_id)
             .unwrap();
         self.disk_paths[disk.backend_index].clone()
     }

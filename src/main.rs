@@ -67,12 +67,12 @@ async fn main() {
 
     let set = Arc::new(set);
     if let Some(topology) = &static_topology {
-        let placement_disks = topology.placement_disks();
-        if placement_disks.len() == set.disks().len() {
+        let placement_volumes = topology.placement_volumes();
+        if placement_volumes.len() == set.disks().len() {
             if let Err(err) = set.set_placement_topology(
                 topology.epoch_id,
                 topology.set_id.clone(),
-                placement_disks,
+                placement_volumes,
             ) {
                 eprintln!("error: {}", err);
                 std::process::exit(1);
@@ -80,7 +80,7 @@ async fn main() {
         } else {
             tracing::warn!(
                 "cluster topology defines {} disks but local store has {}; placement remains local until remote shard transport exists",
-                placement_disks.len(),
+                placement_volumes.len(),
                 set.disks().len()
             );
         }

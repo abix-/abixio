@@ -39,18 +39,18 @@ The topology file is JSON.
       "node_id": "node-1",
       "advertise_s3": "http://node-1.lan:9000",
       "advertise_cluster": "http://node-1.lan:9000",
-      "disks": [
-        { "disk_id": "disk-1a", "path": "/srv/abixio/node-1/d1" },
-        { "disk_id": "disk-1b", "path": "/srv/abixio/node-1/d2" }
+      "volumes": [
+        { "volume_id": "vol-1a", "path": "/srv/abixio/node-1/d1" },
+        { "volume_id": "vol-1b", "path": "/srv/abixio/node-1/d2" }
       ]
     },
     {
       "node_id": "node-2",
       "advertise_s3": "http://node-2.lan:9000",
       "advertise_cluster": "http://node-2.lan:9000",
-      "disks": [
-        { "disk_id": "disk-2a", "path": "/srv/abixio/node-2/d1" },
-        { "disk_id": "disk-2b", "path": "/srv/abixio/node-2/d2" }
+      "volumes": [
+        { "volume_id": "vol-2a", "path": "/srv/abixio/node-2/d1" },
+        { "volume_id": "vol-2b", "path": "/srv/abixio/node-2/d2" }
       ]
     }
   ]
@@ -66,7 +66,7 @@ The server rejects a topology file if any of these are true:
 - `set_id` is empty
 - no nodes are defined
 - any `node_id` is duplicated
-- any `disk_id` is duplicated
+- any `volume_id` is duplicated
 - any disk path is duplicated anywhere in the manifest
 - a node has no disks
 
@@ -127,7 +127,7 @@ The placement planner uses stable placement metadata:
 - `epoch_id`
 - `set_id`
 - ordered `node_ids`
-- ordered `disk_ids`
+- ordered `volume_ids`
 
 That placement identity is stored in shard metadata for each object when the
 placement-aware path is active. Admin inspection returns it through

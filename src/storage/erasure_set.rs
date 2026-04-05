@@ -8,14 +8,14 @@ use super::metadata::{
     PutOptions, VersioningConfig,
 };
 use super::{StorageError, Store};
-use crate::cluster::placement::{PlacementDisk, PlacementPlanner};
+use crate::cluster::placement::{PlacementVolume, PlacementPlanner};
 use crate::heal::mrf::MrfQueue;
 
 #[derive(Debug, Clone)]
 struct PlacementTopology {
     epoch_id: u64,
     set_id: String,
-    disks: Vec<PlacementDisk>,
+    disks: Vec<PlacementVolume>,
 }
 
 pub struct ErasureSet {
@@ -52,10 +52,10 @@ impl ErasureSet {
                 epoch_id: 1,
                 set_id: "local-set".to_string(),
                 disks: (0..disks.len())
-                    .map(|backend_index| PlacementDisk {
+                    .map(|backend_index| PlacementVolume {
                         backend_index,
                         node_id: "local".to_string(),
-                        disk_id: format!("disk-{}", backend_index),
+                        volume_id: format!("vol-{}", backend_index),
                     })
                     .collect(),
             }),
@@ -86,7 +86,7 @@ impl ErasureSet {
         &self,
         epoch_id: u64,
         set_id: impl Into<String>,
-        disks: Vec<PlacementDisk>,
+        disks: Vec<PlacementVolume>,
     ) -> Result<(), StorageError> {
         if disks.len() != self.disks.len() {
             return Err(StorageError::InvalidConfig(format!(
@@ -107,7 +107,7 @@ impl ErasureSet {
         PlacementPlanner::new(guard.epoch_id, guard.set_id.clone(), guard.disks.clone())
     }
 
-    pub fn placement_snapshot(&self) -> (u64, String, Vec<PlacementDisk>) {
+    pub fn placement_snapshot(&self) -> (u64, String, Vec<PlacementVolume>) {
         let guard = self.placement.read().unwrap();
         (guard.epoch_id, guard.set_id.clone(), guard.disks.clone())
     }

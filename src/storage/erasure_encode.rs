@@ -135,10 +135,10 @@ fn encode_and_write_impl(
         .iter()
         .map(|shard| shard.node_id.clone())
         .collect::<Vec<_>>();
-    let disk_ids = placement
+    let volume_ids = placement
         .shards
         .iter()
-        .map(|shard| shard.disk_id.clone())
+        .map(|shard| shard.volume_id.clone())
         .collect::<Vec<_>>();
 
     // split data into data_n shards
@@ -177,7 +177,7 @@ fn encode_and_write_impl(
                 epoch_id: placement.epoch_id,
                 set_id: placement.set_id.clone(),
                 node_ids: node_ids.clone(),
-                disk_ids: disk_ids.clone(),
+                volume_ids: volume_ids.clone(),
             },
             checksum,
             user_metadata: opts.user_metadata.clone(),

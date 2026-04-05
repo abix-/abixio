@@ -73,7 +73,7 @@ pub struct ErasureInfo {
     pub set_id: String,
     pub distribution: Vec<usize>,
     pub node_ids: Vec<String>,
-    pub disk_ids: Vec<String>,
+    pub volume_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,7 +81,7 @@ pub struct ShardInfo {
     pub index: usize,
     pub disk: usize,
     pub node_id: String,
-    pub disk_id: String,
+    pub volume_id: String,
     pub status: &'static str,
     pub checksum: Option<String>,
 }

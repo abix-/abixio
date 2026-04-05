@@ -238,18 +238,18 @@ curl "http://localhost:10000/_admin/object?bucket=mybucket&key=photo.jpg"
     "set_id": "set-a",
     "distribution": [2, 0, 3, 1],
     "node_ids": ["node-1", "node-2", "node-3", "node-4"],
-    "disk_ids": ["disk-1a", "disk-2a", "disk-3a", "disk-4a"]
+    "volume_ids": ["vol-1a", "vol-2a", "vol-3a", "vol-4a"]
   },
   "shards": [
-    { "index": 0, "disk": 2, "node_id": "node-3", "disk_id": "disk-3a", "status": "ok", "checksum": "abc123..." },
-    { "index": 1, "disk": 0, "node_id": "node-1", "disk_id": "disk-1a", "status": "ok", "checksum": "def456..." },
-    { "index": 2, "disk": 3, "node_id": "node-4", "disk_id": "disk-4a", "status": "missing", "checksum": null },
-    { "index": 3, "disk": 1, "node_id": "node-2", "disk_id": "disk-2a", "status": "ok", "checksum": "ghi789..." }
+    { "index": 0, "disk": 2, "node_id": "node-3", "volume_id": "vol-3a", "status": "ok", "checksum": "abc123..." },
+    { "index": 1, "disk": 0, "node_id": "node-1", "volume_id": "vol-1a", "status": "ok", "checksum": "def456..." },
+    { "index": 2, "disk": 3, "node_id": "node-4", "volume_id": "vol-4a", "status": "missing", "checksum": null },
+    { "index": 3, "disk": 1, "node_id": "node-2", "volume_id": "vol-2a", "status": "ok", "checksum": "ghi789..." }
   ]
 }
 ```
 
-`epoch_id`, `set_id`, `node_ids`, and `disk_ids` make exact placement
+`epoch_id`, `set_id`, `node_ids`, and `volume_ids` make exact placement
 externally visible to operators and tests.
 
 ### Shard status values
@@ -357,7 +357,7 @@ curl http://localhost:10000/_admin/cluster/status
     ],
     "disks": [
       {
-        "disk_id": "disk-0123456789abcdef",
+        "volume_id": "vol-0123456789abcdef",
         "node_id": "node1",
         "path": "/srv/abixio/d1"
       }

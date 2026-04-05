@@ -17,7 +17,7 @@ cluster-control direction.
 3. **Deterministic shard distribution.** Each object's key is mapped
    deterministically onto shard locations. In the single-node path this is a
    backend-index permutation; in the placement-aware path it includes stable
-   `epoch_id`, `set_id`, `node_ids`, and `disk_ids`. Distribution is stored in
+   `epoch_id`, `set_id`, `node_ids`, and `volume_ids`. Distribution is stored in
    `meta.json` for reconstruction.
 
 4. **Quorum rules.** Write quorum = data_n+1 (or data_n when parity==0).

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cluster::placement::{PlacementDisk, PlacementPlanner};
+use crate::cluster::placement::{PlacementVolume, PlacementPlanner};
 use crate::storage::Backend;
 use crate::storage::StorageError;
 use crate::storage::bitrot::{md5_hex, sha256_hex};
@@ -18,10 +18,10 @@ fn local_planner(disks: &[Box<dyn Backend>]) -> PlacementPlanner {
         1,
         "multipart-local",
         (0..disks.len())
-            .map(|backend_index| PlacementDisk {
+            .map(|backend_index| PlacementVolume {
                 backend_index,
                 node_id: "local".to_string(),
-                disk_id: format!("disk-{}", backend_index),
+                volume_id: format!("vol-{}", backend_index),
             })
             .collect(),
     )
@@ -147,9 +147,9 @@ pub fn put_part(
                         .iter()
                         .map(|_| "local".to_string())
                         .collect(),
-                    disk_ids: distribution
+                    volume_ids: distribution
                         .iter()
-                        .map(|disk_idx| format!("disk-{}", disk_idx))
+                        .map(|disk_idx| format!("vol-{}", disk_idx))
                         .collect(),
                 },
                 checksum: sha256_hex(shard_data),

@@ -43,7 +43,7 @@ The current implementation provides:
 - mutating admin request rejection while fenced
 - topology-hash visibility for manifest drift detection
 - deterministic placement planning metadata with stable `epoch_id`, `set_id`,
-  `node_ids`, and `disk_ids` stored in object shard metadata
+  `node_ids`, and `volume_ids` stored in object shard metadata
 - 4-node, 2-disk distributed placement tests that validate exact object maps,
   node-first shard spread, and fencing behavior
 
@@ -123,7 +123,7 @@ Object shard metadata now also persists placement identity:
 - `epoch_id`
 - `set_id`
 - ordered shard `node_ids`
-- ordered shard `disk_ids`
+- ordered shard `volume_ids`
 
 This lets admin inspection and tests validate exact placement instead of only
 local disk indexes.
@@ -196,7 +196,7 @@ When a static topology manifest is configured, the cluster summary also exposes
 - shard index
 - local backend index
 - `node_id`
-- `disk_id`
+- `volume_id`
 - shard status and checksum
 
 ### Peer Probe Authentication

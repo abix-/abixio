@@ -284,12 +284,12 @@ impl AdminHandler {
                     .get(shard_idx)
                     .cloned()
                     .unwrap_or_else(|| "local".to_string()),
-                disk_id: meta
+                volume_id: meta
                     .erasure
-                    .disk_ids
+                    .volume_ids
                     .get(shard_idx)
                     .cloned()
-                    .unwrap_or_else(|| format!("disk-{}", disk_idx)),
+                    .unwrap_or_else(|| format!("vol-{}", disk_idx)),
                 status,
                 checksum,
             });
@@ -309,7 +309,7 @@ impl AdminHandler {
                 set_id: meta.erasure.set_id.clone(),
                 distribution: meta.erasure.distribution.clone(),
                 node_ids: meta.erasure.node_ids.clone(),
-                disk_ids: meta.erasure.disk_ids.clone(),
+                volume_ids: meta.erasure.volume_ids.clone(),
             },
             shards,
         })

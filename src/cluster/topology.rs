@@ -6,8 +6,8 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::cluster::{ClusterDiskStatus, ClusterNodeStatus, ServiceState};
-use crate::cluster::placement::PlacementDisk;
+use crate::cluster::{ClusterVolumeStatus, ClusterNodeStatus, ServiceState};
+use crate::cluster::placement::PlacementVolume;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StaticTopology {
@@ -22,12 +22,12 @@ pub struct TopologyNode {
     pub node_id: String,
     pub advertise_s3: String,
     pub advertise_cluster: String,
-    pub disks: Vec<TopologyDisk>,
+    pub volumes: Vec<TopologyVolume>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TopologyDisk {
-    pub disk_id: String,
+pub struct TopologyVolume {
+    pub volume_id: String,
     pub path: PathBuf,
 }
 
@@ -56,7 +56,7 @@ impl StaticTopology {
         }
 
         let mut node_ids = BTreeSet::new();
-        let mut disk_ids = BTreeSet::new();
+        let mut volume_ids = BTreeSet::new();
         let mut all_paths = BTreeSet::new();
         for node in &self.nodes {
             if node.node_id.trim().is_empty() {
@@ -65,15 +65,15 @@ impl StaticTopology {
             if !node_ids.insert(node.node_id.clone()) {
                 bail!("duplicate node_id {}", node.node_id);
             }
-            if node.disks.is_empty() {
+            if node.volumes.is_empty() {
                 bail!("node {} must define at least one disk", node.node_id);
             }
-            for disk in &node.disks {
-                if disk.disk_id.trim().is_empty() {
-                    bail!("disk_id must not be empty");
+            for disk in &node.volumes {
+                if disk.volume_id.trim().is_empty() {
+                    bail!("volume_id must not be empty");
                 }
-                if !disk_ids.insert(disk.disk_id.clone()) {
-                    bail!("duplicate disk_id {}", disk.disk_id);
+                if !volume_ids.insert(disk.volume_id.clone()) {
+                    bail!("duplicate volume_id {}", disk.volume_id);
                 }
                 let path = normalize_path(&disk.path);
                 if !all_paths.insert(path.clone()) {
@@ -107,7 +107,7 @@ impl StaticTopology {
             .node(node_id)
             .with_context(|| format!("node_id {} missing from topology", node_id))?;
         let expected = node
-            .disks
+            .volumes
             .iter()
             .map(|disk| normalize_path(&disk.path))
             .collect::<BTreeSet<_>>();
@@ -126,26 +126,26 @@ impl StaticTopology {
         Ok(())
     }
 
-    pub fn placement_disks(&self) -> Vec<PlacementDisk> {
+    pub fn placement_volumes(&self) -> Vec<PlacementVolume> {
         let mut disks = Vec::new();
         for node in &self.nodes {
-            for disk in &node.disks {
-                disks.push(PlacementDisk {
+            for disk in &node.volumes {
+                disks.push(PlacementVolume {
                     backend_index: disks.len(),
                     node_id: node.node_id.clone(),
-                    disk_id: disk.disk_id.clone(),
+                    volume_id: disk.volume_id.clone(),
                 });
             }
         }
         disks
     }
 
-    pub fn disk_statuses(&self) -> Vec<ClusterDiskStatus> {
+    pub fn volume_statuses(&self) -> Vec<ClusterVolumeStatus> {
         let mut disks = Vec::new();
         for node in &self.nodes {
-            for disk in &node.disks {
-                disks.push(ClusterDiskStatus {
-                    disk_id: disk.disk_id.clone(),
+            for disk in &node.volumes {
+                disks.push(ClusterVolumeStatus {
+                    volume_id: disk.volume_id.clone(),
                     node_id: node.node_id.clone(),
                     path: disk.path.display().to_string(),
                 });
@@ -168,7 +168,7 @@ impl StaticTopology {
                 },
                 voter: true,
                 reachable: node.node_id == local_node_id,
-                total_disks: node.disks.len(),
+                total_disks: node.volumes.len(),
                 last_heartbeat_unix_secs: 0,
             })
             .collect()
@@ -193,13 +193,13 @@ mod tests {
                     node_id: "node-1".to_string(),
                     advertise_s3: "http://node-1:9000".to_string(),
                     advertise_cluster: "http://node-1:9000".to_string(),
-                    disks: vec![
-                        TopologyDisk {
-                            disk_id: "disk-a".to_string(),
+                    volumes: vec![
+                        TopologyVolume {
+                            volume_id: "vol-a".to_string(),
                             path: PathBuf::from("C:/data/d1"),
                         },
-                        TopologyDisk {
-                            disk_id: "disk-b".to_string(),
+                        TopologyVolume {
+                            volume_id: "vol-b".to_string(),
                             path: PathBuf::from("C:/data/d2"),
                         },
                     ],
@@ -208,8 +208,8 @@ mod tests {
                     node_id: "node-2".to_string(),
                     advertise_s3: "http://node-2:9000".to_string(),
                     advertise_cluster: "http://node-2:9000".to_string(),
-                    disks: vec![TopologyDisk {
-                        disk_id: "disk-c".to_string(),
+                    volumes: vec![TopologyVolume {
+                        volume_id: "vol-c".to_string(),
                         path: PathBuf::from("C:/data/d3"),
                     }],
                 },
@@ -233,7 +233,7 @@ mod tests {
     #[test]
     fn topology_validation_rejects_duplicate_disks() {
         let mut topology = sample_topology();
-        topology.nodes[1].disks[0].disk_id = "disk-a".to_string();
+        topology.nodes[1].volumes[0].volume_id = "vol-a".to_string();
         assert!(topology.validate().is_err());
     }
 

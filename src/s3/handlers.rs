@@ -677,7 +677,7 @@ impl S3Handler {
                             epoch_id: 0,
                             set_id: String::new(),
                             node_ids: Vec::new(),
-                            disk_ids: Vec::new(),
+                            volume_ids: Vec::new(),
                         },
                         checksum: String::new(),
                         user_metadata: std::collections::HashMap::new(),
