@@ -100,104 +100,59 @@ deployment_id       one per cluster, all disks share it
 
 All four are UUIDv4, generated at format time, immutable after that.
 
-### Format lifecycle
+### Boot sequence
 
 **First boot (standalone)**:
 
-1. Operator starts `abixio --disks /d1,/d2,/d3,/d4 --data 2 --parity 2`
-2. Binary checks each disk for `.abixio.sys/volume.json`
-3. No format found on any disk -- this is a first boot
-4. Generate UUIDs: one `deployment_id`, one `set_id`, one `node_id`, one
-   `volume_id` per disk
-5. Write `volume.json` to every disk with the full member list
-6. Proceed to serve
+1. `abixio --disks /d1,/d2,/d3,/d4 --data 2 --parity 2`
+2. No volume.json found -- generate node_id, volume_id UUIDs
+3. No `--peers` -- standalone mode, generate deployment_id and set_id
+4. Write complete volume.json to every volume
+5. Serve
 
-On subsequent boots, the binary reads volume.json and derives identity. No
-`--node-id` needed. `--data`/`--parity` are server-default EC policy.
+**First boot (cluster)**:
 
-**First boot (multi-node, topology-seeded)**:
-
-Multi-node clusters need all nodes to agree on deployment_id, set_id, and each
-other's identities. For v1, a static topology file seeds the initial format.
-
-1. Operator writes a topology file with node entries and disk paths
-2. Each node starts with `abixio --disks ... --cluster-topology topology.json`
-3. Binary checks disks for volume.json -- none found
-4. Binary reads the topology file and matches this node by disk paths:
-   - Normalize local `--disks` paths
-   - Find the topology node whose disk paths match
-   - Error if zero matches or multiple matches
-5. Generate UUIDs: `deployment_id` and `set_id` are derived deterministically
-   from the topology file's `cluster_id` and `set_id` (so all nodes generate
-   the same values independently). `node_id` and `volume_id` are derived
-   deterministically from the topology node_id/volume_id strings (so the same
-   topology always produces the same UUIDs)
-6. Write volume.json to every local disk with the full set membership
-7. Proceed to serve
-
-After formatting, the topology file is no longer required. Subsequent boots
-read identity from disk. If the topology file is still present, it is
-validated against the on-disk format as a safety check.
+1. `abixio --disks /d1,/d2 --peers http://node-2:10000`
+2. No volume.json found -- generate node_id, volume_id UUIDs
+3. Write partial volume.json (node_id, volume_id only)
+4. Exchange identity with peers via `/_admin/cluster/join`
+5. Block until all peers respond
+6. Compute deployment_id and set_id deterministically from sorted node_ids
+7. Build full member list, write complete volume.json
+8. Serve
 
 **Subsequent boot**:
 
-1. Binary reads volume.json from each disk
-2. Validates all disks agree on deployment_id, set_id, node_id
-3. Derives identity from format -- no CLI identity flags needed
-4. If `--cluster-topology` is present, validate it matches on-disk format
-5. Serve
+1. Read volume.json from each volume
+2. Validate all volumes agree on deployment_id, set_id, node_id
+3. If `--peers` set: probe peers for quorum confirmation
+4. Serve
 
-**Disk migration**:
+**Volume migration**:
 
-1. Physically move disks to new hardware
-2. Start abixio binary with `--disks` pointing to the moved disks
-3. Binary reads volume.json, discovers this node's identity
+1. Move volumes to new hardware
+2. Start abixio binary with `--disks` pointing to the moved volumes
+3. Binary reads volume.json, discovers identity
 4. Peers recognize the node by its persisted node_id and volume_ids
 5. Node comes online
 
-The binary never stored identity. The disks did. Hardware is irrelevant.
-
-**Disk replacement**:
-
-1. New blank disk has no volume.json
-2. Operator (or future automation) formats the new disk with:
-   - Same deployment_id, set_id, node_id
-   - New volume_id (UUIDv4)
-   - Updated member list
-3. All other disks in the set update their member lists (epoch bump)
-4. Healer reconstructs missing shards onto the new disk
+The binary never stores identity. The volumes do. Hardware is irrelevant.
 
 ### Validation rules
 
-On boot, the binary validates volume.json across all local disks:
+On boot, the binary validates volume.json across all local volumes:
 
 | Check | Error |
 |---|---|
-| volume.json missing on some disks but present on others | Mixed state: refuse to start |
-| volume.json missing on all disks, no topology | Standalone first boot: auto-format |
-| volume.json missing on all disks, topology present | Cluster first boot: topology-seeded format |
-| deployment_id mismatch across local disks | Corrupt or mixed cluster: refuse to start |
-| set_id mismatch across local disks | Corrupt or mixed set: refuse to start |
-| node_id mismatch across local disks | Disks from different nodes mixed together: refuse to start |
+| volume.json missing on some volumes but present on others | Mixed state: refuse to start |
+| volume.json missing on all volumes, no peers | Standalone first boot: auto-format |
+| volume.json missing on all volumes, peers set | Cluster first boot: peer exchange |
+| deployment_id mismatch across local volumes | Corrupt or mixed cluster: refuse to start |
+| set_id mismatch across local volumes | Corrupt or mixed set: refuse to start |
+| node_id mismatch across local volumes | Volumes from different nodes mixed: refuse to start |
 | volume_id duplicated | Corrupt: refuse to start |
-| member list inconsistent across local disks | Stale member list: warn, use newest |
+| member list inconsistent across local volumes | Stale member list: warn, use newest |
 | format version unsupported | Refuse to start with upgrade message |
-
-### Future: peer-negotiated format
-
-The topology-seeded approach requires a config file for multi-node setup. A
-future improvement:
-
-1. Nodes discover each other via `--peers`
-2. Exchange disk inventories
-3. Deterministic leader election picks a coordinator
-4. Coordinator assigns deployment_id, set_id, generates member list
-5. All nodes write volume.json
-6. No config file at all
-
-This is more complex but eliminates the topology file entirely. The
-topology-seeded approach is the right v1 because the static topology model
-already exists and works.
 
 ---
 
@@ -423,14 +378,17 @@ and externally inspectable across nodes.
 
 ---
 
-## CLI Changes
+## CLI
 
-| Current | After disk format |
-|---|---|
-| `--node-id node-1` (required for cluster) | Read from volume.json (removed from CLI) |
-| `--cluster-topology` (required every boot) | One-time format seed, optional after |
-| `--data 2 --parity 2` (server default EC) | Unchanged -- policy, not identity |
-| `--disks /d1,/d2` | Unchanged -- tells binary which paths to use |
+| Flag | Required | Default | Purpose |
+|---|---|---|---|
+| `--disks` | yes | -- | Comma-separated volume paths |
+| `--data` | no | 1 | Server default data shards |
+| `--parity` | no | 0 | Server default parity shards |
+| `--listen` | no | `:10000` | Bind address |
+| `--peers` | no | empty | Peer endpoints for cluster mode |
+| `--cluster-secret` | no | empty | Shared secret for peer probes |
+| `--no-auth` | no | false | Disable S3 authentication |
 
-A `--node-id-override` flag may be kept for disaster recovery (force identity
-regardless of on-disk format).
+Node identity is read from volume.json. Cluster membership is established via
+peer exchange at startup.

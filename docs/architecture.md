@@ -53,10 +53,10 @@ cluster-control direction.
 
 ## Cluster Direction
 
-AbixIO is no longer purely single-node in direction. The repo now contains a
-minimal static-topology cluster-control layer:
+AbixIO has a peer-based cluster-control layer:
 
-- cluster identity and topology manifest validation
+- peer-based identity exchange at startup
+- self-describing volumes with `.abixio.sys/volume.json`
 - persisted cluster metadata in `.abixio.sys/cluster.json`
 - cluster admin endpoints
 - peer monitoring and quorum tracking
@@ -66,9 +66,8 @@ This is not yet a full distributed object-store data plane. Distributed shard
 RPC, live topology changes, heterogeneous set planning, and rebalance are still
 future work.
 
-The current model is intentionally closer to a MinIO-style static deployment
-than to a self-forming distributed control plane: operators define topology
-upfront, nodes validate it at startup, and unsafe nodes fence themselves.
+Nodes generate their own identity on first boot, exchange it with peers, and
+persist the full membership on their volumes. Unsafe nodes fence themselves.
 
 See [cluster.md](cluster.md) for the full design and current behavior.
 
@@ -77,7 +76,7 @@ See [cluster.md](cluster.md) for the full design and current behavior.
 | Aspect | MinIO | AbixIO |
 |---|---|---|
 | Language | Go | Rust |
-| Scope | distributed multi-node | single process today, static-topology cluster groundwork in progress |
+| Scope | distributed multi-node | single process today, peer-based cluster control in progress |
 | Erasure coding | cluster-level EC ratio | per-object EC (data/parity per object) |
 | EC config | fixed per server pool | per-object header > bucket config > server default |
 | Min disks | 4 (enforced) | 1 (with 0 parity) |
@@ -97,8 +96,8 @@ src/
   lib.rs                  # module re-exports
   cluster/
     mod.rs                # persisted cluster state, peer monitoring, fencing, cluster types
+    identity.rs           # peer identity exchange and boot sequence
     placement.rs          # deterministic node-first placement planner and invariants
-    topology.rs           # static topology manifest schema and validation
   config.rs               # Config struct (clap derive) + validation
   query.rs                # URL query string parsing
   storage/
@@ -109,6 +108,7 @@ src/
     erasure_set.rs        # ErasureSet: disk pool with per-object EC resolution
     erasure_encode.rs     # split_data + reed-solomon encode + disk subset selection
     erasure_decode.rs     # read from backends + bitrot check + reconstruct
+    volume.rs             # VolumeFormat: read/write .abixio.sys/volume.json
   s3/
     mod.rs
     router.rs             # HTTP server: TcpListener + hyper service dispatch
@@ -135,11 +135,10 @@ tests/
   e2e.py                  # end-to-end Python test (starts server, exercises S3 + admin)
 docs/
   architecture.md         # this file
-  cluster.md              # cluster control design, fencing, current scope
-  static-topology.md      # topology manifest schema and restart-based cluster operation
-  storage-layout.md       # disk format, metadata layers, directory structure
-  per-object-ec.md        # per-object erasure coding, bucket EC config, disk pools
-  admin-api.md            # admin API endpoints (status, disks, heal, inspect, bucket EC)
+  cluster.md              # cluster control design, peer exchange, fencing
+  storage-layout.md       # volume identity, metadata layers, directory structure
+  per-object-ec.md        # per-object erasure coding, bucket EC config, volume pools
+  admin-api.md            # admin API endpoints (status, volumes, heal, inspect, bucket EC)
   versioning.md           # S3 object versioning
   tagging.md              # object and bucket tagging
   presigned-urls.md       # presigned URL authentication

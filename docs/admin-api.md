@@ -409,15 +409,11 @@ While fenced:
 This is intentional. AbixIO prefers stopping service over serving from stale or
 unsafe cluster state.
 
-## Static Topology Notes
+## Cluster Notes
 
-When `--cluster-topology` is used:
-
-- the manifest is authoritative for `cluster_id`, `epoch_id`, node list, disk list, and peer endpoints
-- `topology_hash` appears in cluster summary responses
-- `/_admin/cluster/topology` reflects the manifest-backed topology plus current local reachability information
-
-See [static-topology.md](static-topology.md) for the manifest schema.
+When `--peers` is used, nodes exchange identity at startup and build the
+erasure set membership from the peer handshake. See [cluster.md](cluster.md)
+for the full cluster design.
 
 See [per-object-ec.md](per-object-ec.md) for the full EC precedence chain
 (per-object header > bucket config > server default).
