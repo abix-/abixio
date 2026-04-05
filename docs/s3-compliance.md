@@ -29,9 +29,9 @@ These are routed in `src/s3/handlers.rs` dispatch table.
 
 | S3 API | HTTP | Rating | Impact |
 |---|---|---|---|
-| GetObjectTagging | `GET /{bucket}/{key}?tagging` | 1/10 | No tag support. Tags drive lifecycle rules, billing, and access control. |
-| PutObjectTagging | `PUT /{bucket}/{key}?tagging` | 1/10 | Same. |
-| DeleteObjectTagging | `DELETE /{bucket}/{key}?tagging` | 1/10 | Same. |
+| GetObjectTagging | `GET /{bucket}/{key}?tagging` | 8/10 | Returns XML TagSet from object metadata. |
+| PutObjectTagging | `PUT /{bucket}/{key}?tagging` | 8/10 | Parses XML TagSet, stores in object metadata on all shards. |
+| DeleteObjectTagging | `DELETE /{bucket}/{key}?tagging` | 8/10 | Clears tags from object metadata on all shards. |
 | ListObjectVersions | `GET /{bucket}?versions` | 1/10 | No versioning support. Cannot list object versions. |
 | GetBucketVersioning | `GET /{bucket}?versioning` | 1/10 | Cannot check if versioning is enabled. |
 | PutBucketVersioning | `PUT /{bucket}?versioning` | 1/10 | Cannot enable/disable versioning. |
@@ -40,9 +40,9 @@ These are routed in `src/s3/handlers.rs` dispatch table.
 | DeleteBucketPolicy | `DELETE /{bucket}?policy` | 1/10 | Same. |
 | GetBucketEncryption | `GET /{bucket}?encryption` | 1/10 | No encryption config support. |
 | PutBucketEncryption | `PUT /{bucket}?encryption` | 1/10 | Same. |
-| GetBucketTagging | `GET /{bucket}?tagging` | 1/10 | No bucket tag support. |
-| PutBucketTagging | `PUT /{bucket}?tagging` | 1/10 | Same. |
-| DeleteBucketTagging | `DELETE /{bucket}?tagging` | 1/10 | Same. |
+| GetBucketTagging | `GET /{bucket}?tagging` | 8/10 | Returns bucket tags from .tagging.json. |
+| PutBucketTagging | `PUT /{bucket}?tagging` | 8/10 | Parses XML TagSet, stores as .tagging.json in bucket dir. |
+| DeleteBucketTagging | `DELETE /{bucket}?tagging` | 8/10 | Removes .tagging.json from bucket dir. |
 
 ## Not Implemented -- Low Priority / Out of Scope
 
@@ -134,19 +134,19 @@ How complete our responses are compared to what S3 clients expect.
 
 ## Summary
 
-### Overall S3 compliance: 6/10
+### Overall S3 compliance: 7/10
 
-abixio implements 11 of ~100 S3 API operations. The 11 it implements cover
+abixio implements 17 of ~100 S3 API operations. The 17 it implements cover
 the core object CRUD path including batch delete, server-side copy, range
-requests, custom metadata, and bucket lifecycle. Response headers follow
-RFC 7231 (HTTP-date format). Everything else returns 405.
+requests, custom metadata, bucket lifecycle, and object/bucket tagging.
+Response headers follow RFC 7231 (HTTP-date format). Everything else returns 405.
 
 ### Next priorities for server-side compliance
 
 | Priority | What | Why |
 |---|---|---|
 | **Should** | Structured error responses | Return S3 error codes (AccessDenied, NoSuchBucket, etc.) with RequestId and Resource fields. |
-| **Later** | Object tagging | Tags for lifecycle/billing/access. |
+| ~~**Later**~~ | ~~Object tagging~~ | Done. Object and bucket tagging implemented. |
 | **Later** | Versioning | Version browser support. |
 | **Later** | Multipart upload | Required for files >5GB. |
 | **Later** | Bucket policies | Access control. |

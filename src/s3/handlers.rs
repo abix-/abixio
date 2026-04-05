@@ -4,11 +4,13 @@ use std::sync::Arc;
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
 use hyper::{Method, Request, Response, StatusCode};
+use quick_xml::de::from_str as xml_from_str;
 use quick_xml::se::to_string as xml_to_string;
 
 use super::auth::{AuthConfig, verify_sig_v4};
 use super::errors::{
-    ERR_ACCESS_DENIED, ERR_INVALID_RANGE, ERR_METHOD_NOT_ALLOWED, S3Error, error_to_xml, map_error,
+    ERR_ACCESS_DENIED, ERR_INVALID_RANGE, ERR_MALFORMED_XML, ERR_METHOD_NOT_ALLOWED, S3Error,
+    error_to_xml, map_error,
 };
 use super::response::*;
 use crate::admin::handlers::AdminHandler;
@@ -94,8 +96,16 @@ impl S3Handler {
             None => (path, ""),
         };
 
+        let is_tagging = query.contains("tagging");
+
         match (bucket, key, &method) {
             ("", _, &Method::GET) => self.list_buckets().await,
+
+            // bucket tagging (must precede bucket catch-alls)
+            (b, "", &Method::GET) if is_tagging => self.get_bucket_tagging(b).await,
+            (b, "", &Method::PUT) if is_tagging => self.put_bucket_tagging(b, req).await,
+            (b, "", &Method::DELETE) if is_tagging => self.delete_bucket_tagging(b).await,
+
             (b, "", &Method::PUT) => self.create_bucket(b).await,
             (b, "", &Method::HEAD) => self.head_bucket(b).await,
             (b, "", &Method::DELETE) => self.delete_bucket_handler(b).await,
@@ -103,6 +113,12 @@ impl S3Handler {
             (b, "", &Method::POST) if query.contains("delete") => {
                 self.delete_objects(b, req).await
             }
+
+            // object tagging (must precede object catch-alls)
+            (b, k, &Method::GET) if is_tagging => self.get_object_tagging(b, k).await,
+            (b, k, &Method::PUT) if is_tagging => self.put_object_tagging(b, k, req).await,
+            (b, k, &Method::DELETE) if is_tagging => self.delete_object_tagging(b, k).await,
+
             (b, k, &Method::PUT) => self.put_object(b, k, req).await,
             (b, k, &Method::GET) => self.get_object(b, k, &req).await,
             (b, k, &Method::HEAD) => self.head_object(b, k).await,
@@ -291,6 +307,7 @@ impl S3Handler {
         let opts = PutOptions {
             content_type,
             user_metadata,
+            ..Default::default()
         };
         match self.store.put_object(bucket, key, &body, opts) {
             Ok(info) => Response::builder()
@@ -431,6 +448,153 @@ impl S3Handler {
         }
     }
 
+    // -- object tagging --
+
+    async fn get_object_tagging(&self, bucket: &str, key: &str) -> Response<BoxBody> {
+        match self.store.get_object_tags(bucket, key) {
+            Ok(tags) => {
+                let xml_tags: Vec<TagXml> = tags
+                    .into_iter()
+                    .map(|(k, v)| TagXml { key: k, value: v })
+                    .collect();
+                let result = TaggingXml {
+                    xmlns: Some(S3_XMLNS.to_string()),
+                    tag_set: TagSetXml { tags: xml_tags },
+                };
+                match xml_to_string(&result) {
+                    Ok(xml) => ok_body(xml.into_bytes()),
+                    Err(_) => error_response(&super::errors::ERR_INTERNAL),
+                }
+            }
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    async fn put_object_tagging(
+        &self,
+        bucket: &str,
+        key: &str,
+        req: Request<Incoming>,
+    ) -> Response<BoxBody> {
+        let body = match req.collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+        let body_str = match std::str::from_utf8(&body) {
+            Ok(s) => s,
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+        let tagging: TaggingXml = match xml_from_str(body_str) {
+            Ok(t) => t,
+            Err(_) => return error_response(&ERR_MALFORMED_XML),
+        };
+        let tags: HashMap<String, String> = tagging
+            .tag_set
+            .tags
+            .into_iter()
+            .map(|t| (t.key, t.value))
+            .collect();
+        match self.store.put_object_tags(bucket, key, tags) {
+            Ok(()) => empty_response(StatusCode::OK),
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    async fn delete_object_tagging(&self, bucket: &str, key: &str) -> Response<BoxBody> {
+        match self.store.delete_object_tags(bucket, key) {
+            Ok(()) => empty_response(StatusCode::NO_CONTENT),
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    // -- bucket tagging --
+
+    async fn get_bucket_tagging(&self, bucket: &str) -> Response<BoxBody> {
+        let bucket_dir = self.bucket_tagging_path(bucket);
+        let tags = self.read_bucket_tags(&bucket_dir);
+        let xml_tags: Vec<TagXml> = tags
+            .into_iter()
+            .map(|(k, v)| TagXml { key: k, value: v })
+            .collect();
+        let result = TaggingXml {
+            xmlns: Some(S3_XMLNS.to_string()),
+            tag_set: TagSetXml { tags: xml_tags },
+        };
+        match xml_to_string(&result) {
+            Ok(xml) => ok_body(xml.into_bytes()),
+            Err(_) => error_response(&super::errors::ERR_INTERNAL),
+        }
+    }
+
+    async fn put_bucket_tagging(
+        &self,
+        bucket: &str,
+        req: Request<Incoming>,
+    ) -> Response<BoxBody> {
+        // verify bucket exists
+        match self.store.head_bucket(bucket) {
+            Ok(false) | Err(_) => {
+                return error_response(&super::errors::ERR_NO_SUCH_BUCKET)
+            }
+            Ok(true) => {}
+        }
+        let body = match req.collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+        let body_str = match std::str::from_utf8(&body) {
+            Ok(s) => s,
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+        let tagging: TaggingXml = match xml_from_str(body_str) {
+            Ok(t) => t,
+            Err(_) => return error_response(&ERR_MALFORMED_XML),
+        };
+        let tags: HashMap<String, String> = tagging
+            .tag_set
+            .tags
+            .into_iter()
+            .map(|t| (t.key, t.value))
+            .collect();
+        let path = self.bucket_tagging_path(bucket);
+        match std::fs::write(&path, serde_json::to_vec(&tags).unwrap_or_default()) {
+            Ok(()) => empty_response(StatusCode::OK),
+            Err(_) => error_response(&super::errors::ERR_INTERNAL),
+        }
+    }
+
+    async fn delete_bucket_tagging(&self, bucket: &str) -> Response<BoxBody> {
+        let path = self.bucket_tagging_path(bucket);
+        let _ = std::fs::remove_file(&path);
+        empty_response(StatusCode::NO_CONTENT)
+    }
+
+    fn bucket_tagging_path(&self, bucket: &str) -> std::path::PathBuf {
+        // store on first disk's bucket directory
+        let disk_root = if let Some(disk) = self.store.disks().first() {
+            let info = disk.info();
+            // extract path from label "local:/path"
+            if let Some(path) = info.label.strip_prefix("local:") {
+                std::path::PathBuf::from(path)
+            } else {
+                std::path::PathBuf::from(".")
+            }
+        } else {
+            std::path::PathBuf::from(".")
+        };
+        disk_root.join(bucket).join(".tagging.json")
+    }
+
+    fn read_bucket_tags(
+        &self,
+        path: &std::path::Path,
+    ) -> HashMap<String, String> {
+        match std::fs::read(path) {
+            Ok(data) => serde_json::from_slice(&data).unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        }
+    }
+
     async fn copy_object(
         &self,
         dst_bucket: &str,
@@ -454,6 +618,7 @@ impl S3Handler {
         let opts = PutOptions {
             content_type: src_info.content_type.clone(),
             user_metadata: src_info.user_metadata,
+            tags: src_info.tags,
         };
         let dst_info = match self.store.put_object(dst_bucket, dst_key, &data, opts) {
             Ok(info) => info,

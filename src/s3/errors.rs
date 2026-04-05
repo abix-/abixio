@@ -58,6 +58,12 @@ pub const ERR_BUCKET_NOT_EMPTY: S3Error = S3Error {
     http_status: 409,
 };
 
+pub const ERR_MALFORMED_XML: S3Error = S3Error {
+    code: "MalformedXML",
+    message: "The XML you provided was not well-formed",
+    http_status: 400,
+};
+
 pub const ERR_ACCESS_DENIED: S3Error = S3Error {
     code: "AccessDenied",
     message: "Access Denied",

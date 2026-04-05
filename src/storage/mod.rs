@@ -7,6 +7,8 @@ pub mod metadata;
 
 use std::io;
 
+use std::collections::HashMap;
+
 use metadata::{BucketInfo, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions};
 
 /// Backend is the per-disk storage interface. Each erasure "disk" implements
@@ -41,6 +43,8 @@ pub trait Backend: Send + Sync {
     fn bucket_created_at(&self, bucket: &str) -> u64;
 
     fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError>;
+
+    fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError>;
 
     fn info(&self) -> BackendInfo;
 }
@@ -80,6 +84,21 @@ pub trait Store: Send + Sync {
     fn list_buckets(&self) -> Result<Vec<BucketInfo>, StorageError>;
 
     fn list_objects(&self, bucket: &str, opts: ListOptions) -> Result<ListResult, StorageError>;
+
+    fn get_object_tags(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<HashMap<String, String>, StorageError>;
+
+    fn put_object_tags(
+        &self,
+        bucket: &str,
+        key: &str,
+        tags: HashMap<String, String>,
+    ) -> Result<(), StorageError>;
+
+    fn delete_object_tags(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
 }
 
 #[derive(Debug, thiserror::Error)]

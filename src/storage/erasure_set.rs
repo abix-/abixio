@@ -99,6 +99,7 @@ impl Store for ErasureSet {
                 content_type: meta.content_type,
                 created_at: meta.created_at,
                 user_metadata: meta.user_metadata,
+                tags: meta.tags,
             },
         ))
     }
@@ -116,6 +117,7 @@ impl Store for ErasureSet {
                         content_type: meta.content_type,
                         created_at: meta.created_at,
                         user_metadata: meta.user_metadata,
+                        tags: meta.tags,
                     });
                 }
                 Err(_) => continue,
@@ -274,6 +276,64 @@ impl Store for ErasureSet {
             is_truncated,
             next_continuation_token: String::new(),
         })
+    }
+
+    fn get_object_tags(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<std::collections::HashMap<String, String>, StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        for disk in &self.disks {
+            match disk.stat_object(bucket, key) {
+                Ok(meta) => return Ok(meta.tags),
+                Err(_) => continue,
+            }
+        }
+        Err(StorageError::ObjectNotFound)
+    }
+
+    fn put_object_tags(
+        &self,
+        bucket: &str,
+        key: &str,
+        tags: std::collections::HashMap<String, String>,
+    ) -> Result<(), StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        let mut successes = 0;
+        let mut found = false;
+        for disk in &self.disks {
+            match disk.stat_object(bucket, key) {
+                Ok(mut meta) => {
+                    found = true;
+                    meta.tags = tags.clone();
+                    if disk.update_meta(bucket, key, &meta).is_ok() {
+                        successes += 1;
+                    }
+                }
+                Err(_) => continue,
+            }
+        }
+        if !found {
+            return Err(StorageError::ObjectNotFound);
+        }
+        let write_quorum = if self.parity_n == 0 {
+            self.data_n
+        } else {
+            self.data_n + 1
+        };
+        if successes < write_quorum {
+            return Err(StorageError::WriteQuorum);
+        }
+        Ok(())
+    }
+
+    fn delete_object_tags(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+        self.put_object_tags(bucket, key, std::collections::HashMap::new())
     }
 }
 

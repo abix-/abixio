@@ -132,6 +132,31 @@ pub struct CopyObjectResultXml {
     pub last_modified: String,
 }
 
+// -- Tagging request/response types --
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename = "Tagging")]
+pub struct TaggingXml {
+    #[serde(rename = "@xmlns", skip_serializing_if = "Option::is_none", default)]
+    pub xmlns: Option<String>,
+    #[serde(rename = "TagSet")]
+    pub tag_set: TagSetXml,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TagSetXml {
+    #[serde(rename = "Tag", default)]
+    pub tags: Vec<TagXml>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TagXml {
+    #[serde(rename = "Key")]
+    pub key: String,
+    #[serde(rename = "Value")]
+    pub value: String,
+}
+
 pub const S3_XMLNS: &str = "http://s3.amazonaws.com/doc/2006-03-01/";
 
 pub fn default_owner() -> Owner {

@@ -201,6 +201,14 @@ impl Backend for LocalDisk {
         read_meta(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)
     }
 
+    fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError> {
+        let obj_dir = self.root.join(bucket).join(key);
+        if !obj_dir.is_dir() {
+            return Err(StorageError::ObjectNotFound);
+        }
+        write_meta(&obj_dir.join(META_FILE), meta).map_err(StorageError::Io)
+    }
+
     fn info(&self) -> BackendInfo {
         let (total_bytes, free_bytes) = disk_space(&self.root);
         let used_bytes = total_bytes.saturating_sub(free_bytes);
@@ -274,6 +282,7 @@ mod tests {
             },
             checksum: "deadbeef".to_string(),
             user_metadata: std::collections::HashMap::new(),
+            tags: std::collections::HashMap::new(),
         }
     }
 
