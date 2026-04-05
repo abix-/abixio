@@ -196,4 +196,171 @@ mod tests {
         assert!(validate_version_id("not-a-uuid").is_err());
         assert!(validate_upload_id("../escape").is_err());
     }
+
+    // --- comprehensive security coverage ---
+
+    #[test]
+    fn bucket_name_rejects_all_hostile_variants() {
+        // traversal
+        assert!(validate_bucket_name("..").is_err());
+        assert!(validate_bucket_name("../x").is_err());
+        assert!(validate_bucket_name("a..b").is_err());
+        // reserved
+        assert!(validate_bucket_name("abixio").is_err());
+        // IP address
+        assert!(validate_bucket_name("127.0.0.1").is_err());
+        assert!(validate_bucket_name("192.168.1.1").is_err());
+        // length
+        assert!(validate_bucket_name("").is_err());
+        assert!(validate_bucket_name(&"a".repeat(64)).is_err());
+        // forbidden chars
+        assert!(validate_bucket_name("UPPER").is_err());
+        assert!(validate_bucket_name("has space").is_err());
+        assert!(validate_bucket_name("has/slash").is_err());
+        assert!(validate_bucket_name("has\\back").is_err());
+        assert!(validate_bucket_name("a\x00b").is_err());
+        // leading/trailing non-alphanumeric
+        assert!(validate_bucket_name("-leading").is_err());
+        assert!(validate_bucket_name("trailing-").is_err());
+        assert!(validate_bucket_name(".leading").is_err());
+        assert!(validate_bucket_name("trailing.").is_err());
+        // adjacent special chars
+        assert!(validate_bucket_name("a.-b").is_err());
+        assert!(validate_bucket_name("a-.b").is_err());
+    }
+
+    #[test]
+    fn bucket_name_accepts_valid_edge_cases() {
+        assert!(validate_bucket_name("a").is_ok());
+        assert!(validate_bucket_name("abc").is_ok());
+        assert!(validate_bucket_name(&"a".repeat(63)).is_ok());
+        assert!(validate_bucket_name("my.bucket.name").is_ok());
+        assert!(validate_bucket_name("my-bucket-123").is_ok());
+        assert!(validate_bucket_name("0bucket").is_ok());
+    }
+
+    #[test]
+    fn key_rejects_all_hostile_variants() {
+        // empty
+        assert!(validate_object_key("").is_err());
+        // too long
+        assert!(validate_object_key(&"a".repeat(1025)).is_err());
+        // traversal
+        assert!(validate_object_key("..").is_err());
+        assert!(validate_object_key("../x").is_err());
+        assert!(validate_object_key("a/../../b").is_err());
+        assert!(validate_object_key(".").is_err());
+        assert!(validate_object_key("a/./b").is_err());
+        // null byte
+        assert!(validate_object_key("a\x00b").is_err());
+        // double slash
+        assert!(validate_object_key("a//b").is_err());
+        // leading slash
+        assert!(validate_object_key("/a/b").is_err());
+        // windows chars
+        assert!(validate_object_key("a:b").is_err());
+        assert!(validate_object_key("a*b").is_err());
+        assert!(validate_object_key("a?b").is_err());
+        assert!(validate_object_key("a\"b").is_err());
+        assert!(validate_object_key("a|b").is_err());
+        assert!(validate_object_key("a<b").is_err());
+        assert!(validate_object_key("a>b").is_err());
+        assert!(validate_object_key("a\\b").is_err());
+        // whitespace padding on segment
+        assert!(validate_object_key(" a").is_err());
+        assert!(validate_object_key("a ").is_err());
+        assert!(validate_object_key("a/ b").is_err());
+    }
+
+    #[test]
+    fn key_accepts_valid_edge_cases() {
+        assert!(validate_object_key("a").is_ok());
+        assert!(validate_object_key(&"a".repeat(1024)).is_ok());
+        assert!(validate_object_key("a/b/c/d/e/f/g").is_ok());
+        assert!(validate_object_key("file.txt").is_ok());
+        assert!(validate_object_key("dir/file.tar.gz").is_ok());
+        assert!(validate_object_key("a-b_c").is_ok());
+    }
+
+    #[test]
+    fn prefix_rejects_hostile_variants() {
+        assert!(validate_object_prefix("../x").is_err());
+        assert!(validate_object_prefix("a/../b").is_err());
+        assert!(validate_object_prefix("./hidden").is_err());
+        assert!(validate_object_prefix("a//b").is_err());
+        assert!(validate_object_prefix("a\\b").is_err());
+    }
+
+    #[test]
+    fn prefix_accepts_valid_edge_cases() {
+        assert!(validate_object_prefix("").is_ok());
+        assert!(validate_object_prefix("a/").is_ok());
+        assert!(validate_object_prefix("a/b/").is_ok());
+    }
+
+    #[test]
+    fn prefix_rejects_leading_slash() {
+        assert!(validate_object_prefix("/").is_err());
+        assert!(validate_object_prefix("/a").is_err());
+    }
+
+    #[test]
+    fn version_id_rejects_all_hostile_variants() {
+        assert!(validate_version_id("").is_err());
+        assert!(validate_version_id("../escape").is_err());
+        assert!(validate_version_id("not-a-uuid").is_err());
+        assert!(validate_version_id("a".repeat(256).as_str()).is_err());
+        assert!(validate_version_id("<script>").is_err());
+        assert!(validate_version_id("a\x00b").is_err());
+    }
+
+    #[test]
+    fn version_id_accepts_valid_uuid() {
+        assert!(validate_version_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
+        assert!(validate_version_id("550e8400e29b41d4a716446655440000").is_ok());
+    }
+
+    #[test]
+    fn upload_id_rejects_all_hostile_variants() {
+        assert!(validate_upload_id("").is_err());
+        assert!(validate_upload_id("../escape").is_err());
+        assert!(validate_upload_id("not-a-uuid").is_err());
+        assert!(validate_upload_id("a\x00b").is_err());
+    }
+
+    #[test]
+    fn upload_id_accepts_valid_uuid() {
+        assert!(validate_upload_id("550e8400-e29b-41d4-a716-446655440000").is_ok());
+    }
+
+    #[test]
+    fn safe_join_rejects_escape_from_root() {
+        let root = std::path::Path::new("/data/volumes/v1");
+        assert!(safe_join(root, &["..", "etc", "passwd"]).is_err());
+        assert!(safe_join(root, &["bucket", "..", "..", "etc"]).is_err());
+    }
+
+    #[test]
+    fn safe_join_allows_nested_within_root() {
+        let root = std::path::Path::new("/data/volumes/v1");
+        assert!(safe_join(root, &["bucket", "key"]).is_ok());
+        assert!(safe_join(root, &["bucket", "a", "b", "c"]).is_ok());
+    }
+
+    #[test]
+    fn object_dir_rejects_hostile_combinations() {
+        let root = std::path::Path::new("/data");
+        assert!(object_dir(root, "..", "key").is_err());
+        assert!(object_dir(root, "bucket", "..").is_err());
+        assert!(object_dir(root, "bucket", "../escape").is_err());
+        assert!(object_dir(root, "../x", "key").is_err());
+    }
+
+    #[test]
+    fn multipart_upload_dir_rejects_hostile_combinations() {
+        let root = std::path::Path::new("/data");
+        assert!(multipart_upload_dir(root, "..", "key", "550e8400-e29b-41d4-a716-446655440000").is_err());
+        assert!(multipart_upload_dir(root, "bucket", "../x", "550e8400-e29b-41d4-a716-446655440000").is_err());
+        assert!(multipart_upload_dir(root, "bucket", "key", "not-a-uuid").is_err());
+    }
 }

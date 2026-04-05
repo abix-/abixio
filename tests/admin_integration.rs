@@ -985,3 +985,133 @@ async fn admin_inspect_object_shows_per_object_ec() {
     assert_eq!(body["erasure"]["parity"], 5);
     assert_eq!(body["shards"].as_array().unwrap().len(), 6);
 }
+
+// =============================================================================
+// Security tests -- admin endpoint exploitation coverage
+// =============================================================================
+
+#[tokio::test]
+async fn admin_inspect_rejects_all_traversal_variants() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let hostile_keys = vec![
+        "../escape",
+        "..\\escape",
+        "a/../b",
+        "a/./b",
+        "./hidden",
+        "a//b",
+    ];
+
+    for key in hostile_keys {
+        let resp = client
+            .get(url_with_query(
+                &addr,
+                "/_admin/object",
+                &[("bucket", "testbucket"), ("key", key)],
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            400,
+            "admin inspect key '{}' should be rejected, got {}",
+            key,
+            resp.status()
+        );
+    }
+}
+
+#[tokio::test]
+async fn admin_heal_rejects_all_traversal_variants() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let hostile_keys = vec![
+        "../escape",
+        "..\\escape",
+        "a/../b",
+        "./hidden",
+    ];
+
+    for key in hostile_keys {
+        let resp = client
+            .post(url_with_query(
+                &addr,
+                "/_admin/heal",
+                &[("bucket", "testbucket"), ("key", key)],
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            400,
+            "admin heal key '{}' should be rejected, got {}",
+            key,
+            resp.status()
+        );
+    }
+}
+
+#[tokio::test]
+async fn admin_rejects_hostile_bucket_names() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let hostile_buckets = vec![
+        "..",
+        "../escape",
+        "UPPER",
+        "has space",
+        "has/slash",
+        "abixio",
+        "127.0.0.1",
+    ];
+
+    for bucket in hostile_buckets {
+        let resp = client
+            .get(url_with_query(
+                &addr,
+                "/_admin/object",
+                &[("bucket", bucket), ("key", "validkey")],
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            400,
+            "admin bucket '{}' should be rejected, got {}",
+            bucket,
+            resp.status()
+        );
+    }
+}
+
+#[tokio::test]
+async fn admin_ec_config_rejects_hostile_bucket() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(url_with_query(
+            &addr,
+            "/_admin/ec-config",
+            &[("bucket", "../escape")],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status() == 400 || resp.status() == 404,
+        "admin ec-config hostile bucket should be rejected, got {}",
+        resp.status()
+    );
+}
