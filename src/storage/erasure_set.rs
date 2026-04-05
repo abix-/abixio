@@ -4,43 +4,44 @@ use super::Backend;
 use super::erasure_decode::{read_and_decode, read_and_decode_versioned};
 use super::erasure_encode::{encode_and_write_versioned, encode_and_write_with_mrf};
 use super::metadata::{
-    BucketInfo, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions, VersioningConfig,
+    BucketInfo, EcConfig, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions,
+    VersioningConfig,
 };
 use super::{StorageError, Store};
 use crate::heal::mrf::MrfQueue;
 
 pub struct ErasureSet {
     disks: Vec<Box<dyn Backend>>,
-    data_n: usize,
-    parity_n: usize,
+    default_data: usize,
+    default_parity: usize,
     mrf: Option<Arc<MrfQueue>>,
 }
 
 impl ErasureSet {
     pub fn new(
         disks: Vec<Box<dyn Backend>>,
-        data_n: usize,
-        parity_n: usize,
+        default_data: usize,
+        default_parity: usize,
     ) -> Result<Self, StorageError> {
-        let total = data_n + parity_n;
-        if disks.len() != total {
-            return Err(StorageError::InvalidConfig(format!(
-                "need {} disks (data={} + parity={}), got {}",
-                total,
-                data_n,
-                parity_n,
-                disks.len()
-            )));
-        }
-        if data_n == 0 {
+        if default_data == 0 {
             return Err(StorageError::InvalidConfig(
                 "data shards must be >= 1".to_string(),
             ));
         }
+        let total = default_data + default_parity;
+        if disks.len() < total {
+            return Err(StorageError::InvalidConfig(format!(
+                "need at least {} disks (data={} + parity={}), got {}",
+                total,
+                default_data,
+                default_parity,
+                disks.len()
+            )));
+        }
         Ok(Self {
             disks,
-            data_n,
-            parity_n,
+            default_data,
+            default_parity,
             mrf: None,
         })
     }
@@ -50,15 +51,63 @@ impl ErasureSet {
     }
 
     pub fn data_n(&self) -> usize {
-        self.data_n
+        self.default_data
     }
 
     pub fn parity_n(&self) -> usize {
-        self.parity_n
+        self.default_parity
     }
 
     pub fn set_mrf(&mut self, mrf: Arc<MrfQueue>) {
         self.mrf = Some(mrf);
+    }
+
+    /// Resolve EC params for a write operation.
+    /// Precedence: per-object (PutOptions) > bucket config > server defaults.
+    fn resolve_ec(&self, bucket: &str, opts: &PutOptions) -> (usize, usize) {
+        // per-object override from PutOptions
+        if let (Some(d), Some(p)) = (opts.ec_data, opts.ec_parity)
+            && d >= 1
+            && d + p <= self.disks.len()
+        {
+            return (d, p);
+        }
+
+        // bucket-level config
+        if let Some(ec) = self.disks.iter().find_map(|d| d.read_ec_config(bucket))
+            && ec.data >= 1
+            && ec.data + ec.parity <= self.disks.len()
+        {
+            return (ec.data, ec.parity);
+        }
+
+        // server defaults
+        (self.default_data, self.default_parity)
+    }
+
+    /// Read meta from any available disk to get the object's stored EC params.
+    fn read_ec_from_meta(&self, bucket: &str, key: &str) -> Option<(usize, usize)> {
+        for disk in &self.disks {
+            if let Ok(meta) = disk.stat_object(bucket, key) {
+                return Some((meta.erasure.data, meta.erasure.parity));
+            }
+        }
+        None
+    }
+
+    fn meta_to_info(bucket: &str, key: &str, meta: &ObjectMeta) -> ObjectInfo {
+        ObjectInfo {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            size: meta.size,
+            etag: meta.etag.clone(),
+            content_type: meta.content_type.clone(),
+            created_at: meta.created_at,
+            user_metadata: meta.user_metadata.clone(),
+            tags: meta.tags.clone(),
+            version_id: meta.version_id.clone(),
+            is_delete_marker: meta.is_delete_marker,
+        }
     }
 }
 
@@ -73,11 +122,11 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
-        // unversioned: write_shard handles meta.json (single version entry)
+        let (data_n, parity_n) = self.resolve_ec(bucket, &opts);
         encode_and_write_with_mrf(
             &self.disks,
-            self.data_n,
-            self.parity_n,
+            data_n,
+            parity_n,
             bucket,
             key,
             data,
@@ -90,54 +139,32 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
-        // read_and_decode uses read_shard which reads meta.json -> latest version -> correct shard
+        let (data_n, parity_n) = self
+            .read_ec_from_meta(bucket, key)
+            .unwrap_or((self.default_data, self.default_parity));
         let (data, meta) =
-            read_and_decode(&self.disks, self.data_n, self.parity_n, bucket, key)?;
-        Ok((
-            data,
-            ObjectInfo {
-                bucket: bucket.to_string(),
-                key: key.to_string(),
-                size: meta.size,
-                etag: meta.etag,
-                content_type: meta.content_type,
-                created_at: meta.created_at,
-                user_metadata: meta.user_metadata,
-                tags: meta.tags,
-                version_id: meta.version_id,
-                is_delete_marker: meta.is_delete_marker,
-            },
-        ))
+            read_and_decode(&self.disks, data_n, parity_n, bucket, key)?;
+        Ok((data, Self::meta_to_info(bucket, key, &meta)))
     }
 
     fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo, StorageError> {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
-        // stat_object reads meta.json -> latest version
         for disk in &self.disks {
-            match disk.stat_object(bucket, key) {
-                Ok(meta) => {
-                    return Ok(ObjectInfo {
-                        bucket: bucket.to_string(),
-                        key: key.to_string(),
-                        size: meta.size,
-                        etag: meta.etag,
-                        content_type: meta.content_type,
-                        created_at: meta.created_at,
-                        user_metadata: meta.user_metadata,
-                        tags: meta.tags,
-                        version_id: meta.version_id,
-                        is_delete_marker: meta.is_delete_marker,
-                    });
-                }
-                Err(_) => continue,
+            if let Ok(meta) = disk.stat_object(bucket, key) {
+                return Ok(Self::meta_to_info(bucket, key, &meta));
             }
         }
         Err(StorageError::ObjectNotFound)
     }
 
     fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+        // get stored EC params for quorum calculation
+        let (data_n, parity_n) = self
+            .read_ec_from_meta(bucket, key)
+            .unwrap_or((self.default_data, self.default_parity));
+
         let mut successes = 0;
         let mut found = false;
         for disk in &self.disks {
@@ -147,7 +174,6 @@ impl Store for ErasureSet {
                     found = true;
                 }
                 Err(StorageError::ObjectNotFound) => {
-                    // might not exist on this disk (partial write), still count
                     successes += 1;
                 }
                 Err(_) => {}
@@ -156,10 +182,10 @@ impl Store for ErasureSet {
         if !found {
             return Err(StorageError::ObjectNotFound);
         }
-        let delete_quorum = if self.parity_n == 0 {
-            self.data_n
+        let delete_quorum = if parity_n == 0 {
+            data_n
         } else {
-            self.data_n + 1
+            data_n + 1
         };
         if successes < delete_quorum {
             return Err(StorageError::WriteQuorum);
@@ -168,7 +194,6 @@ impl Store for ErasureSet {
     }
 
     fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
-        // check if already exists
         if self.disks.iter().any(|d| d.bucket_exists(bucket)) {
             return Err(StorageError::BucketExists);
         }
@@ -188,7 +213,6 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
-        // check if bucket has objects (from any disk)
         for disk in &self.disks {
             if let Ok(keys) = disk.list_objects(bucket, "")
                 && !keys.is_empty()
@@ -196,7 +220,6 @@ impl Store for ErasureSet {
                 return Err(StorageError::BucketNotEmpty);
             }
         }
-        // delete from all disks
         for disk in &self.disks {
             let _ = disk.delete_bucket(bucket);
         }
@@ -209,11 +232,11 @@ impl Store for ErasureSet {
             .iter()
             .filter(|d| d.bucket_exists(bucket))
             .count();
-        Ok(count >= self.data_n)
+        // bucket must exist on at least 1 disk
+        Ok(count >= 1)
     }
 
     fn list_buckets(&self) -> Result<Vec<BucketInfo>, StorageError> {
-        // list from first responsive disk
         for disk in &self.disks {
             match disk.list_buckets() {
                 Ok(names) => {
@@ -236,7 +259,6 @@ impl Store for ErasureSet {
             return Err(StorageError::BucketNotFound);
         }
 
-        // list keys from first responsive disk
         let mut keys = Vec::new();
         for disk in &self.disks {
             match disk.list_objects(bucket, &opts.prefix) {
@@ -248,12 +270,10 @@ impl Store for ErasureSet {
             }
         }
 
-        // apply delimiter grouping
         let mut objects = Vec::new();
         let mut common_prefixes = Vec::new();
 
         if opts.delimiter.is_empty() {
-            // no grouping, just list all matching objects
             for key in &keys {
                 if let Ok(info) = self.head_object(bucket, key) {
                     objects.push(info);
@@ -315,6 +335,11 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
+
+        let (data_n, parity_n) = self
+            .read_ec_from_meta(bucket, key)
+            .unwrap_or((self.default_data, self.default_parity));
+
         let mut successes = 0;
         let mut found = false;
         for disk in &self.disks {
@@ -330,10 +355,10 @@ impl Store for ErasureSet {
         if !found {
             return Err(StorageError::ObjectNotFound);
         }
-        let write_quorum = if self.parity_n == 0 {
-            self.data_n
+        let write_quorum = if parity_n == 0 {
+            data_n
         } else {
-            self.data_n + 1
+            data_n + 1
         };
         if successes < write_quorum {
             return Err(StorageError::WriteQuorum);
@@ -358,10 +383,11 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
+        let (data_n, parity_n) = self.resolve_ec(bucket, &opts);
         encode_and_write_versioned(
             &self.disks,
-            self.data_n,
-            self.parity_n,
+            data_n,
+            parity_n,
             bucket,
             key,
             data,
@@ -415,29 +441,19 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
+        // for versioned reads, get EC from meta (may differ from defaults)
+        let (data_n, parity_n) = self
+            .read_ec_from_meta(bucket, key)
+            .unwrap_or((self.default_data, self.default_parity));
         let (data, meta) = read_and_decode_versioned(
             &self.disks,
-            self.data_n,
-            self.parity_n,
+            data_n,
+            parity_n,
             bucket,
             key,
             version_id,
         )?;
-        Ok((
-            data,
-            ObjectInfo {
-                bucket: bucket.to_string(),
-                key: key.to_string(),
-                size: meta.size,
-                etag: meta.etag,
-                content_type: meta.content_type,
-                created_at: meta.created_at,
-                user_metadata: meta.user_metadata,
-                tags: meta.tags,
-                version_id: meta.version_id,
-                is_delete_marker: false,
-            },
-        ))
+        Ok((data, Self::meta_to_info(bucket, key, &meta)))
     }
 
     fn delete_object_version(
@@ -449,7 +465,6 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
-        // delete_version_data handles both shard removal and meta.json update
         for disk in &self.disks {
             let _ = disk.delete_version_data(bucket, key, version_id);
         }
@@ -464,7 +479,6 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
-        // list keys from first responsive disk
         let mut keys = Vec::new();
         for disk in &self.disks {
             match disk.list_objects(bucket, prefix) {
@@ -486,6 +500,68 @@ impl Store for ErasureSet {
             }
         }
         Ok(result)
+    }
+
+    // -- per-bucket EC config --
+
+    fn get_ec_config(
+        &self,
+        bucket: &str,
+    ) -> Result<Option<EcConfig>, StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        for disk in &self.disks {
+            if let Some(config) = disk.read_ec_config(bucket) {
+                return Ok(Some(config));
+            }
+        }
+        Ok(None)
+    }
+
+    fn set_ec_config(
+        &self,
+        bucket: &str,
+        config: &EcConfig,
+    ) -> Result<(), StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        if config.data == 0 {
+            return Err(StorageError::InvalidConfig(
+                "ec data shards must be >= 1".to_string(),
+            ));
+        }
+        if config.data + config.parity > self.disks.len() {
+            return Err(StorageError::InvalidConfig(format!(
+                "ec data({}) + parity({}) exceeds disk count({})",
+                config.data,
+                config.parity,
+                self.disks.len()
+            )));
+        }
+        let mut successes = 0;
+        for disk in &self.disks {
+            if disk.write_ec_config(bucket, config).is_ok() {
+                successes += 1;
+            }
+        }
+        if successes == 0 {
+            return Err(StorageError::WriteQuorum);
+        }
+        Ok(())
+    }
+
+    fn disk_count(&self) -> usize {
+        self.disks.len()
+    }
+
+    fn default_data(&self) -> usize {
+        self.default_data
+    }
+
+    fn default_parity(&self) -> usize {
+        self.default_parity
     }
 }
 
@@ -536,7 +612,17 @@ mod tests {
     }
 
     #[test]
-    fn new_mismatched_disk_count() {
+    fn new_more_disks_than_needed() {
+        // pool with 6 disks, default EC 2+2 -- should work now
+        let (_base, paths) = make_disk_dirs(6);
+        let set = make_set(&paths, 2, 2);
+        assert_eq!(set.disks().len(), 6);
+        assert_eq!(set.data_n(), 2);
+        assert_eq!(set.parity_n(), 2);
+    }
+
+    #[test]
+    fn new_too_few_disks_fails() {
         let (_base, paths) = make_disk_dirs(3);
         let backends = make_backends(&paths);
         assert!(ErasureSet::new(backends, 2, 2).is_err());
@@ -572,10 +658,8 @@ mod tests {
             };
             let info = set.put_object("test", "fox.txt", payload, opts).unwrap();
 
-            // verify etag is md5 of original data
             assert_eq!(info.etag, crate::storage::bitrot::md5_hex(payload));
 
-            // verify get returns original data
             let (data, get_info) = set.get_object("test", "fox.txt").unwrap();
             assert_eq!(
                 data, payload,
@@ -609,6 +693,143 @@ mod tests {
         }
     }
 
+    // -- per-object EC in a larger pool --
+
+    #[test]
+    fn per_object_ec_override() {
+        // 6-disk pool with default EC 2+2
+        let (_base, paths) = make_disk_dirs(6);
+        let set = make_set(&paths, 2, 2);
+        set.make_bucket("test").unwrap();
+
+        // write with per-object EC 1+1 (uses only 2 of 6 disks)
+        let payload = b"per-object ec test";
+        let opts = PutOptions {
+            content_type: "text/plain".to_string(),
+            ec_data: Some(1),
+            ec_parity: Some(1),
+            ..Default::default()
+        };
+        set.put_object("test", "small", payload, opts).unwrap();
+
+        // read back -- uses stored EC from meta
+        let (data, _) = set.get_object("test", "small").unwrap();
+        assert_eq!(data, payload);
+
+        // write with default EC (2+2, uses 4 of 6 disks)
+        let opts2 = PutOptions {
+            content_type: "text/plain".to_string(),
+            ..Default::default()
+        };
+        let payload2 = b"default ec test";
+        set.put_object("test", "normal", payload2, opts2).unwrap();
+        let (data2, _) = set.get_object("test", "normal").unwrap();
+        assert_eq!(data2, payload2);
+    }
+
+    #[test]
+    fn per_object_ec_max_parity() {
+        // 6-disk pool, write with EC 1+5 (max parity)
+        let (_base, paths) = make_disk_dirs(6);
+        let set = make_set(&paths, 1, 1);
+        set.make_bucket("test").unwrap();
+
+        let payload = b"max parity test data";
+        let opts = PutOptions {
+            content_type: "text/plain".to_string(),
+            ec_data: Some(1),
+            ec_parity: Some(5),
+            ..Default::default()
+        };
+        set.put_object("test", "critical", payload, opts).unwrap();
+
+        // delete 4 of 6 disks' object data -- should still be readable (parity=5)
+        for i in 0..4 {
+            let obj_dir = paths[i].join("test").join("critical");
+            if obj_dir.exists() {
+                std::fs::remove_dir_all(&obj_dir).unwrap();
+            }
+        }
+
+        let (data, _) = set.get_object("test", "critical").unwrap();
+        assert_eq!(data, payload);
+    }
+
+    #[test]
+    fn bucket_ec_config() {
+        let (_base, paths) = make_disk_dirs(6);
+        let set = make_set(&paths, 2, 2);
+        set.make_bucket("test").unwrap();
+
+        // no config initially
+        assert!(set.get_ec_config("test").unwrap().is_none());
+
+        // set bucket EC config
+        let config = EcConfig { data: 3, parity: 3 };
+        set.set_ec_config("test", &config).unwrap();
+
+        // verify it's stored
+        let loaded = set.get_ec_config("test").unwrap().unwrap();
+        assert_eq!(loaded, config);
+
+        // write object -- should use bucket config (3+3)
+        let payload = b"bucket ec test";
+        let opts = PutOptions {
+            content_type: "text/plain".to_string(),
+            ..Default::default()
+        };
+        set.put_object("test", "key", payload, opts).unwrap();
+
+        // verify the object used 3+3
+        let meta = set.read_ec_from_meta("test", "key").unwrap();
+        assert_eq!(meta, (3, 3));
+    }
+
+    #[test]
+    fn per_object_overrides_bucket_config() {
+        let (_base, paths) = make_disk_dirs(6);
+        let set = make_set(&paths, 2, 2);
+        set.make_bucket("test").unwrap();
+
+        // set bucket config to 3+3
+        set.set_ec_config("test", &EcConfig { data: 3, parity: 3 }).unwrap();
+
+        // write with per-object override 1+1
+        let opts = PutOptions {
+            content_type: "text/plain".to_string(),
+            ec_data: Some(1),
+            ec_parity: Some(1),
+            ..Default::default()
+        };
+        set.put_object("test", "key", b"override", opts).unwrap();
+
+        // verify per-object won
+        let meta = set.read_ec_from_meta("test", "key").unwrap();
+        assert_eq!(meta, (1, 1));
+    }
+
+    #[test]
+    fn ec_config_validation() {
+        let (_base, paths) = make_disk_dirs(4);
+        let set = make_set(&paths, 2, 2);
+        set.make_bucket("test").unwrap();
+
+        // data=0 should fail
+        assert!(set
+            .set_ec_config("test", &EcConfig { data: 0, parity: 2 })
+            .is_err());
+
+        // exceeds disk count should fail
+        assert!(set
+            .set_ec_config("test", &EcConfig { data: 3, parity: 3 })
+            .is_err());
+
+        // valid config should succeed
+        assert!(set
+            .set_ec_config("test", &EcConfig { data: 2, parity: 2 })
+            .is_ok());
+    }
+
     // -- erasure resilience --
 
     #[test]
@@ -626,7 +847,6 @@ mod tests {
             };
             set.put_object("test", "key", payload, opts).unwrap();
 
-            // delete up to parity disk shard dirs
             for i in 0..cfg.parity {
                 let obj_dir = paths[total - 1 - i].join("test").join("key");
                 if obj_dir.exists() {
@@ -658,7 +878,6 @@ mod tests {
             };
             set.put_object("test", "key", payload, opts).unwrap();
 
-            // delete parity + 1 disk shards
             for i in 0..(cfg.parity + 1) {
                 let obj_dir = paths[total - 1 - i].join("test").join("key");
                 if obj_dir.exists() {
@@ -694,7 +913,6 @@ mod tests {
         };
         set.put_object("test", "key", payload, opts).unwrap();
 
-        // corrupt shard.dat on disk 0
         let shard_path = paths[0].join("test").join("key").join("shard.dat");
         if shard_path.exists() {
             std::fs::write(&shard_path, b"CORRUPTED").unwrap();
@@ -717,7 +935,6 @@ mod tests {
         };
         set.put_object("test", "key", payload, opts).unwrap();
 
-        // corrupt shard.dat on 3 of 4 disks
         for i in 0..3 {
             let shard_path = paths[i].join("test").join("key").join("shard.dat");
             if shard_path.exists() {
@@ -776,7 +993,6 @@ mod tests {
         set.put_object("test", "key", b"data", opts).unwrap();
         set.delete_object("test", "key").unwrap();
 
-        // verify gone from all disks
         for path in &paths {
             assert!(!path.join("test").join("key").exists());
         }
@@ -868,7 +1084,6 @@ mod tests {
         let set = make_set(&paths, 2, 2);
         set.make_bucket("test").unwrap();
 
-        // remove ALL disk root directories to guarantee all writes fail
         for path in &paths {
             std::fs::remove_dir_all(path).unwrap();
         }

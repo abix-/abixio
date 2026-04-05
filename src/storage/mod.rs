@@ -10,7 +10,8 @@ use std::io;
 use std::collections::HashMap;
 
 use metadata::{
-    BucketInfo, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions, VersioningConfig,
+    BucketInfo, EcConfig, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions,
+    VersioningConfig,
 };
 
 /// Backend is the per-disk storage interface. Each erasure "disk" implements
@@ -86,6 +87,9 @@ pub trait Backend: Send + Sync {
         bucket: &str,
         config: &VersioningConfig,
     ) -> Result<(), StorageError>;
+
+    fn read_ec_config(&self, bucket: &str) -> Option<EcConfig>;
+    fn write_ec_config(&self, bucket: &str, config: &EcConfig) -> Result<(), StorageError>;
 
     fn info(&self) -> BackendInfo;
 }
@@ -177,6 +181,23 @@ pub trait Store: Send + Sync {
         bucket: &str,
         prefix: &str,
     ) -> Result<Vec<(String, Vec<ObjectMeta>)>, StorageError>;
+
+    // -- per-bucket EC config --
+
+    fn get_ec_config(
+        &self,
+        bucket: &str,
+    ) -> Result<Option<metadata::EcConfig>, StorageError>;
+
+    fn set_ec_config(
+        &self,
+        bucket: &str,
+        config: &metadata::EcConfig,
+    ) -> Result<(), StorageError>;
+
+    fn disk_count(&self) -> usize;
+    fn default_data(&self) -> usize;
+    fn default_parity(&self) -> usize;
 }
 
 #[derive(Debug, thiserror::Error)]

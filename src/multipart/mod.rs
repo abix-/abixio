@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::storage::Backend;
 use crate::storage::StorageError;
 use crate::storage::bitrot::{md5_hex, sha256_hex};
-use crate::storage::metadata::{ErasureMeta, ObjectInfo, ObjectMeta, ObjectMetaFile, PutOptions};
+use crate::storage::metadata::{ErasureMeta, ObjectInfo, PutOptions};
 
 const MULTIPART_DIR: &str = ".abixio.sys/multipart";
 const UPLOAD_FILE: &str = "upload.json";

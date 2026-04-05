@@ -8,7 +8,7 @@ Spreads your data across disks using Reed-Solomon erasure coding. Lose a disk,
 lose nothing. Any S3 client works out of the box.
 
 - 1 disk minimum, scale up by adding disks
-- Configurable data/parity split
+- Per-object erasure coding (data/parity per object, bucket, or server default)
 - Pluggable storage backends via `Backend` trait
 - Per-shard SHA256 bitrot detection
 - Background healing (MRF queue + integrity scanner)
@@ -41,12 +41,40 @@ Works with AWS CLI, rclone, MinIO client, boto3, or any S3-compatible tool.
 
 ## Configuration
 
+Server defaults set the data/parity ratio for new objects. You can override
+per bucket or per object.
+
 | Config | Behavior |
 |---|---|
 | 1 disk, 1 data, 0 parity | Plain S3 storage. No redundancy. |
 | 2 disks, 1 data, 1 parity | Mirror-like. Survives 1 disk failure. |
 | 4 disks, 2 data, 2 parity | Erasure coding. Survives 2 failures. |
 | 6 disks, 2 data, 4 parity | Heavy parity. Survives 4 failures. |
+| 6 disks, 2 data, 2 parity | Disk pool. Default EC uses 4 of 6 disks per object. |
+
+### Per-object erasure coding
+
+Each object can have its own data/parity ratio. Set via S3 custom metadata headers:
+
+```bash
+# critical file: 1 data + 5 parity (survives 5 disk failures)
+curl -X PUT -d "important" \
+  -H "x-amz-meta-ec-data: 1" -H "x-amz-meta-ec-parity: 5" \
+  http://localhost:9000/mybucket/critical.txt
+
+# large file: 4 data + 2 parity (throughput-optimized)
+curl -X PUT -d @bigfile.bin \
+  -H "x-amz-meta-ec-data: 4" -H "x-amz-meta-ec-parity: 2" \
+  http://localhost:9000/mybucket/bigfile.bin
+```
+
+Bucket-level defaults via admin API:
+
+```bash
+curl -X PUT "http://localhost:9000/_admin/bucket/mybucket/ec?data=3&parity=3"
+```
+
+Precedence: per-object header > bucket config > server default (`--data`/`--parity`).
 
 ## S3 API coverage
 

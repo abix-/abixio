@@ -44,18 +44,18 @@ impl Config {
         if self.data == 0 {
             return Err("data shards must be >= 1".to_string());
         }
+        if self.disks.is_empty() {
+            return Err("no disks specified".to_string());
+        }
         let total = self.data + self.parity;
-        if self.disks.len() != total {
+        if self.disks.len() < total {
             return Err(format!(
-                "need {} disks (data={} + parity={}), got {}",
+                "need at least {} disks (data={} + parity={}), got {}",
                 total,
                 self.data,
                 self.parity,
                 self.disks.len()
             ));
-        }
-        if self.disks.is_empty() {
-            return Err("no disks specified".to_string());
         }
         for path in &self.disks {
             if !path.is_dir() {
@@ -178,10 +178,17 @@ mod tests {
     }
 
     #[test]
-    fn invalid_disk_count_mismatch() {
+    fn invalid_too_few_disks() {
         let (_base, paths) = make_dirs(3);
-        let cfg = config_with(paths, 2, 2); // wants 4, got 3
+        let cfg = config_with(paths, 2, 2); // needs 4, got 3
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn valid_more_disks_than_needed() {
+        let (_base, paths) = make_dirs(6);
+        let cfg = config_with(paths, 2, 2); // pool of 6, default EC 2+2
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

@@ -13,6 +13,7 @@ disk0/
   bucket-name/
     .versioning.json          # optional: { "status": "Enabled" | "Suspended" }
     .tagging.json             # optional: bucket-level tags
+    .ec.json                  # optional: { "data": N, "parity": N } bucket EC default
     object-key/
       meta.json               # all version metadata for this object
       shard.dat               # shard data (unversioned objects)

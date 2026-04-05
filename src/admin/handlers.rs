@@ -12,6 +12,7 @@ use crate::heal::worker::{HealResult, heal_object};
 use crate::query::parse_query;
 use crate::storage::bitrot::sha256_hex;
 use crate::storage::Backend;
+use crate::storage::Store;
 use crate::storage::erasure_set::ErasureSet;
 
 type BoxBody = Full<Bytes>;
@@ -93,6 +94,14 @@ impl AdminHandler {
             ("heal", &hyper::Method::GET) => self.heal_status(),
             ("heal", &hyper::Method::POST) => self.heal_object_handler(query),
             ("object", &hyper::Method::GET) => self.inspect_object(query),
+            _ if path.starts_with("bucket/") && path.ends_with("/ec") => {
+                let bucket = &path["bucket/".len()..path.len() - "/ec".len()];
+                match *method {
+                    hyper::Method::GET => self.get_bucket_ec(bucket),
+                    hyper::Method::PUT => self.set_bucket_ec(bucket, query),
+                    _ => error_json(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
+                }
+            }
             _ => error_json(StatusCode::NOT_FOUND, "unknown admin endpoint"),
         }
     }
@@ -173,15 +182,8 @@ impl AdminHandler {
         };
 
         let disks = self.store.disks();
-        let data_n = self.store.data_n();
-        let parity_n = self.store.parity_n();
-        let total = data_n + parity_n;
 
         // read meta + shard from every disk
-        let mut consensus_meta = None;
-        let mut shards = Vec::with_capacity(total);
-
-        // first pass: find consensus metadata
         let mut all_reads: Vec<Option<(Vec<u8>, crate::storage::metadata::ObjectMeta)>> =
             Vec::new();
         for disk in disks {
@@ -192,11 +194,10 @@ impl AdminHandler {
         }
 
         // find first valid meta for consensus
-        for read in &all_reads {
-            if let Some((_, meta)) = read {
-                consensus_meta = Some(meta.clone());
-                break;
-            }
+        let mut consensus_meta = None;
+        for (_, meta) in all_reads.iter().flatten() {
+            consensus_meta = Some(meta.clone());
+            break;
         }
 
         let meta = match consensus_meta {
@@ -204,7 +205,10 @@ impl AdminHandler {
             None => return error_json(StatusCode::NOT_FOUND, "object not found on any disk"),
         };
 
+        // derive EC params from object's stored metadata
+        let total = meta.erasure.data + meta.erasure.parity;
         let distribution = &meta.erasure.distribution;
+        let mut shards = Vec::with_capacity(total);
 
         // build shard status
         for shard_idx in 0..total {
@@ -250,6 +254,35 @@ impl AdminHandler {
             },
             shards,
         })
+    }
+
+    fn get_bucket_ec(&self, bucket: &str) -> Response<BoxBody> {
+        match self.store.get_ec_config(bucket) {
+            Ok(Some(config)) => json_response(&config),
+            Ok(None) => json_response(&serde_json::json!({
+                "data": self.config.data_shards,
+                "parity": self.config.parity_shards,
+                "source": "server_default"
+            })),
+            Err(e) => error_json(StatusCode::NOT_FOUND, &e.to_string()),
+        }
+    }
+
+    fn set_bucket_ec(&self, bucket: &str, query: &str) -> Response<BoxBody> {
+        let params = parse_query(query);
+        let data: usize = match params.get("data").and_then(|v| v.parse().ok()) {
+            Some(d) => d,
+            None => return error_json(StatusCode::BAD_REQUEST, "missing data parameter"),
+        };
+        let parity: usize = match params.get("parity").and_then(|v| v.parse().ok()) {
+            Some(p) => p,
+            None => return error_json(StatusCode::BAD_REQUEST, "missing parity parameter"),
+        };
+        let config = crate::storage::metadata::EcConfig { data, parity };
+        match self.store.set_ec_config(bucket, &config) {
+            Ok(()) => json_response(&config),
+            Err(e) => error_json(StatusCode::BAD_REQUEST, &e.to_string()),
+        }
     }
 
     fn heal_object_handler(&self, query: &str) -> Response<BoxBody> {

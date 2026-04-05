@@ -33,23 +33,30 @@ enum ShardStatus {
 
 /// Heal a single object by reading all disks, finding consensus metadata,
 /// and reconstructing any missing or corrupt shards via Reed-Solomon.
+/// EC params are derived from the object's stored metadata (per-object EC).
 pub fn heal_object(
     disks: &[Box<dyn Backend>],
-    data_n: usize,
-    parity_n: usize,
+    default_data: usize,
+    default_parity: usize,
     bucket: &str,
     key: &str,
 ) -> Result<HealResult, StorageError> {
-    let total = data_n + parity_n;
-
     // step 1: read meta + shard from every disk
-    let mut reads: Vec<Option<(Vec<u8>, ObjectMeta)>> = Vec::with_capacity(total);
+    let mut reads: Vec<Option<(Vec<u8>, ObjectMeta)>> = Vec::with_capacity(disks.len());
     for disk in disks.iter() {
         match disk.read_shard(bucket, key) {
             Ok(pair) => reads.push(Some(pair)),
             Err(_) => reads.push(None),
         }
     }
+
+    // derive EC params from stored metadata, fall back to defaults
+    let first_meta = reads.iter().flatten().next().map(|(_, m)| m);
+    let (data_n, parity_n) = match first_meta {
+        Some(m) => (m.erasure.data, m.erasure.parity),
+        None => (default_data, default_parity),
+    };
+    let total = data_n + parity_n;
 
     // step 2: find consensus metadata (majority by quorum_eq)
     let consensus_meta = find_consensus_meta(&reads, data_n)?;
@@ -288,16 +295,15 @@ fn run_scan_cycle(
 }
 
 /// Check if an object has any missing or corrupt shards.
+/// EC params are read from the object's stored metadata.
 fn object_needs_healing(
     disks: &[Box<dyn Backend>],
-    data_n: usize,
-    parity_n: usize,
+    _default_data: usize,
+    _default_parity: usize,
     bucket: &str,
     key: &str,
 ) -> bool {
-    let total = data_n + parity_n;
-
-    // read meta from first available disk to get distribution
+    // read meta from first available disk to get distribution + EC params
     let mut first_meta: Option<ObjectMeta> = None;
     for disk in disks.iter() {
         if let Ok(meta) = disk.stat_object(bucket, key) {
@@ -310,6 +316,7 @@ fn object_needs_healing(
         None => return false, // object gone, nothing to heal
     };
 
+    let total = meta.erasure.data + meta.erasure.parity;
     let distribution = &meta.erasure.distribution;
     let mut good = 0;
 

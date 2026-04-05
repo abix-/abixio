@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use super::{Backend, BackendInfo, StorageError};
 use super::metadata::{
-    ObjectMeta, ObjectMetaFile, VersioningConfig, read_meta_file, write_meta_file,
+    EcConfig, ObjectMeta, ObjectMetaFile, VersioningConfig, read_meta_file, write_meta_file,
 };
 
 pub struct LocalDisk {
@@ -14,6 +14,7 @@ const TMP_DIR: &str = ".abixio.tmp";
 const SHARD_FILE: &str = "shard.dat";
 const META_FILE: &str = "meta.json";
 const VERSIONING_FILE: &str = ".versioning.json";
+const EC_CONFIG_FILE: &str = ".ec.json";
 
 impl LocalDisk {
     pub fn new(root: &Path) -> Result<Self, StorageError> {
@@ -356,6 +357,24 @@ impl Backend for LocalDisk {
         let data = serde_json::to_vec(config)
             .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
         fs::write(bucket_dir.join(VERSIONING_FILE), data)?;
+        Ok(())
+    }
+
+    fn read_ec_config(&self, bucket: &str) -> Option<EcConfig> {
+        let path = self.root.join(bucket).join(EC_CONFIG_FILE);
+        fs::read(&path)
+            .ok()
+            .and_then(|data| serde_json::from_slice(&data).ok())
+    }
+
+    fn write_ec_config(&self, bucket: &str, config: &EcConfig) -> Result<(), StorageError> {
+        let bucket_dir = self.root.join(bucket);
+        if !bucket_dir.is_dir() {
+            return Err(StorageError::BucketNotFound);
+        }
+        let data = serde_json::to_vec(config)
+            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        fs::write(bucket_dir.join(EC_CONFIG_FILE), data)?;
         Ok(())
     }
 

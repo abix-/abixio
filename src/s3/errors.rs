@@ -112,6 +112,12 @@ pub const ERR_ACCESS_DENIED: S3Error = S3Error {
     http_status: 403,
 };
 
+pub const ERR_INVALID_REQUEST: S3Error = S3Error {
+    code: "InvalidRequest",
+    message: "Invalid erasure coding parameters",
+    http_status: 400,
+};
+
 #[derive(Debug, Serialize)]
 #[serde(rename = "Error")]
 pub struct ErrorResponse {

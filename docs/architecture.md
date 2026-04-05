@@ -34,7 +34,9 @@ AbixIO design principles, project structure, and comparison with MinIO.
 | Aspect | MinIO | AbixIO |
 |---|---|---|
 | Language | Go | Rust |
-| Scope | distributed multi-node | single process, local dirs |
+| Scope | distributed multi-node | single process, disk pool |
+| Erasure coding | cluster-level EC ratio | per-object EC (data/parity per object) |
+| EC config | fixed per server pool | per-object header > bucket config > server default |
 | Min disks | 4 (enforced) | 1 (with 0 parity) |
 | Metadata | binary msgpack `xl.meta` with versioning | JSON `meta.json` with versions array |
 | Disk layout | `<disk>/<vol>/<obj>/xl.meta` + `<datadir>/part.1` | `<disk>/<bucket>/<key>/meta.json` + `shard.dat` |

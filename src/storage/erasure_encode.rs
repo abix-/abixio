@@ -109,7 +109,13 @@ fn encode_and_write_impl(
         opts.content_type.clone()
     };
 
-    let distribution = hash_order(&format!("{}/{}", bucket, key), total);
+    // when pool has more disks than data+parity, select a subset
+    let distribution = if disks.len() > total {
+        let full_perm = hash_order(&format!("{}/{}", bucket, key), disks.len());
+        full_perm[..total].to_vec()
+    } else {
+        hash_order(&format!("{}/{}", bucket, key), total)
+    };
 
     // split data into data_n shards
     let mut shards = split_data(data, data_n);

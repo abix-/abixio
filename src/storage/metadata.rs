@@ -85,6 +85,8 @@ pub struct PutOptions {
     pub content_type: String,
     pub user_metadata: HashMap<String, String>,
     pub tags: HashMap<String, String>,
+    pub ec_data: Option<usize>,
+    pub ec_parity: Option<usize>,
 }
 
 // -- versioning --
@@ -92,6 +94,14 @@ pub struct PutOptions {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VersioningConfig {
     pub status: String, // "Enabled", "Suspended", or absent
+}
+
+// -- per-bucket erasure coding config --
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EcConfig {
+    pub data: usize,
+    pub parity: usize,
 }
 
 impl ObjectMeta {
