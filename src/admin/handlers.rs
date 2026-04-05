@@ -327,8 +327,18 @@ impl AdminHandler {
             return error_json(StatusCode::BAD_REQUEST, &e.to_string());
         }
         match self.store.get_ec_config(bucket) {
-            Ok(Some(config)) => json_response(&config),
+            Ok(Some(config)) => {
+                let disk_count = self.store.disk_count();
+                let (data, parity) = crate::storage::erasure_set::ftt_to_ec(config.ftt, disk_count)
+                    .unwrap_or((self.config.data_shards, self.config.parity_shards));
+                json_response(&serde_json::json!({
+                    "ftt": config.ftt,
+                    "data": data,
+                    "parity": parity,
+                }))
+            }
             Ok(None) => json_response(&serde_json::json!({
+                "ftt": self.config.parity_shards,
                 "data": self.config.data_shards,
                 "parity": self.config.parity_shards,
                 "source": "server_default"
@@ -345,33 +355,24 @@ impl AdminHandler {
             return error_json(StatusCode::SERVICE_UNAVAILABLE, "cluster is fenced");
         }
         let params = parse_query(query);
-
-        // ftt param takes priority over raw data/parity
-        if let Some(ftt) = params.get("ftt").and_then(|v| v.parse::<usize>().ok()) {
-            let disk_count = self.store.disk_count();
-            match crate::storage::erasure_set::ftt_to_ec(ftt, disk_count) {
-                Ok((data, parity)) => {
-                    let config = crate::storage::metadata::EcConfig { data, parity, ftt: Some(ftt) };
-                    return match self.store.set_ec_config(bucket, &config) {
-                        Ok(()) => json_response(&config),
-                        Err(e) => error_json(StatusCode::BAD_REQUEST, &e.to_string()),
-                    };
-                }
-                Err(e) => return error_json(StatusCode::BAD_REQUEST, &e.to_string()),
-            }
+        let ftt: usize = match params.get("ftt").and_then(|v| v.parse().ok()) {
+            Some(f) => f,
+            None => return error_json(StatusCode::BAD_REQUEST, "missing ftt parameter"),
+        };
+        let disk_count = self.store.disk_count();
+        if let Err(e) = crate::storage::erasure_set::ftt_to_ec(ftt, disk_count) {
+            return error_json(StatusCode::BAD_REQUEST, &e.to_string());
         }
-
-        let data: usize = match params.get("data").and_then(|v| v.parse().ok()) {
-            Some(d) => d,
-            None => return error_json(StatusCode::BAD_REQUEST, "missing data or ftt parameter"),
-        };
-        let parity: usize = match params.get("parity").and_then(|v| v.parse().ok()) {
-            Some(p) => p,
-            None => return error_json(StatusCode::BAD_REQUEST, "missing parity parameter"),
-        };
-        let config = crate::storage::metadata::EcConfig { data, parity, ftt: None };
+        let config = crate::storage::metadata::EcConfig { ftt };
         match self.store.set_ec_config(bucket, &config) {
-            Ok(()) => json_response(&config),
+            Ok(()) => {
+                let (data, parity) = crate::storage::erasure_set::ftt_to_ec(ftt, disk_count).unwrap();
+                json_response(&serde_json::json!({
+                    "ftt": ftt,
+                    "data": data,
+                    "parity": parity,
+                }))
+            }
             Err(e) => error_json(StatusCode::BAD_REQUEST, &e.to_string()),
         }
     }

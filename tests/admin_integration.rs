@@ -826,6 +826,7 @@ async fn admin_get_ec_config_returns_server_default() {
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ftt"], 2);
     assert_eq!(body["data"], 2);
     assert_eq!(body["parity"], 2);
     assert_eq!(body["source"], "server_default");
@@ -839,16 +840,17 @@ async fn admin_set_and_get_ec_config() {
 
     client.put(url(&addr, "/ecbucket")).send().await.unwrap();
 
-    // set EC config
+    // set EC config via FTT=3 on 6 disks -> 3+3
     let set_url = url_with_query(
         &addr,
         "/_admin/bucket/ecbucket/ec",
-        &[("data", "3"), ("parity", "3")],
+        &[("ftt", "3")],
     );
     let resp = client.put(set_url).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ftt"], 3);
     assert_eq!(body["data"], 3);
     assert_eq!(body["parity"], 3);
 
@@ -861,6 +863,7 @@ async fn admin_set_and_get_ec_config() {
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ftt"], 3);
     assert_eq!(body["data"], 3);
     assert_eq!(body["parity"], 3);
 }
@@ -873,25 +876,25 @@ async fn admin_set_ec_config_invalid_params() {
 
     client.put(url(&addr, "/ecbucket")).send().await.unwrap();
 
-    // data=0 should fail
+    // ftt >= disk count should fail
     let set_url = url_with_query(
         &addr,
         "/_admin/bucket/ecbucket/ec",
-        &[("data", "0"), ("parity", "2")],
+        &[("ftt", "6")],
     );
     let resp = client.put(set_url).send().await.unwrap();
     assert_eq!(resp.status(), 400);
 
-    // exceeds disk count should fail
+    // ftt way too high should fail
     let set_url = url_with_query(
         &addr,
         "/_admin/bucket/ecbucket/ec",
-        &[("data", "4"), ("parity", "4")],
+        &[("ftt", "100")],
     );
     let resp = client.put(set_url).send().await.unwrap();
     assert_eq!(resp.status(), 400);
 
-    // missing params should fail
+    // missing ftt param should fail
     let resp = client
         .put(url(&addr, "/_admin/bucket/ecbucket/ec"))
         .send()
@@ -922,11 +925,11 @@ async fn admin_bucket_ec_config_affects_new_objects() {
 
     client.put(url(&addr, "/ecobj")).send().await.unwrap();
 
-    // set bucket EC to 3+3
+    // set bucket EC to FTT=3 (3+3 on 6 disks)
     let set_url = url_with_query(
         &addr,
         "/_admin/bucket/ecobj/ec",
-        &[("data", "3"), ("parity", "3")],
+        &[("ftt", "3")],
     );
     client.put(set_url).send().await.unwrap();
 
@@ -964,8 +967,7 @@ async fn admin_inspect_object_shows_per_object_ec() {
     // write with custom EC
     client
         .put(url(&addr, "/insp/key"))
-        .header("x-amz-meta-ec-data", "1")
-        .header("x-amz-meta-ec-parity", "5")
+        .header("x-amz-meta-ec-ftt", "5")
         .body("inspect me")
         .send()
         .await

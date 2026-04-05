@@ -308,7 +308,7 @@ Specific upstream claims this page is anchored to:
 
 - **AbixIO**
   - the repo implements per-object EC headers
-    `x-amz-meta-ec-data` and `x-amz-meta-ec-parity`
+    `x-amz-meta-ec-ftt`
   - the repo uses a `Backend` trait with local and `RemoteVolume` backends
   - volumes carry `.abixio.sys/volume.json`
   - the repo and README support standalone single-node operation as well as

@@ -94,8 +94,6 @@ pub struct PutOptions {
     pub content_type: String,
     pub user_metadata: HashMap<String, String>,
     pub tags: HashMap<String, String>,
-    pub ec_data: Option<usize>,
-    pub ec_parity: Option<usize>,
     pub ec_ftt: Option<usize>,
 }
 
@@ -110,10 +108,7 @@ pub struct VersioningConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EcConfig {
-    pub data: usize,
-    pub parity: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ftt: Option<usize>,
+    pub ftt: usize,
 }
 
 // -- consolidated bucket settings --

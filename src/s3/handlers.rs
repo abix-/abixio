@@ -453,16 +453,10 @@ impl S3Handler {
             .to_string();
 
         let mut user_metadata = HashMap::new();
-        let mut ec_data = None;
-        let mut ec_parity = None;
         let mut ec_ftt = None;
         for (name, value) in req.headers() {
             let name_lower = name.as_str().to_lowercase();
-            if name_lower == "x-amz-meta-ec-data" {
-                ec_data = value.to_str().ok().and_then(|v| v.parse().ok());
-            } else if name_lower == "x-amz-meta-ec-parity" {
-                ec_parity = value.to_str().ok().and_then(|v| v.parse().ok());
-            } else if name_lower == "x-amz-meta-ec-ftt" {
+            if name_lower == "x-amz-meta-ec-ftt" {
                 ec_ftt = value.to_str().ok().and_then(|v| v.parse().ok());
             } else if name_lower.starts_with("x-amz-meta-") {
                 if let Ok(v) = value.to_str() {
@@ -471,12 +465,7 @@ impl S3Handler {
             }
         }
 
-        // validate per-object EC if specified
-        if let (Some(d), Some(p)) = (ec_data, ec_parity)
-            && (d == 0 || d + p > self.store.disk_count())
-        {
-            return error_response(&super::errors::ERR_INVALID_REQUEST);
-        }
+        // validate per-object FTT if specified
         if let Some(ftt) = ec_ftt
             && ftt >= self.store.disk_count()
         {
@@ -491,8 +480,6 @@ impl S3Handler {
         let opts = PutOptions {
             content_type,
             user_metadata,
-            ec_data,
-            ec_parity,
             ec_ftt,
             ..Default::default()
         };

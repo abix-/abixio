@@ -2855,11 +2855,10 @@ async fn per_object_ec_headers_on_put_and_get() {
     // create bucket
     client.put(url(&addr, "/ectest")).send().await.unwrap();
 
-    // put with per-object EC headers
+    // put with per-object FTT header
     let resp = client
         .put(url(&addr, "/ectest/critical.txt"))
-        .header("x-amz-meta-ec-data", "1")
-        .header("x-amz-meta-ec-parity", "5")
+        .header("x-amz-meta-ec-ftt", "5")
         .body("critical data")
         .send()
         .await
@@ -2893,22 +2892,20 @@ async fn per_object_ec_invalid_params_returns_400() {
 
     client.put(url(&addr, "/ectest")).send().await.unwrap();
 
-    // data=0 should fail
+    // ftt >= disk count should fail
     let resp = client
         .put(url(&addr, "/ectest/bad1"))
-        .header("x-amz-meta-ec-data", "0")
-        .header("x-amz-meta-ec-parity", "2")
+        .header("x-amz-meta-ec-ftt", "6")
         .body("bad")
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
 
-    // data+parity > disk count should fail
+    // ftt way too high should fail
     let resp = client
         .put(url(&addr, "/ectest/bad2"))
-        .header("x-amz-meta-ec-data", "4")
-        .header("x-amz-meta-ec-parity", "4")
+        .header("x-amz-meta-ec-ftt", "100")
         .body("bad")
         .send()
         .await
@@ -2924,11 +2921,10 @@ async fn per_object_ec_mixed_ec_in_same_bucket() {
 
     client.put(url(&addr, "/mixed")).send().await.unwrap();
 
-    // write objects with different EC
+    // write objects with different FTT
     client
         .put(url(&addr, "/mixed/high-parity"))
-        .header("x-amz-meta-ec-data", "1")
-        .header("x-amz-meta-ec-parity", "5")
+        .header("x-amz-meta-ec-ftt", "5")
         .body("high parity")
         .send()
         .await
@@ -2936,8 +2932,7 @@ async fn per_object_ec_mixed_ec_in_same_bucket() {
 
     client
         .put(url(&addr, "/mixed/high-throughput"))
-        .header("x-amz-meta-ec-data", "4")
-        .header("x-amz-meta-ec-parity", "2")
+        .header("x-amz-meta-ec-ftt", "2")
         .body("high throughput")
         .send()
         .await
@@ -2992,21 +2987,19 @@ async fn per_object_ec_delete_mixed_ec_objects() {
 
     client.put(url(&addr, "/delmix")).send().await.unwrap();
 
-    // write with 1+1 EC
+    // write with FTT=1 (5+1)
     client
         .put(url(&addr, "/delmix/small"))
-        .header("x-amz-meta-ec-data", "1")
-        .header("x-amz-meta-ec-parity", "1")
+        .header("x-amz-meta-ec-ftt", "1")
         .body("small")
         .send()
         .await
         .unwrap();
 
-    // write with 3+3 EC
+    // write with FTT=3 (3+3)
     client
         .put(url(&addr, "/delmix/big"))
-        .header("x-amz-meta-ec-data", "3")
-        .header("x-amz-meta-ec-parity", "3")
+        .header("x-amz-meta-ec-ftt", "3")
         .body("big")
         .send()
         .await
@@ -3047,11 +3040,10 @@ async fn per_object_ec_survives_disk_failures() {
 
     client.put(url(&addr, "/resilient")).send().await.unwrap();
 
-    // write with 1+5 (can lose 5 of 6 disks)
+    // write with FTT=5 (1+5, can lose 5 of 6 disks)
     let resp = client
         .put(url(&addr, "/resilient/key"))
-        .header("x-amz-meta-ec-data", "1")
-        .header("x-amz-meta-ec-parity", "5")
+        .header("x-amz-meta-ec-ftt", "5")
         .body("survive anything")
         .send()
         .await
@@ -3199,36 +3191,6 @@ async fn ftt_exceeding_disks_returns_400() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 400);
-}
-
-#[tokio::test]
-async fn ftt_raw_overrides_ftt_header() {
-    let (_base, paths) = setup_n(6);
-    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
-    let client = reqwest::Client::new();
-
-    client.put(url(&addr, "/fttrawbucket")).send().await.unwrap();
-
-    // raw data/parity (1+1=2 disks) should override FTT=3 (3+3=6 disks)
-    let resp = client
-        .put(url(&addr, "/fttrawbucket/obj"))
-        .header("x-amz-meta-ec-data", "1")
-        .header("x-amz-meta-ec-parity", "1")
-        .header("x-amz-meta-ec-ftt", "3")
-        .body("raw wins")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-
-    // only 2 disks should have the object (1+1, not 3+3)
-    let mut disks_with_obj = 0;
-    for p in &paths {
-        if p.join("fttrawbucket").join("obj").join("meta.json").exists() {
-            disks_with_obj += 1;
-        }
-    }
-    assert_eq!(disks_with_obj, 2, "raw 1+1 should override FTT=3");
 }
 
 #[tokio::test]

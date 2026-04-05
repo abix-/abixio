@@ -155,16 +155,7 @@ Override per bucket through the admin API:
 curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?ftt=2"
 ```
 
-Raw data/parity overrides are still available as an advanced escape hatch:
-
-```bash
-curl -X PUT -d "data" \
-  -H "x-amz-meta-ec-data: 1" \
-  -H "x-amz-meta-ec-parity: 5" \
-  http://localhost:10000/mybucket/critical.txt
-```
-
-Precedence: per-object raw > per-object FTT > bucket config > server default.
+Precedence: per-object FTT > bucket FTT > server default.
 
 ## S3 API Coverage
 

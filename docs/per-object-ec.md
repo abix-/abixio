@@ -42,10 +42,9 @@ itself.
 
 | Priority | Source | How to set |
 |---|---|---|
-| 1 (highest) | Per-object raw | `x-amz-meta-ec-data` / `x-amz-meta-ec-parity` headers on PUT |
-| 2 | Per-object FTT | `x-amz-meta-ec-ftt` header on PUT |
-| 3 | Bucket config | Admin API: `PUT /_admin/bucket/{name}/ec?ftt=N` or `?data=N&parity=N` |
-| 4 (lowest) | Server default | Auto-computed from volume count (FTT=1) |
+| 1 (highest) | Per-object FTT | `x-amz-meta-ec-ftt` header on PUT |
+| 2 | Bucket FTT | Admin API: `PUT /_admin/bucket/{name}/ec?ftt=N` |
+| 3 (lowest) | Server default | Auto-computed from volume count (FTT=1) |
 
 If no override is specified, objects use the server default: FTT=1 for 2+
 volumes, FTT=0 for 1 volume.
@@ -70,23 +69,11 @@ curl -X PUT -d "normal data" \
   http://localhost:10000/mybucket/normal.txt
 ```
 
-Raw data/parity headers are still supported as an advanced escape hatch:
-
-```bash
-# explicit 1 data + 5 parity
-curl -X PUT -d "critical data" \
-  -H "x-amz-meta-ec-data: 1" \
-  -H "x-amz-meta-ec-parity: 5" \
-  http://localhost:10000/mybucket/critical.txt
-```
-
-The EC headers are returned on GET and HEAD like all S3 custom metadata.
+The FTT header is returned on GET and HEAD like all S3 custom metadata.
 
 ### Validation
 
 - FTT must be >= 0 and < total disk count
-- Raw `data` must be >= 1
-- Raw `data + parity` must be <= total disk count in the pool
 - Invalid values return HTTP 400 `InvalidRequest`
 
 ## Bucket EC config
@@ -97,11 +84,8 @@ Set a default EC for all new objects in a bucket. Stored in
 ### Admin API
 
 ```bash
-# set bucket default via FTT (recommended)
+# set bucket default
 curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?ftt=2"
-
-# set bucket default via raw data/parity (advanced)
-curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=3&parity=3"
 
 # get bucket config (returns auto-computed default if not set)
 curl http://localhost:10000/_admin/bucket/mybucket/ec

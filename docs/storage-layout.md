@@ -193,9 +193,9 @@ All fields are optional. Absent means "not configured, use defaults."
 EC parameters are resolved per-request at write time using this precedence:
 
 ```
-1. Per-object headers    x-amz-meta-ec-data / x-amz-meta-ec-parity   (highest)
-2. Bucket default        .abixio.sys/buckets/<bucket>/settings.json
-3. Server default        auto-computed from volume count               (lowest)
+1. Per-object FTT        x-amz-meta-ec-ftt header on PUT               (highest)
+2. Bucket FTT            .abixio.sys/buckets/<bucket>/settings.json
+3. Server default        auto-computed from volume count (FTT=1)        (lowest)
 ```
 
 The resolved data/parity values are stored in `meta.json` with the object.
