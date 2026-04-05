@@ -6,8 +6,8 @@ the missing data from the remaining shards using Reed-Solomon erasure coding.
 
 ## The Problem
 
-With `--data 2 --parity 2` across 4 disks, each object is split into 2 data
-shards and 2 parity shards. You can lose any 2 shards and still recover the
+With FTT=2 on 4 disks, each object is split into 2 data shards and 2 parity
+shards. You can lose any 2 shards and still recover the
 original data. But the lost shards need to be rebuilt, otherwise the next
 failure could be fatal.
 
@@ -98,7 +98,7 @@ Pick the group with the most members. This must have at least `data_n`
 members to be valid.
 
 ```
-Example with 4 disks (data=2, parity=2):
+Example with 4 disks, FTT=2 (2 data + 2 parity shards):
   Disk 0: meta OK, matches consensus
   Disk 1: meta OK, matches consensus
   Disk 2: meta MISSING
@@ -150,7 +150,7 @@ This is the same atomic write pattern used by normal PUTs.
 
 ## What Can and Cannot Be Healed
 
-| Scenario | data=2, parity=2 | Result |
+| Scenario | FTT=2 (2+2) | Result |
 |---|---|---|
 | All 4 shards healthy | No healing needed | Healthy |
 | 1 shard missing | 3 good >= 2 needed | Repaired |
