@@ -61,19 +61,24 @@ pub fn heal_object(
 
     // step 2: find consensus metadata (majority by quorum_eq)
     let consensus_meta = find_consensus_meta(&reads, data_n)?;
-    let distribution = &consensus_meta.erasure.distribution;
 
-    // step 3: classify each shard position
-    // distribution[shard_idx] = disk_idx
+    // build volume_id -> disk_idx lookup for write-back
+    let vol_map: std::collections::HashMap<String, usize> = disks
+        .iter()
+        .enumerate()
+        .map(|(i, d)| (d.info().volume_id.clone(), i))
+        .collect();
+
+    // step 3: classify each shard position using erasure.index
     let mut statuses = vec![ShardStatus::NeedsRepair; total];
     let mut shard_data: Vec<Option<Vec<u8>>> = vec![None; total];
 
-    for (shard_idx, &disk_idx) in distribution.iter().enumerate() {
-        if disk_idx >= disks.len() {
-            continue;
-        }
-        if let Some((data, meta)) = &reads[disk_idx] {
-            // check metadata consensus + checksum
+    for (_disk_idx, read) in reads.iter().enumerate() {
+        if let Some((data, meta)) = read {
+            let shard_idx = meta.erasure.index;
+            if shard_idx >= total {
+                continue;
+            }
             if meta.quorum_eq(&consensus_meta) && sha256_hex(data) == meta.checksum {
                 statuses[shard_idx] = ShardStatus::Good;
                 shard_data[shard_idx] = Some(data.clone());
@@ -109,7 +114,13 @@ pub fn heal_object(
         if *status != ShardStatus::NeedsRepair {
             continue;
         }
-        let disk_idx = distribution[shard_idx];
+        // find target disk via volume_ids
+        let disk_idx = consensus_meta
+            .erasure
+            .volume_ids
+            .get(shard_idx)
+            .and_then(|vid| vol_map.get(vid).copied())
+            .unwrap_or(shard_idx);
         if disk_idx >= disks.len() {
             continue;
         }
@@ -296,7 +307,7 @@ fn object_needs_healing(
     bucket: &str,
     key: &str,
 ) -> bool {
-    // read meta from first available disk to get distribution + EC params
+    // read meta from first available disk to get EC params
     let mut first_meta: Option<ObjectMeta> = None;
     for disk in disks.iter() {
         if let Ok(meta) = disk.stat_object(bucket, key) {
@@ -310,18 +321,16 @@ fn object_needs_healing(
     };
 
     let total = meta.erasure.data() + meta.erasure.parity();
-    let distribution = &meta.erasure.distribution;
     let mut good = 0;
 
-    for (shard_idx, &disk_idx) in distribution.iter().enumerate() {
-        if disk_idx >= disks.len() || shard_idx >= total {
-            continue;
-        }
-        if let Ok((data, disk_meta)) = disks[disk_idx].read_shard(bucket, key)
-            && disk_meta.quorum_eq(&meta)
-            && sha256_hex(&data) == disk_meta.checksum
-        {
-            good += 1;
+    for disk in disks.iter() {
+        if let Ok((data, disk_meta)) = disk.read_shard(bucket, key) {
+            if disk_meta.erasure.index < total
+                && disk_meta.quorum_eq(&meta)
+                && sha256_hex(&data) == disk_meta.checksum
+            {
+                good += 1;
+            }
         }
     }
 

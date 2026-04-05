@@ -27,6 +27,15 @@ pub fn ftt_to_ec(ftt: usize, num_disks: usize) -> Result<(usize, usize), Storage
 }
 
 /// Default FTT for new buckets: FTT=1 when possible, FTT=0 for single disk.
+/// Assign default volume_ids to backends that don't have one (test/standalone).
+pub fn assign_volume_ids(disks: &mut [Box<dyn Backend>]) {
+    for (i, disk) in disks.iter_mut().enumerate() {
+        if disk.info().volume_id.is_empty() {
+            disk.set_volume_id(format!("vol-{}", i));
+        }
+    }
+}
+
 pub fn default_ftt(num_disks: usize) -> usize {
     1.min(num_disks.saturating_sub(1))
 }
@@ -45,23 +54,27 @@ pub struct VolumePool {
 }
 
 impl VolumePool {
-    pub fn new(disks: Vec<Box<dyn Backend>>) -> Result<Self, StorageError> {
+    pub fn new(mut disks: Vec<Box<dyn Backend>>) -> Result<Self, StorageError> {
         if disks.is_empty() {
             return Err(StorageError::InvalidConfig(
                 "at least 1 disk is required".to_string(),
             ));
         }
+        assign_volume_ids(&mut disks);
+        let placement_disks: Vec<PlacementVolume> = disks
+            .iter()
+            .enumerate()
+            .map(|(i, disk)| PlacementVolume {
+                backend_index: i,
+                node_id: "local".to_string(),
+                volume_id: disk.info().volume_id,
+            })
+            .collect();
         Ok(Self {
             placement: RwLock::new(PlacementTopology {
                 epoch_id: 1,
                 pool_id: "local-set".to_string(),
-                disks: (0..disks.len())
-                    .map(|backend_index| PlacementVolume {
-                        backend_index,
-                        node_id: "local".to_string(),
-                        volume_id: format!("vol-{}", backend_index),
-                    })
-                    .collect(),
+                disks: placement_disks,
             }),
             disks,
             mrf: None,

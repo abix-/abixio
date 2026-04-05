@@ -238,7 +238,6 @@ ordered newest-first.
       "erasure": {
         "ftt": 2,
         "index": 0,
-        "distribution": [2, 0, 3, 1],
         "epoch_id": 7,
         "pool_id": "e5f6a7b8-0000-0000-0000-000000000000",
         "node_ids": ["11111111-...", "22222222-...", "33333333-...", "44444444-..."],
@@ -269,7 +268,6 @@ disk by comparing `meta.json` volume_ids against `volume.json` volume_id.
 | `created_at` | Unix timestamp (seconds) of upload time |
 | `erasure.ftt` | Failures to tolerate (parity shard count) |
 | `erasure.index` | Which shard this disk holds (0-based) |
-| `erasure.distribution` | Permutation mapping shard index to disk index |
 | `erasure.epoch_id` | Placement epoch recorded with the object |
 | `erasure.pool_id` | Placement pool identity recorded with the object |
 | `erasure.node_ids` | Ordered node identity for each shard |
@@ -361,19 +359,15 @@ is updated atomically.
 Versioned writes: data is written to `key/<uuid>/shard.dat`, then `meta.json`
 is updated with the new version entry prepended to the array.
 
-### Erasure distribution
+### Shard placement
 
-The `distribution` array maps shard indices to disk indices. It is a
-deterministic mapping recorded with the object. In the single-node path it is
-derived from a backend permutation. In the placement-aware path it is tied to
-the active placement decision and accompanied by `epoch_id`, `pool_id`,
-`node_ids`, and `volume_ids`.
+Each object records `volume_ids` in its metadata: an ordered list where
+`volume_ids[shard_idx]` identifies which volume holds that shard. The placement
+planner computes this deterministically from the object key and pool topology.
 
-Example with 4 disks: `distribution: [2, 0, 3, 1]` means shard 0 is on
-disk 2, shard 1 is on disk 0, shard 2 is on disk 3, shard 3 is on disk 1.
-
-For placement-aware objects, `node_ids` and `volume_ids` make that layout stable
-and externally inspectable across nodes.
+Each disk's copy of `meta.json` also carries `erasure.index`, which says which
+shard that disk holds. The decode and heal paths use `index` to slot shards
+correctly without needing a separate mapping array.
 
 ---
 

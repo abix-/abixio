@@ -23,7 +23,7 @@ node. In single-node mode, FTT means local disk failures.
 
 ## How it works
 
-AbixIO stores `erasure.ftt` and `erasure.distribution` in every object's `meta.json`.
+AbixIO stores `erasure.ftt` and `erasure.volume_ids` in every object's `meta.json`.
 The encode path resolves EC params per-request using a precedence chain. The
 decode and heal paths read EC params from the stored metadata, so objects with
 different EC ratios coexist seamlessly.
@@ -90,7 +90,7 @@ Every bucket gets FTT=1 at creation. Change it via the admin API. See [admin-api
 
 ## How reads work
 
-The decode path reads `erasure.ftt` and `erasure.distribution` from the object's
+The decode path reads `erasure.ftt` and `erasure.volume_ids` from the object's
 `meta.json`. It does not consult bucket FTT. Objects are self-describing:
 changing bucket FTT or adding disks does not affect existing objects.
 

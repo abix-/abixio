@@ -14,11 +14,10 @@ cluster-control direction.
    implements it over HTTP for volumes on other nodes. The volume pool treats all
    backends identically -- it does not know whether a volume is local or remote.
 
-3. **Deterministic shard distribution.** Each object's key is mapped
-   deterministically onto shard locations. In the single-node path this is a
-   backend-index permutation; in the placement-aware path it includes stable
-   `epoch_id`, `pool_id`, `node_ids`, and `volume_ids`. Distribution is stored in
-   `meta.json` for reconstruction.
+3. **Deterministic shard placement.** Each object's key is mapped
+   deterministically onto shard locations. The placement planner assigns shards
+   to volumes, and `volume_ids` is stored in `meta.json` so decode and heal can
+   identify which volume holds each shard.
 
 4. **Quorum rules.** Write quorum = data_n+1 (or data_n when parity==0).
    Read quorum = data_n. Delete quorum = data_n+1 (or data_n when parity==0).

@@ -215,7 +215,7 @@ curl -X POST "http://localhost:10000/_admin/heal?bucket=mybucket&key=photo.jpg"
 ## GET /_admin/object?bucket=X&key=Y
 
 Inspect an object's shard status across all disks. Shows per-shard health,
-checksums, erasure distribution, and placement identity.
+checksums and placement identity.
 
 ```bash
 curl "http://localhost:10000/_admin/object?bucket=mybucket&key=photo.jpg"
@@ -234,7 +234,6 @@ curl "http://localhost:10000/_admin/object?bucket=mybucket&key=photo.jpg"
     "parity": 2,
     "epoch_id": 7,
     "pool_id": "set-a",
-    "distribution": [2, 0, 3, 1],
     "node_ids": ["node-1", "node-2", "node-3", "node-4"],
     "volume_ids": ["vol-1a", "vol-2a", "vol-3a", "vol-4a"]
   },

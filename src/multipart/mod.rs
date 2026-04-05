@@ -129,17 +129,10 @@ pub fn put_part(
                 erasure: ErasureMeta {
                     ftt: parity_n,
                     index: shard_idx,
-                    distribution: distribution.clone(),
                     epoch_id: 1,
                     pool_id: "multipart-local".to_string(),
-                    node_ids: distribution
-                        .iter()
-                        .map(|_| "local".to_string())
-                        .collect(),
-                    volume_ids: distribution
-                        .iter()
-                        .map(|disk_idx| format!("vol-{}", disk_idx))
-                        .collect(),
+                    node_ids: (0..total).map(|_| "local".to_string()).collect(),
+                    volume_ids: (0..total).map(|i| format!("vol-{}", i)).collect(),
                 },
                 checksum: sha256_hex(shard_data),
             };
@@ -254,22 +247,33 @@ pub fn complete_upload(
         }
         let pm = part_meta.ok_or(StorageError::ObjectNotFound)?;
 
-        // move part shard from staging to final object dir on each disk
+        // move part shard + part meta from staging to final object dir on each disk
         let part_file = format!("part.{}", pn);
-        for (disk_idx, disk) in disks.iter().enumerate() {
-            let staging_path = upload_dir(disk, bucket, key, upload_id)?
-                .join(&upload.data_dir)
-                .join(&part_file);
+        let part_meta_file = format!("part.{}.meta", pn);
+        for (_disk_idx, disk) in disks.iter().enumerate() {
+            let staging_dir = upload_dir(disk, bucket, key, upload_id)?
+                .join(&upload.data_dir);
+            let obj_dir = pathing::object_dir(&disk_root(disk), bucket, key)?;
+            let _ = fs::create_dir_all(&obj_dir);
+            // move part data
+            let staging_path = staging_dir.join(&part_file);
             if staging_path.exists() {
-                let obj_dir = pathing::object_dir(&disk_root(disk), bucket, key)?;
-                let _ = fs::create_dir_all(&obj_dir);
                 let final_path = obj_dir.join(&part_file);
-                // rename (same filesystem = instant move, no data copy)
                 if fs::rename(&staging_path, &final_path).is_err() {
-                    // fallback: copy + delete if rename fails (cross-filesystem)
                     if let Ok(data) = fs::read(&staging_path) {
                         let _ = fs::write(&final_path, &data);
                         let _ = fs::remove_file(&staging_path);
+                    }
+                }
+            }
+            // move part meta (carries per-disk shard index)
+            let staging_meta = staging_dir.join(&part_meta_file);
+            if staging_meta.exists() {
+                let final_meta = obj_dir.join(&part_meta_file);
+                if fs::rename(&staging_meta, &final_meta).is_err() {
+                    if let Ok(data) = fs::read(&staging_meta) {
+                        let _ = fs::write(&final_meta, &data);
+                        let _ = fs::remove_file(&staging_meta);
                     }
                 }
             }
@@ -305,7 +309,6 @@ pub fn complete_upload(
         erasure: parts.first().map(|p| p.erasure.clone()).unwrap_or(ErasureMeta {
             ftt: 0,
             index: 0,
-            distribution: Vec::new(),
             epoch_id: 0,
             pool_id: String::new(),
             node_ids: Vec::new(),
@@ -475,10 +478,10 @@ fn walk_uploads(
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct PartFileMeta {
-    part_number: i32,
-    size: u64,
-    etag: String,
-    erasure: ErasureMeta,
-    checksum: String,
+pub struct PartFileMeta {
+    pub part_number: i32,
+    pub size: u64,
+    pub etag: String,
+    pub erasure: ErasureMeta,
+    pub checksum: String,
 }

@@ -687,7 +687,6 @@ impl S3Handler {
                         erasure: crate::storage::metadata::ErasureMeta {
                             ftt: 0,
                             index: 0,
-                            distribution: Vec::new(),
                             epoch_id: 0,
                             pool_id: String::new(),
                             node_ids: Vec::new(),

@@ -90,12 +90,16 @@ pub trait Backend: Send + Sync {
     ) -> Result<(), StorageError>;
 
     fn info(&self) -> BackendInfo;
+
+    /// Override volume_id (used by VolumePool during standalone init).
+    fn set_volume_id(&mut self, _id: String) {}
 }
 
 /// Metadata about a storage backend, used for admin reporting.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BackendInfo {
     pub label: String,
+    pub volume_id: String,
     pub backend_type: String,
     pub total_bytes: Option<u64>,
     pub used_bytes: Option<u64>,

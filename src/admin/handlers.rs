@@ -251,50 +251,44 @@ impl AdminHandler {
 
         // derive EC params from object's stored metadata
         let total = meta.erasure.data() + meta.erasure.parity();
-        let distribution = &meta.erasure.distribution;
-        let mut shards = Vec::with_capacity(total);
+        let mut shards: Vec<Option<ShardInfo>> = vec![None; total];
 
-        // build shard status
-        for shard_idx in 0..total {
-            let disk_idx = if shard_idx < distribution.len() {
-                distribution[shard_idx]
-            } else {
-                shard_idx
-            };
-
-            let (status, checksum) = if disk_idx < all_reads.len() {
-                if let Some((data, disk_meta)) = &all_reads[disk_idx] {
+        // build shard status from each disk's read using erasure.index
+        for (disk_idx, read) in all_reads.iter().enumerate() {
+            if let Some((data, disk_meta)) = read {
+                let shard_idx = disk_meta.erasure.index;
+                if shard_idx >= total {
+                    continue;
+                }
+                let (status, checksum) =
                     if disk_meta.quorum_eq(&meta) && sha256_hex(data) == disk_meta.checksum {
                         ("ok", Some(disk_meta.checksum.clone()))
                     } else {
                         ("corrupt", Some(disk_meta.checksum.clone()))
-                    }
-                } else {
-                    ("missing", None)
-                }
-            } else {
-                ("missing", None)
-            };
-
-            shards.push(ShardInfo {
-                index: shard_idx,
-                disk: disk_idx,
-                node_id: meta
-                    .erasure
-                    .node_ids
-                    .get(shard_idx)
-                    .cloned()
-                    .unwrap_or_else(|| "local".to_string()),
-                volume_id: meta
-                    .erasure
-                    .volume_ids
-                    .get(shard_idx)
-                    .cloned()
-                    .unwrap_or_else(|| format!("vol-{}", disk_idx)),
-                status,
-                checksum,
-            });
+                    };
+                shards[shard_idx] = Some(ShardInfo {
+                    index: shard_idx,
+                    disk: disk_idx,
+                    node_id: meta.erasure.node_ids.get(shard_idx).cloned().unwrap_or_else(|| "local".to_string()),
+                    volume_id: meta.erasure.volume_ids.get(shard_idx).cloned().unwrap_or_else(|| format!("vol-{}", disk_idx)),
+                    status,
+                    checksum,
+                });
+            }
         }
+        // fill missing shard positions
+        let shards: Vec<ShardInfo> = (0..total)
+            .map(|shard_idx| {
+                shards[shard_idx].take().unwrap_or(ShardInfo {
+                    index: shard_idx,
+                    disk: shard_idx,
+                    node_id: meta.erasure.node_ids.get(shard_idx).cloned().unwrap_or_else(|| "local".to_string()),
+                    volume_id: meta.erasure.volume_ids.get(shard_idx).cloned().unwrap_or_else(|| format!("vol-{}", shard_idx)),
+                    status: "missing",
+                    checksum: None,
+                })
+            })
+            .collect();
 
         json_response(&ObjectInspectResponse {
             bucket: bucket.to_string(),
@@ -308,7 +302,6 @@ impl AdminHandler {
                 parity: meta.erasure.parity(),
                 epoch_id: meta.erasure.epoch_id,
                 pool_id: meta.erasure.pool_id.clone(),
-                distribution: meta.erasure.distribution.clone(),
                 node_ids: meta.erasure.node_ids.clone(),
                 volume_ids: meta.erasure.volume_ids.clone(),
             },

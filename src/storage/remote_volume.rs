@@ -298,6 +298,7 @@ impl Backend for RemoteVolume {
             .and_then(|r: reqwest::blocking::Response| r.json::<BackendInfo>().ok())
             .unwrap_or(BackendInfo {
                 label: format!("{}:{}", self.endpoint, self.volume_path),
+                volume_id: String::new(),
                 backend_type: "remote".to_string(),
                 total_bytes: None,
                 used_bytes: None,

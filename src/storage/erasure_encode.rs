@@ -172,7 +172,6 @@ fn encode_and_write_impl(
             erasure: ErasureMeta {
                 ftt: parity_n,
                 index: shard_idx,
-                distribution: distribution.clone(),
                 epoch_id: placement.epoch_id,
                 pool_id: placement.pool_id.clone(),
                 node_ids: node_ids.clone(),

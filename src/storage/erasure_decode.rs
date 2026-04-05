@@ -23,37 +23,29 @@ pub fn read_and_decode(
         }
     }
 
-    // extract distribution from first available meta
     // if no disk has the object at all, it's ObjectNotFound, not ReadQuorum
     let any_found = raw_reads.iter().any(|r| r.is_some());
     if !any_found {
         return Err(StorageError::ObjectNotFound);
     }
-    let distribution = raw_reads
-        .iter()
-        .flatten()
-        .next()
-        .map(|(_, meta)| meta.erasure.distribution.clone())
-        .ok_or(StorageError::ReadQuorum)?;
 
-    // place shards in correct shard-index positions using distribution
-    // distribution[shard_idx] = disk_idx
+    // place shards in correct shard-index positions using each disk's erasure.index
     let mut shard_slots: Vec<Option<Vec<u8>>> = vec![None; total];
     let mut good_meta: Option<ObjectMeta> = None;
 
-    for (shard_idx, &disk_idx) in distribution.iter().enumerate() {
-        if disk_idx >= disks.len() {
-            continue;
-        }
-        if let Some((data, meta)) = raw_reads[disk_idx].take() {
+    for read in raw_reads.iter_mut() {
+        if let Some((data, meta)) = read.take() {
             // bitrot check
             if sha256_hex(&data) != meta.checksum {
                 continue; // treat as missing
             }
-            if good_meta.is_none() {
-                good_meta = Some(meta);
+            let shard_idx = meta.erasure.index;
+            if shard_idx < total {
+                if good_meta.is_none() {
+                    good_meta = Some(meta);
+                }
+                shard_slots[shard_idx] = Some(data);
             }
-            shard_slots[shard_idx] = Some(data);
         }
     }
 
@@ -99,26 +91,36 @@ pub fn read_and_decode_multipart(
         let data_n = part.erasure.data();
         let parity_n = part.erasure.parity();
         let total = data_n + parity_n;
-        let distribution = &part.erasure.distribution;
         let part_file = format!("part.{}", part.number);
 
-        // read this part's shard from each disk using the part's distribution
+        // read this part's shard from each disk, use erasure.index to slot
         let mut shard_slots: Vec<Option<Vec<u8>>> = vec![None; total];
-        for (shard_idx, &disk_idx) in distribution.iter().enumerate() {
-            if disk_idx >= disks.len() {
-                continue;
-            }
-            // read part.N from this disk's object directory
-            let info = disks[disk_idx].info();
+        for disk in disks.iter() {
+            let info = disk.info();
             let root = if let Some(path) = info.label.strip_prefix("local:") {
                 std::path::PathBuf::from(path)
             } else {
-                continue; // skip non-local disks for now
+                continue;
             };
-            let obj_dir = super::pathing::object_dir(&root, bucket, key)?;
+            let obj_dir = match super::pathing::object_dir(&root, bucket, key) {
+                Ok(d) => d,
+                Err(_) => continue,
+            };
+            // read part meta to get shard index for this disk
+            let meta_file = format!("part.{}.meta", part.number);
+            let meta_path = obj_dir.join(&meta_file);
+            let shard_idx = if let Ok(meta_data) = std::fs::read(&meta_path) {
+                if let Ok(pm) = serde_json::from_slice::<crate::multipart::PartFileMeta>(&meta_data) {
+                    pm.erasure.index
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            };
             let part_path = obj_dir.join(&part_file);
             if let Ok(data) = std::fs::read(&part_path) {
-                if sha256_hex(&data) == part.checksum || shard_idx != part.erasure.index {
+                if shard_idx < total {
                     shard_slots[shard_idx] = Some(data);
                 }
             }
@@ -169,28 +171,22 @@ pub fn read_and_decode_versioned(
     if !any_found {
         return Err(StorageError::ObjectNotFound);
     }
-    let distribution = raw_reads
-        .iter()
-        .flatten()
-        .next()
-        .map(|(_, meta)| meta.erasure.distribution.clone())
-        .ok_or(StorageError::ReadQuorum)?;
 
     let mut shard_slots: Vec<Option<Vec<u8>>> = vec![None; total];
     let mut good_meta: Option<ObjectMeta> = None;
 
-    for (shard_idx, &disk_idx) in distribution.iter().enumerate() {
-        if disk_idx >= disks.len() {
-            continue;
-        }
-        if let Some((data, meta)) = raw_reads[disk_idx].take() {
+    for read in raw_reads.iter_mut() {
+        if let Some((data, meta)) = read.take() {
             if sha256_hex(&data) != meta.checksum {
                 continue;
             }
-            if good_meta.is_none() {
-                good_meta = Some(meta);
+            let shard_idx = meta.erasure.index;
+            if shard_idx < total {
+                if good_meta.is_none() {
+                    good_meta = Some(meta);
+                }
+                shard_slots[shard_idx] = Some(data);
             }
-            shard_slots[shard_idx] = Some(data);
         }
     }
 

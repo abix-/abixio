@@ -70,12 +70,11 @@ pub struct ErasureInfo {
     pub parity: usize,
     pub epoch_id: u64,
     pub pool_id: String,
-    pub distribution: Vec<usize>,
     pub node_ids: Vec<String>,
     pub volume_ids: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct ShardInfo {
     pub index: usize,
     pub disk: usize,

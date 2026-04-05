@@ -108,19 +108,17 @@ Example with 4 disks, FTT=2 (2 data + 2 parity shards):
 
 ### Step 3: Classify Each Shard
 
-Using the `distribution` map from the consensus metadata (which maps shard
-index to disk index), classify each shard position:
+Read each disk and use `erasure.index` from that disk's metadata to identify
+which shard it holds. Classify each shard position:
 
 - **Good**: meta matches consensus AND `sha256(shard.dat) == meta.checksum`
 - **NeedsRepair**: meta missing, doesn't match consensus, or checksum mismatch
 
 ```
-distribution = [2, 0, 3, 1]  (shard 0 on disk 2, shard 1 on disk 0, ...)
-
-Shard 0 (disk 2): MISSING      -> NeedsRepair
-Shard 1 (disk 0): checksum OK  -> Good
-Shard 2 (disk 3): checksum OK  -> Good
-Shard 3 (disk 1): checksum OK  -> Good
+Disk 0: erasure.index=1, checksum OK  -> Shard 1: Good
+Disk 1: erasure.index=3, checksum OK  -> Shard 3: Good
+Disk 2: MISSING                       -> Shard 0: NeedsRepair
+Disk 3: erasure.index=2, checksum OK  -> Shard 2: Good
 ```
 
 ### Step 4: Can We Heal?

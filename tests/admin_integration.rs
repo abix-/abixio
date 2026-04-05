@@ -45,13 +45,13 @@ async fn start_server_with_cluster(
     set.set_mrf(Arc::clone(&mrf));
     let set = Arc::new(set);
 
-    let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
-        paths
-            .iter()
-            .filter_map(|p| LocalVolume::new(p.as_path()).ok())
-            .map(|d| Box::new(d) as Box<dyn Backend>)
-            .collect(),
-    );
+    let mut heal_backends: Vec<Box<dyn Backend>> = paths
+        .iter()
+        .filter_map(|p| LocalVolume::new(p.as_path()).ok())
+        .map(|d| Box::new(d) as Box<dyn Backend>)
+        .collect();
+    abixio::storage::volume_pool::assign_volume_ids(&mut heal_backends);
+    let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(heal_backends);
 
     let heal_stats = Arc::new(HealStats::new());
     let cluster = Arc::new(
@@ -135,13 +135,13 @@ async fn start_server_pool(
     set.set_mrf(Arc::clone(&mrf));
     let set = Arc::new(set);
 
-    let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
-        paths
-            .iter()
-            .filter_map(|p| LocalVolume::new(p.as_path()).ok())
-            .map(|d| Box::new(d) as Box<dyn Backend>)
-            .collect(),
-    );
+    let mut heal_backends: Vec<Box<dyn Backend>> = paths
+        .iter()
+        .filter_map(|p| LocalVolume::new(p.as_path()).ok())
+        .map(|d| Box::new(d) as Box<dyn Backend>)
+        .collect();
+    abixio::storage::volume_pool::assign_volume_ids(&mut heal_backends);
+    let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(heal_backends);
 
     let heal_stats = Arc::new(HealStats::new());
     let cluster = Arc::new(

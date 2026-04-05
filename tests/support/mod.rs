@@ -205,6 +205,7 @@ impl Backend for ControlledBackend {
         } else {
             BackendInfo {
                 label: self.inner.root().display().to_string(),
+                volume_id: String::new(),
                 backend_type: "local".to_string(),
                 total_bytes: None,
                 used_bytes: None,

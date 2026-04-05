@@ -9,6 +9,7 @@ use super::{Backend, BackendInfo, StorageError};
 
 pub struct LocalVolume {
     root: PathBuf,
+    volume_id: String,
 }
 
 const TMP_DIR: &str = ".abixio.tmp";
@@ -26,8 +27,13 @@ impl LocalVolume {
         // ensure tmp dir exists
         let tmp = root.join(TMP_DIR);
         fs::create_dir_all(&tmp)?;
+        // read volume_id from volume.json if available
+        let volume_id = crate::storage::volume::read_volume_format(root)
+            .map(|f| f.volume_id)
+            .unwrap_or_default();
         Ok(Self {
             root: root.to_path_buf(),
+            volume_id,
         })
     }
 
@@ -408,11 +414,16 @@ impl Backend for LocalVolume {
         let used_bytes = total_bytes.saturating_sub(free_bytes);
         BackendInfo {
             label: format!("local:{}", self.root.display()),
+            volume_id: self.volume_id.clone(),
             backend_type: "local".to_string(),
             total_bytes: Some(total_bytes),
             used_bytes: Some(used_bytes),
             free_bytes: Some(free_bytes),
         }
+    }
+
+    fn set_volume_id(&mut self, id: String) {
+        self.volume_id = id;
     }
 }
 
@@ -471,7 +482,6 @@ mod tests {
             erasure: ErasureMeta {
                 ftt: 2,
                 index,
-                distribution: vec![0, 1, 2, 3],
                 epoch_id: 1,
                 pool_id: "set-a".to_string(),
                 node_ids: vec![

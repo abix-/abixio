@@ -39,7 +39,7 @@ pub struct ObjectMeta {
 }
 
 /// Per-part metadata for multipart objects. Each part has its own
-/// erasure coding and shard distribution (like MinIO's xl.meta parts).
+/// erasure coding and shard placement (like MinIO's xl.meta parts).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PartEntry {
     pub number: i32,
@@ -52,8 +52,7 @@ pub struct PartEntry {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ErasureMeta {
     pub ftt: usize,
-    pub index: usize,             // which shard this disk holds
-    pub distribution: Vec<usize>, // permutation mapping shard -> disk
+    pub index: usize, // which shard this disk holds
     #[serde(default)]
     pub epoch_id: u64,
     #[serde(default)]
@@ -66,9 +65,9 @@ pub struct ErasureMeta {
 }
 
 impl ErasureMeta {
-    /// Derive data shard count from distribution and FTT.
+    /// Derive data shard count from volume_ids length and FTT.
     pub fn data(&self) -> usize {
-        self.distribution.len() - self.ftt
+        self.volume_ids.len() - self.ftt
     }
 
     /// Derive parity shard count (same as FTT).
@@ -159,7 +158,6 @@ impl ObjectMeta {
             && self.content_type == other.content_type
             && self.created_at == other.created_at
             && self.erasure.ftt == other.erasure.ftt
-            && self.erasure.distribution == other.erasure.distribution
             && self.erasure.epoch_id == other.erasure.epoch_id
             && self.erasure.pool_id == other.erasure.pool_id
             && self.erasure.node_ids == other.erasure.node_ids
@@ -201,7 +199,6 @@ mod tests {
             erasure: ErasureMeta {
                 ftt: 2,
                 index,
-                distribution: vec![2, 0, 3, 1],
                 epoch_id: 1,
                 pool_id: "set-a".to_string(),
                 node_ids: vec![
