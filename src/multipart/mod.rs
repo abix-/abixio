@@ -131,7 +131,7 @@ pub fn put_part(
                     index: shard_idx,
                     distribution: distribution.clone(),
                     epoch_id: 1,
-                    set_id: "multipart-local".to_string(),
+                    pool_id: "multipart-local".to_string(),
                     node_ids: distribution
                         .iter()
                         .map(|_| "local".to_string())
@@ -307,7 +307,7 @@ pub fn complete_upload(
             index: 0,
             distribution: Vec::new(),
             epoch_id: 0,
-            set_id: String::new(),
+            pool_id: String::new(),
             node_ids: Vec::new(),
             volume_ids: Vec::new(),
         }),

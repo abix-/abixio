@@ -34,7 +34,7 @@ pub fn default_ftt(num_disks: usize) -> usize {
 #[derive(Debug, Clone)]
 struct PlacementTopology {
     epoch_id: u64,
-    set_id: String,
+    pool_id: String,
     disks: Vec<PlacementVolume>,
 }
 
@@ -54,7 +54,7 @@ impl VolumePool {
         Ok(Self {
             placement: RwLock::new(PlacementTopology {
                 epoch_id: 1,
-                set_id: "local-set".to_string(),
+                pool_id: "local-set".to_string(),
                 disks: (0..disks.len())
                     .map(|backend_index| PlacementVolume {
                         backend_index,
@@ -95,7 +95,7 @@ impl VolumePool {
     pub fn set_placement_topology(
         &self,
         epoch_id: u64,
-        set_id: impl Into<String>,
+        pool_id: impl Into<String>,
         disks: Vec<PlacementVolume>,
     ) -> Result<(), StorageError> {
         if disks.len() != self.disks.len() {
@@ -107,19 +107,19 @@ impl VolumePool {
         }
         let mut guard = self.placement.write().unwrap();
         guard.epoch_id = epoch_id;
-        guard.set_id = set_id.into();
+        guard.pool_id = pool_id.into();
         guard.disks = disks;
         Ok(())
     }
 
     pub fn placement_planner(&self) -> PlacementPlanner {
         let guard = self.placement.read().unwrap();
-        PlacementPlanner::new(guard.epoch_id, guard.set_id.clone(), guard.disks.clone())
+        PlacementPlanner::new(guard.epoch_id, guard.pool_id.clone(), guard.disks.clone())
     }
 
     pub fn placement_snapshot(&self) -> (u64, String, Vec<PlacementVolume>) {
         let guard = self.placement.read().unwrap();
-        (guard.epoch_id, guard.set_id.clone(), guard.disks.clone())
+        (guard.epoch_id, guard.pool_id.clone(), guard.disks.clone())
     }
 
     /// Resolve EC params for a write operation.

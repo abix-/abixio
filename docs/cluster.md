@@ -17,7 +17,7 @@ The cluster layer is designed around these rules:
 
 1. **Volumes are self-describing.**
    Each volume carries `.abixio.sys/volume.json` with its node_id, volume_id,
-   deployment_id, and the full pool membership. A fresh binary pointed
+   cluster_id, and the full pool membership. A fresh binary pointed
    at formatted volumes can reconstruct the cluster.
 
 2. **No master server.**
@@ -47,7 +47,7 @@ The current implementation provides:
 - hard fencing when the node is not in a `ready` cluster state
 - S3 request rejection while fenced
 - mutating admin request rejection while fenced
-- deterministic placement planning metadata with stable `epoch_id`, `set_id`,
+- deterministic placement planning metadata with stable `epoch_id`, `pool_id`,
   `node_ids`, and `volume_ids` stored in object shard metadata
 - internode shard RPC via `RemoteVolume` over HTTP (`/_storage/v1/*`)
 - JWT-authenticated internode requests (signed with S3 credentials)
@@ -116,7 +116,7 @@ The persisted state includes:
 Object shard metadata now also persists placement identity:
 
 - `epoch_id`
-- `set_id`
+- `pool_id`
 - ordered shard `node_ids`
 - ordered shard `volume_ids`
 

@@ -43,8 +43,8 @@ volume pool does it belong to, and who are all the other members.
 | Field | Type | Description |
 |---|---|---|
 | `version` | u32 | Format schema version (currently `1`) |
-| `deployment_id` | UUID | Cluster-wide identifier. Same on every disk in the cluster |
-| `set_id` | UUID | Pool identifier. Same on every disk in the pool |
+| `cluster_id` | UUID | Cluster-wide identifier. Same on every disk in the cluster |
+| `pool_id` | UUID | Pool identifier. Same on every disk in the pool |
 | `node_id` | UUID | Node identifier. Same on every disk owned by this node |
 | `volume_id` | UUID | Globally unique volume identifier |
 | `volume_index` | u32 | This volume's position in the pool member list |
@@ -69,8 +69,8 @@ Each member in `pool.members`:
 ```json
 {
   "version": 1,
-  "deployment_id": "a1b2c3d4-0000-0000-0000-000000000000",
-  "set_id": "e5f6a7b8-0000-0000-0000-000000000000",
+  "cluster_id": "a1b2c3d4-0000-0000-0000-000000000000",
+  "pool_id": "e5f6a7b8-0000-0000-0000-000000000000",
   "node_id": "11111111-0000-0000-0000-000000000000",
   "volume_id": "aaaaaaaa-0000-0000-0000-000000000000",
   "volume_index": 0,
@@ -92,8 +92,8 @@ disk is enough to reconstruct the cluster's identity.
 ### Identity hierarchy
 
 ```
-deployment_id       one per cluster, all disks share it
-  set_id            one per pool, all disks in the pool share it
+cluster_id       one per cluster, all disks share it
+  pool_id            one per pool, all disks in the pool share it
     node_id         one per node, all disks on a node share it
       volume_id       one per volume, globally unique
 ```
@@ -106,7 +106,7 @@ All four are UUIDv4, generated at format time, immutable after that.
 
 1. `abixio --volumes /d{1...4}`
 2. No volume.json found -- generate node_id, volume_id UUIDs
-3. No `--nodes` -- standalone mode, generate deployment_id and set_id
+3. No `--nodes` -- standalone mode, generate cluster_id and pool_id
 4. Write complete volume.json to every volume
 5. Serve
 
@@ -117,14 +117,14 @@ All four are UUIDv4, generated at format time, immutable after that.
 3. Write partial volume.json (node_id, volume_id only)
 4. Exchange identity with nodes via `/_admin/cluster/join`
 5. Block until all nodes respond
-6. Compute deployment_id and set_id deterministically from sorted node_ids
+6. Compute cluster_id and pool_id deterministically from sorted node_ids
 7. Build full member list, write complete volume.json
 8. Serve
 
 **Subsequent boot**:
 
 1. Read volume.json from each volume
-2. Validate all volumes agree on deployment_id, set_id, node_id
+2. Validate all volumes agree on cluster_id, pool_id, node_id
 3. If `--nodes` set: probe nodes for quorum confirmation
 4. Serve
 
@@ -147,8 +147,8 @@ On boot, the binary validates volume.json across all local volumes:
 | volume.json missing on some volumes but present on others | Mixed state: refuse to start |
 | volume.json missing on all volumes, no nodes | Standalone first boot: auto-format |
 | volume.json missing on all volumes, nodes set | Cluster first boot: peer exchange |
-| deployment_id mismatch across local volumes | Corrupt or mixed cluster: refuse to start |
-| set_id mismatch across local volumes | Corrupt or mixed set: refuse to start |
+| cluster_id mismatch across local volumes | Corrupt or mixed cluster: refuse to start |
+| pool_id mismatch across local volumes | Corrupt or mixed pool: refuse to start |
 | node_id mismatch across local volumes | Volumes from different nodes mixed: refuse to start |
 | volume_id duplicated | Corrupt: refuse to start |
 | member list inconsistent across local volumes | Stale member list: warn, use newest |
@@ -240,7 +240,7 @@ ordered newest-first.
         "index": 0,
         "distribution": [2, 0, 3, 1],
         "epoch_id": 7,
-        "set_id": "e5f6a7b8-0000-0000-0000-000000000000",
+        "pool_id": "e5f6a7b8-0000-0000-0000-000000000000",
         "node_ids": ["11111111-...", "22222222-...", "33333333-...", "44444444-..."],
         "volume_ids": ["aaaaaaaa-...", "cccccccc-...", "eeeeeeee-...", "gggggggg-..."]
       },
@@ -271,7 +271,7 @@ disk by comparing `meta.json` volume_ids against `volume.json` volume_id.
 | `erasure.index` | Which shard this disk holds (0-based) |
 | `erasure.distribution` | Permutation mapping shard index to disk index |
 | `erasure.epoch_id` | Placement epoch recorded with the object |
-| `erasure.set_id` | Placement set identity recorded with the object |
+| `erasure.pool_id` | Placement pool identity recorded with the object |
 | `erasure.node_ids` | Ordered node identity for each shard |
 | `erasure.volume_ids` | Ordered disk identity for each shard |
 | `checksum` | SHA-256 hex of THIS shard's data (for bitrot detection) |
@@ -306,7 +306,7 @@ disk0/
 
 disk1/
   .abixio.sys/
-    volume.json                   # same deployment_id/set_id/node_id, different volume_id
+    volume.json                   # same cluster_id/pool_id/node_id, different volume_id
     cluster.json
     buckets/
       bucket-name/
@@ -366,7 +366,7 @@ is updated with the new version entry prepended to the array.
 The `distribution` array maps shard indices to disk indices. It is a
 deterministic mapping recorded with the object. In the single-node path it is
 derived from a backend permutation. In the placement-aware path it is tied to
-the active placement decision and accompanied by `epoch_id`, `set_id`,
+the active placement decision and accompanied by `epoch_id`, `pool_id`,
 `node_ids`, and `volume_ids`.
 
 Example with 4 disks: `distribution: [2, 0, 3, 1]` means shard 0 is on

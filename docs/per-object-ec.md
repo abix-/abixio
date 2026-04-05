@@ -31,7 +31,7 @@ different EC ratios coexist seamlessly.
 Placement-aware objects also record:
 
 - `epoch_id`
-- `set_id`
+- `pool_id`
 - `node_ids`
 - `volume_ids`
 

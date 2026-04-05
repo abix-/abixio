@@ -307,7 +307,7 @@ impl AdminHandler {
                 data: meta.erasure.data(),
                 parity: meta.erasure.parity(),
                 epoch_id: meta.erasure.epoch_id,
-                set_id: meta.erasure.set_id.clone(),
+                pool_id: meta.erasure.pool_id.clone(),
                 distribution: meta.erasure.distribution.clone(),
                 node_ids: meta.erasure.node_ids.clone(),
                 volume_ids: meta.erasure.volume_ids.clone(),

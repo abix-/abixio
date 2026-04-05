@@ -473,7 +473,7 @@ mod tests {
                 index,
                 distribution: vec![0, 1, 2, 3],
                 epoch_id: 1,
-                set_id: "set-a".to_string(),
+                pool_id: "set-a".to_string(),
                 node_ids: vec![
                     "node-1".to_string(),
                     "node-2".to_string(),

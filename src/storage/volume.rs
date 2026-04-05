@@ -11,9 +11,11 @@ const VOLUME_FILE: &str = "volume.json";
 pub struct VolumeFormat {
     pub version: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub deployment_id: Option<String>,
+    #[serde(alias = "deployment_id")]
+    pub cluster_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub set_id: Option<String>,
+    #[serde(alias = "set_id")]
+    pub pool_id: Option<String>,
     pub node_id: String,
     pub volume_id: String,
     pub volume_index: u32,
@@ -64,8 +66,8 @@ fn unix_now() -> u64 {
 pub fn generate_volume_format(node_id: &str, volume_index: u32) -> VolumeFormat {
     VolumeFormat {
         version: 1,
-        deployment_id: None,
-        set_id: None,
+        cluster_id: None,
+        pool_id: None,
         node_id: node_id.to_string(),
         volume_id: uuid::Uuid::new_v4().to_string(),
         volume_index,
@@ -76,7 +78,7 @@ pub fn generate_volume_format(node_id: &str, volume_index: u32) -> VolumeFormat 
 
 /// Read volume.json from all disk paths. Returns None if no disks have it.
 /// Returns Err if some disks have it and others don't (mixed state), or if
-/// node_id/deployment_id disagree across disks.
+/// node_id/cluster_id disagree across disks.
 pub fn load_volumes(disk_paths: &[PathBuf]) -> Result<Option<Vec<VolumeFormat>>, String> {
     let formats: Vec<Option<VolumeFormat>> = disk_paths
         .iter()
@@ -104,11 +106,11 @@ pub fn load_volumes(disk_paths: &[PathBuf]) -> Result<Option<Vec<VolumeFormat>>,
                 node_id, fmt.node_id
             ));
         }
-        if fmt.deployment_id != present[0].deployment_id {
-            return Err("deployment_id mismatch across volumes".to_string());
+        if fmt.cluster_id != present[0].cluster_id {
+            return Err("cluster_id mismatch across volumes".to_string());
         }
-        if fmt.set_id != present[0].set_id {
-            return Err("set_id mismatch across volumes".to_string());
+        if fmt.pool_id != present[0].pool_id {
+            return Err("pool_id mismatch across volumes".to_string());
         }
     }
 
@@ -135,18 +137,18 @@ pub fn format_volumes(disk_paths: &[PathBuf]) -> Result<Vec<VolumeFormat>, Strin
     Ok(formats)
 }
 
-/// Finalize volumes with deployment_id, set_id, and full member list.
+/// Finalize volumes with cluster_id, pool_id, and full member list.
 pub fn finalize_volumes(
     disk_paths: &[PathBuf],
     formats: &mut [VolumeFormat],
-    deployment_id: &str,
-    set_id: &str,
+    cluster_id: &str,
+    pool_id: &str,
     members: Vec<SetMember>,
 ) -> Result<(), String> {
     let pool = PoolMembers { members };
     for (i, fmt) in formats.iter_mut().enumerate() {
-        fmt.deployment_id = Some(deployment_id.to_string());
-        fmt.set_id = Some(set_id.to_string());
+        fmt.cluster_id = Some(cluster_id.to_string());
+        fmt.pool_id = Some(pool_id.to_string());
         fmt.pool = Some(pool.clone());
         write_volume_format(&disk_paths[i], fmt)
             .map_err(|e| format!("write volume.json: {}", e))?;
@@ -166,7 +168,7 @@ mod tests {
         let formats = format_volumes(&paths).unwrap();
         assert_eq!(formats.len(), 1);
         assert_eq!(formats[0].version, 1);
-        assert!(formats[0].deployment_id.is_none());
+        assert!(formats[0].cluster_id.is_none());
 
         let loaded = load_volumes(&paths).unwrap().unwrap();
         assert_eq!(loaded, formats);
@@ -192,8 +194,8 @@ mod tests {
         finalize_volumes(&paths, &mut formats, "deploy-1", "set-1", members).unwrap();
 
         let loaded = load_volumes(&paths).unwrap().unwrap();
-        assert_eq!(loaded[0].deployment_id.as_deref(), Some("deploy-1"));
-        assert_eq!(loaded[0].set_id.as_deref(), Some("set-1"));
+        assert_eq!(loaded[0].cluster_id.as_deref(), Some("deploy-1"));
+        assert_eq!(loaded[0].pool_id.as_deref(), Some("set-1"));
         assert!(loaded[0].pool.is_some());
     }
 

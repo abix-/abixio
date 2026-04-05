@@ -3691,7 +3691,7 @@ async fn windows_forbidden_chars_rejected_at_storage_layer() {
                 ftt: 0, index: 0,
                 distribution: vec![0],
                 epoch_id: 1,
-                set_id: String::new(),
+                pool_id: String::new(),
                 node_ids: vec!["n".to_string()],
                 volume_ids: vec!["v".to_string()],
             },

@@ -46,7 +46,7 @@ async fn main() {
 
     tracing::info!(
         node_id = %identity.node_id,
-        deployment_id = %identity.deployment_id,
+        cluster_id = %identity.cluster_id,
         volumes = identity.all_members.len(),
         "identity resolved"
     );

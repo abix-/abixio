@@ -689,7 +689,7 @@ impl S3Handler {
                             index: 0,
                             distribution: Vec::new(),
                             epoch_id: 0,
-                            set_id: String::new(),
+                            pool_id: String::new(),
                             node_ids: Vec::new(),
                             volume_ids: Vec::new(),
                         },

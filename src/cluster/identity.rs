@@ -27,8 +27,8 @@ pub struct VolumeEntry {
 #[derive(Debug, Clone)]
 pub struct ResolvedIdentity {
     pub node_id: String,
-    pub deployment_id: String,
-    pub set_id: String,
+    pub cluster_id: String,
+    pub pool_id: String,
     pub advertise: String,
     pub nodes: Vec<String>,
     pub disk_paths: Vec<PathBuf>,
@@ -85,10 +85,10 @@ pub async fn resolve_identity(
 
     if nodes.is_empty() {
         // standalone: finalize immediately
-        let deployment_id = deployment_id_for(&[node_id.clone()]);
-        let set_id = uuid::Uuid::new_v4().to_string();
+        let cluster_id = cluster_id_for(&[node_id.clone()]);
+        let pool_id = uuid::Uuid::new_v4().to_string();
         let members = build_members(&[local_identity.clone()]);
-        finalize_volumes(disk_paths, &mut formats, &deployment_id, &set_id, members.clone())?;
+        finalize_volumes(disk_paths, &mut formats, &cluster_id, &pool_id, members.clone())?;
         let node_volumes = vec![NodeVolumes {
             node_id: node_id.clone(),
             endpoint: advertise.clone(),
@@ -96,8 +96,8 @@ pub async fn resolve_identity(
         }];
         return Ok(ResolvedIdentity {
             node_id,
-            deployment_id,
-            set_id,
+            cluster_id,
+            pool_id,
             advertise,
             nodes: Vec::new(),
             disk_paths: disk_paths.to_vec(),
@@ -107,9 +107,9 @@ pub async fn resolve_identity(
     }
 
     // step 3: cluster -- already finalized from previous boot?
-    if formats[0].deployment_id.is_some() && formats[0].pool.is_some() {
-        let deployment_id = formats[0].deployment_id.clone().unwrap();
-        let set_id = formats[0].set_id.clone().unwrap();
+    if formats[0].cluster_id.is_some() && formats[0].pool.is_some() {
+        let cluster_id = formats[0].cluster_id.clone().unwrap();
+        let pool_id = formats[0].pool_id.clone().unwrap();
         let members = formats[0].pool.as_ref().unwrap().members.clone();
         // rebuild node_volumes from members + nodes list
         // we know our own paths; remote paths will be discovered via probes
@@ -122,8 +122,8 @@ pub async fn resolve_identity(
         );
         return Ok(ResolvedIdentity {
             node_id,
-            deployment_id,
-            set_id,
+            cluster_id,
+            pool_id,
             advertise,
             nodes: nodes.to_vec(),
             disk_paths: disk_paths.to_vec(),
@@ -177,15 +177,15 @@ pub async fn resolve_identity(
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
 
-    // step 5: deterministic deployment_id from sorted node_ids
+    // step 5: deterministic cluster_id from sorted node_ids
     let mut node_ids: Vec<String> = all_identities.iter().map(|id| id.node_id.clone()).collect();
     node_ids.sort();
-    let deployment_id = deployment_id_for(&node_ids);
-    let set_id = set_id_for(&node_ids);
+    let cluster_id = cluster_id_for(&node_ids);
+    let pool_id = pool_id_for(&node_ids);
 
     // step 6: build full member list and finalize
     let members = build_members(&all_identities);
-    finalize_volumes(disk_paths, &mut formats, &deployment_id, &set_id, members.clone())?;
+    finalize_volumes(disk_paths, &mut formats, &cluster_id, &pool_id, members.clone())?;
 
     let peer_endpoints: Vec<String> = all_identities
         .iter()
@@ -204,8 +204,8 @@ pub async fn resolve_identity(
 
     Ok(ResolvedIdentity {
         node_id,
-        deployment_id,
-        set_id,
+        cluster_id,
+        pool_id,
         advertise,
         nodes: peer_endpoints,
         disk_paths: disk_paths.to_vec(),
@@ -233,7 +233,7 @@ fn build_members(identities: &[NodeIdentity]) -> Vec<SetMember> {
     members
 }
 
-fn deployment_id_for(sorted_node_ids: &[String]) -> String {
+fn cluster_id_for(sorted_node_ids: &[String]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"deployment:");
     for id in sorted_node_ids {
@@ -244,7 +244,7 @@ fn deployment_id_for(sorted_node_ids: &[String]) -> String {
     format!("abixio-{}", hex::encode(&digest[..8]))
 }
 
-fn set_id_for(sorted_node_ids: &[String]) -> String {
+fn pool_id_for(sorted_node_ids: &[String]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"set:");
     for id in sorted_node_ids {
@@ -330,16 +330,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deployment_id_is_deterministic() {
+    fn cluster_id_is_deterministic() {
         let ids = vec!["node-a".to_string(), "node-b".to_string()];
-        assert_eq!(deployment_id_for(&ids), deployment_id_for(&ids));
+        assert_eq!(cluster_id_for(&ids), cluster_id_for(&ids));
     }
 
     #[test]
-    fn deployment_id_differs_for_different_nodes() {
+    fn cluster_id_differs_for_different_nodes() {
         let a = vec!["node-a".to_string()];
         let b = vec!["node-b".to_string()];
-        assert_ne!(deployment_id_for(&a), deployment_id_for(&b));
+        assert_ne!(cluster_id_for(&a), cluster_id_for(&b));
     }
 
     #[test]

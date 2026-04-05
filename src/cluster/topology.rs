@@ -13,7 +13,7 @@ use crate::cluster::placement::PlacementVolume;
 pub struct StaticTopology {
     pub cluster_id: String,
     pub epoch_id: u64,
-    pub set_id: String,
+    pub pool_id: String,
     pub nodes: Vec<TopologyNode>,
 }
 
@@ -48,8 +48,8 @@ impl StaticTopology {
         if self.epoch_id == 0 {
             bail!("epoch_id must be >= 1");
         }
-        if self.set_id.trim().is_empty() {
-            bail!("set_id must not be empty");
+        if self.pool_id.trim().is_empty() {
+            bail!("pool_id must not be empty");
         }
         if self.nodes.is_empty() {
             bail!("topology must contain at least one node");
@@ -187,7 +187,7 @@ mod tests {
         StaticTopology {
             cluster_id: "cluster-a".to_string(),
             epoch_id: 7,
-            set_id: "set-a".to_string(),
+            pool_id: "set-a".to_string(),
             nodes: vec![
                 TopologyNode {
                     node_id: "node-1".to_string(),

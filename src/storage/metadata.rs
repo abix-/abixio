@@ -57,7 +57,8 @@ pub struct ErasureMeta {
     #[serde(default)]
     pub epoch_id: u64,
     #[serde(default)]
-    pub set_id: String,
+    #[serde(alias = "set_id")]
+    pub pool_id: String,
     #[serde(default)]
     pub node_ids: Vec<String>,
     #[serde(default)]
@@ -160,7 +161,7 @@ impl ObjectMeta {
             && self.erasure.ftt == other.erasure.ftt
             && self.erasure.distribution == other.erasure.distribution
             && self.erasure.epoch_id == other.erasure.epoch_id
-            && self.erasure.set_id == other.erasure.set_id
+            && self.erasure.pool_id == other.erasure.pool_id
             && self.erasure.node_ids == other.erasure.node_ids
             && self.erasure.volume_ids == other.erasure.volume_ids
             && self.user_metadata == other.user_metadata
@@ -202,7 +203,7 @@ mod tests {
                 index,
                 distribution: vec![2, 0, 3, 1],
                 epoch_id: 1,
-                set_id: "set-a".to_string(),
+                pool_id: "set-a".to_string(),
                 node_ids: vec![
                     "node-1".to_string(),
                     "node-2".to_string(),

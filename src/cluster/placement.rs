@@ -21,7 +21,7 @@ pub struct PlacementShard {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlacementRecord {
     pub epoch_id: u64,
-    pub set_id: String,
+    pub pool_id: String,
     pub data: usize,
     pub parity: usize,
     pub shards: Vec<PlacementShard>,
@@ -30,15 +30,15 @@ pub struct PlacementRecord {
 #[derive(Debug, Clone)]
 pub struct PlacementPlanner {
     epoch_id: u64,
-    set_id: String,
+    pool_id: String,
     disks: Vec<PlacementVolume>,
 }
 
 impl PlacementPlanner {
-    pub fn new(epoch_id: u64, set_id: impl Into<String>, disks: Vec<PlacementVolume>) -> Self {
+    pub fn new(epoch_id: u64, pool_id: impl Into<String>, disks: Vec<PlacementVolume>) -> Self {
         Self {
             epoch_id,
-            set_id: set_id.into(),
+            pool_id: pool_id.into(),
             disks,
         }
     }
@@ -71,7 +71,7 @@ impl PlacementPlanner {
 
         let key_material = format!(
             "{}:{}:{}/{}",
-            self.epoch_id, self.set_id, bucket, key
+            self.epoch_id, self.pool_id, bucket, key
         );
         let mut per_node: BTreeMap<&str, Vec<&PlacementVolume>> = BTreeMap::new();
         for disk in &self.disks {
@@ -123,7 +123,7 @@ impl PlacementPlanner {
 
         Ok(PlacementRecord {
             epoch_id: self.epoch_id,
-            set_id: self.set_id.clone(),
+            pool_id: self.pool_id.clone(),
             data,
             parity,
             shards: chosen

@@ -174,7 +174,7 @@ fn encode_and_write_impl(
                 index: shard_idx,
                 distribution: distribution.clone(),
                 epoch_id: placement.epoch_id,
-                set_id: placement.set_id.clone(),
+                pool_id: placement.pool_id.clone(),
                 node_ids: node_ids.clone(),
                 volume_ids: volume_ids.clone(),
             },

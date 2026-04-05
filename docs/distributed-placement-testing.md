@@ -23,7 +23,7 @@ Placement is deterministic and node-first.
 
 For an object `(bucket, key, EC profile)`:
 
-1. Hash `epoch_id + set_id + bucket + key`.
+1. Hash `epoch_id + pool_id + bucket + key`.
 2. Use that hash to derive a deterministic node order.
 3. Place one shard on each node in that order.
 4. Only after every node has one shard may a second disk on a node be used.

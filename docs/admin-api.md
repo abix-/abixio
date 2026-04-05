@@ -233,7 +233,7 @@ curl "http://localhost:10000/_admin/object?bucket=mybucket&key=photo.jpg"
     "data": 2,
     "parity": 2,
     "epoch_id": 7,
-    "set_id": "set-a",
+    "pool_id": "set-a",
     "distribution": [2, 0, 3, 1],
     "node_ids": ["node-1", "node-2", "node-3", "node-4"],
     "volume_ids": ["vol-1a", "vol-2a", "vol-3a", "vol-4a"]
@@ -247,7 +247,7 @@ curl "http://localhost:10000/_admin/object?bucket=mybucket&key=photo.jpg"
 }
 ```
 
-`epoch_id`, `set_id`, `node_ids`, and `volume_ids` make exact placement
+`epoch_id`, `pool_id`, `node_ids`, and `volume_ids` make exact placement
 externally visible to operators and tests.
 
 ### Shard status values
