@@ -12,9 +12,13 @@ use abixio::storage::erasure_set::ErasureSet;
 use tempfile::TempDir;
 
 fn setup() -> (TempDir, Vec<std::path::PathBuf>) {
+    setup_n(4)
+}
+
+fn setup_n(n: usize) -> (TempDir, Vec<std::path::PathBuf>) {
     let base = TempDir::new().unwrap();
     let mut paths = Vec::new();
-    for i in 0..4 {
+    for i in 0..n {
         let p = base.path().join(format!("d{}", i));
         std::fs::create_dir_all(&p).unwrap();
         paths.push(p);
@@ -48,6 +52,82 @@ async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task:
         data_shards: 2,
         parity_shards: 2,
         total_disks: 4,
+        auth_enabled: false,
+        scan_interval: "10m".to_string(),
+        heal_interval: "24h".to_string(),
+        mrf_workers: 2,
+    };
+
+    let admin = Arc::new(AdminHandler::new(
+        Arc::clone(&set),
+        heal_disks,
+        mrf,
+        heal_stats,
+        admin_config,
+    ));
+
+    let auth = AuthConfig {
+        access_key: String::new(),
+        secret_key: String::new(),
+        no_auth: true,
+    };
+    let mut handler = S3Handler::new(set, auth);
+    handler.set_admin(admin);
+    let handler = Arc::new(handler);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let service = hyper::service::service_fn(move |req| {
+                    let handler = handler.clone();
+                    async move { Ok::<_, hyper::Error>(handler.dispatch(req).await) }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    (addr, handle)
+}
+
+async fn start_server_pool(
+    paths: &[std::path::PathBuf],
+    data: usize,
+    parity: usize,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let backends: Vec<Box<dyn Backend>> = paths
+        .iter()
+        .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
+        .collect();
+    let mut set = ErasureSet::new(backends, data, parity).unwrap();
+
+    let mrf = Arc::new(MrfQueue::new(1000));
+    set.set_mrf(Arc::clone(&mrf));
+    let set = Arc::new(set);
+
+    let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
+        paths
+            .iter()
+            .filter_map(|p| LocalDisk::new(p.as_path()).ok())
+            .map(|d| Box::new(d) as Box<dyn Backend>)
+            .collect(),
+    );
+
+    let heal_stats = Arc::new(HealStats::new());
+
+    let admin_config = AdminConfig {
+        listen: ":0".to_string(),
+        data_shards: data,
+        parity_shards: parity,
+        total_disks: paths.len(),
         auth_enabled: false,
         scan_interval: "10m".to_string(),
         heal_interval: "24h".to_string(),
@@ -527,4 +607,188 @@ async fn s3_still_works_with_admin_enabled() {
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("mybucket"));
+}
+
+// -- bucket EC config --
+
+#[tokio::test]
+async fn admin_get_ec_config_returns_server_default() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    // create bucket
+    client.put(url(&addr, "/ecbucket")).send().await.unwrap();
+
+    // get EC config -- should return server defaults
+    let resp = client
+        .get(url(&addr, "/_admin/bucket/ecbucket/ec"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"], 2);
+    assert_eq!(body["parity"], 2);
+    assert_eq!(body["source"], "server_default");
+}
+
+#[tokio::test]
+async fn admin_set_and_get_ec_config() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/ecbucket")).send().await.unwrap();
+
+    // set EC config
+    let set_url = url_with_query(
+        &addr,
+        "/_admin/bucket/ecbucket/ec",
+        &[("data", "3"), ("parity", "3")],
+    );
+    let resp = client.put(set_url).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"], 3);
+    assert_eq!(body["parity"], 3);
+
+    // get should return the custom config
+    let resp = client
+        .get(url(&addr, "/_admin/bucket/ecbucket/ec"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"], 3);
+    assert_eq!(body["parity"], 3);
+}
+
+#[tokio::test]
+async fn admin_set_ec_config_invalid_params() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/ecbucket")).send().await.unwrap();
+
+    // data=0 should fail
+    let set_url = url_with_query(
+        &addr,
+        "/_admin/bucket/ecbucket/ec",
+        &[("data", "0"), ("parity", "2")],
+    );
+    let resp = client.put(set_url).send().await.unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // exceeds disk count should fail
+    let set_url = url_with_query(
+        &addr,
+        "/_admin/bucket/ecbucket/ec",
+        &[("data", "4"), ("parity", "4")],
+    );
+    let resp = client.put(set_url).send().await.unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // missing params should fail
+    let resp = client
+        .put(url(&addr, "/_admin/bucket/ecbucket/ec"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn admin_ec_config_nonexistent_bucket_returns_404() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(url(&addr, "/_admin/bucket/nonexistent/ec"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn admin_bucket_ec_config_affects_new_objects() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/ecobj")).send().await.unwrap();
+
+    // set bucket EC to 3+3
+    let set_url = url_with_query(
+        &addr,
+        "/_admin/bucket/ecobj/ec",
+        &[("data", "3"), ("parity", "3")],
+    );
+    client.put(set_url).send().await.unwrap();
+
+    // write object (no per-object EC headers -- should use bucket default)
+    client
+        .put(url(&addr, "/ecobj/mykey"))
+        .body("bucket ec test")
+        .send()
+        .await
+        .unwrap();
+
+    // verify it used 3+3 by checking shard count on disk
+    let mut disks_with_obj = 0;
+    for p in &paths {
+        if p.join("ecobj").join("mykey").join("meta.json").exists() {
+            disks_with_obj += 1;
+        }
+    }
+    assert_eq!(disks_with_obj, 6, "bucket EC 3+3 should use all 6 disks");
+
+    // read back
+    let resp = client
+        .get(url(&addr, "/ecobj/mykey"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"bucket ec test");
+}
+
+#[tokio::test]
+async fn admin_inspect_object_shows_per_object_ec() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/insp")).send().await.unwrap();
+
+    // write with custom EC
+    client
+        .put(url(&addr, "/insp/key"))
+        .header("x-amz-meta-ec-data", "1")
+        .header("x-amz-meta-ec-parity", "5")
+        .body("inspect me")
+        .send()
+        .await
+        .unwrap();
+
+    // inspect should show the object's actual EC params
+    let inspect_url = url_with_query(
+        &addr,
+        "/_admin/object",
+        &[("bucket", "insp"), ("key", "key")],
+    );
+    let resp = client.get(inspect_url).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["erasure"]["data"], 1);
+    assert_eq!(body["erasure"]["parity"], 5);
+    assert_eq!(body["shards"].as_array().unwrap().len(), 6);
 }

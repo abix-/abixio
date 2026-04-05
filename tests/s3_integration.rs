@@ -9,9 +9,13 @@ use abixio::storage::erasure_set::ErasureSet;
 use tempfile::TempDir;
 
 fn setup() -> (TempDir, Vec<std::path::PathBuf>) {
+    setup_n(4)
+}
+
+fn setup_n(n: usize) -> (TempDir, Vec<std::path::PathBuf>) {
     let base = TempDir::new().unwrap();
     let mut paths = Vec::new();
-    for i in 0..4 {
+    for i in 0..n {
         let p = base.path().join(format!("d{}", i));
         std::fs::create_dir_all(&p).unwrap();
         paths.push(p);
@@ -33,6 +37,46 @@ async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task:
     let handler = Arc::new(S3Handler::new(set, auth));
 
     // bind to random port
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let handler = handler.clone();
+            tokio::spawn(async move {
+                let service = hyper::service::service_fn(move |req| {
+                    let handler = handler.clone();
+                    async move { Ok::<_, hyper::Error>(handler.dispatch(req).await) }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    (addr, handle)
+}
+
+async fn start_server_pool(
+    paths: &[std::path::PathBuf],
+    data: usize,
+    parity: usize,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let backends: Vec<Box<dyn Backend>> = paths
+        .iter()
+        .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
+        .collect();
+    let set = Arc::new(ErasureSet::new(backends, data, parity).unwrap());
+    let auth = AuthConfig {
+        access_key: String::new(),
+        secret_key: String::new(),
+        no_auth: true,
+    };
+    let handler = Arc::new(S3Handler::new(set, auth));
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -2607,4 +2651,271 @@ async fn bucket_policy_delete_idempotent() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 204);
+}
+
+// -- per-object erasure coding --
+
+#[tokio::test]
+async fn per_object_ec_headers_on_put_and_get() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    // create bucket
+    client.put(url(&addr, "/ectest")).send().await.unwrap();
+
+    // put with per-object EC headers
+    let resp = client
+        .put(url(&addr, "/ectest/critical.txt"))
+        .header("x-amz-meta-ec-data", "1")
+        .header("x-amz-meta-ec-parity", "5")
+        .body("critical data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // get should return the object
+    let resp = client
+        .get(url(&addr, "/ectest/critical.txt"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.bytes().await.unwrap();
+    assert_eq!(body.as_ref(), b"critical data");
+
+    // head should also work
+    let resp = client
+        .head(url(&addr, "/ectest/critical.txt"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn per_object_ec_invalid_params_returns_400() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/ectest")).send().await.unwrap();
+
+    // data=0 should fail
+    let resp = client
+        .put(url(&addr, "/ectest/bad1"))
+        .header("x-amz-meta-ec-data", "0")
+        .header("x-amz-meta-ec-parity", "2")
+        .body("bad")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+
+    // data+parity > disk count should fail
+    let resp = client
+        .put(url(&addr, "/ectest/bad2"))
+        .header("x-amz-meta-ec-data", "4")
+        .header("x-amz-meta-ec-parity", "4")
+        .body("bad")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn per_object_ec_mixed_ec_in_same_bucket() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/mixed")).send().await.unwrap();
+
+    // write objects with different EC
+    client
+        .put(url(&addr, "/mixed/high-parity"))
+        .header("x-amz-meta-ec-data", "1")
+        .header("x-amz-meta-ec-parity", "5")
+        .body("high parity")
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .put(url(&addr, "/mixed/high-throughput"))
+        .header("x-amz-meta-ec-data", "4")
+        .header("x-amz-meta-ec-parity", "2")
+        .body("high throughput")
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .put(url(&addr, "/mixed/default-ec"))
+        .body("default ec")
+        .send()
+        .await
+        .unwrap();
+
+    // all three should be readable
+    let resp = client
+        .get(url(&addr, "/mixed/high-parity"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"high parity");
+
+    let resp = client
+        .get(url(&addr, "/mixed/high-throughput"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"high throughput");
+
+    let resp = client
+        .get(url(&addr, "/mixed/default-ec"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"default ec");
+
+    // list should show all three
+    let resp = client.get(url(&addr, "/mixed?list-type=2")).send().await.unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("high-parity"));
+    assert!(body.contains("high-throughput"));
+    assert!(body.contains("default-ec"));
+}
+
+#[tokio::test]
+async fn per_object_ec_delete_mixed_ec_objects() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/delmix")).send().await.unwrap();
+
+    // write with 1+1 EC
+    client
+        .put(url(&addr, "/delmix/small"))
+        .header("x-amz-meta-ec-data", "1")
+        .header("x-amz-meta-ec-parity", "1")
+        .body("small")
+        .send()
+        .await
+        .unwrap();
+
+    // write with 3+3 EC
+    client
+        .put(url(&addr, "/delmix/big"))
+        .header("x-amz-meta-ec-data", "3")
+        .header("x-amz-meta-ec-parity", "3")
+        .body("big")
+        .send()
+        .await
+        .unwrap();
+
+    // delete both
+    let resp = client
+        .delete(url(&addr, "/delmix/small"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    let resp = client
+        .delete(url(&addr, "/delmix/big"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    // both should be gone
+    let resp = client
+        .get(url(&addr, "/delmix/small"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    let resp = client
+        .get(url(&addr, "/delmix/big"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn per_object_ec_survives_disk_failures() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/resilient")).send().await.unwrap();
+
+    // write with 1+5 (can lose 5 of 6 disks)
+    let resp = client
+        .put(url(&addr, "/resilient/key"))
+        .header("x-amz-meta-ec-data", "1")
+        .header("x-amz-meta-ec-parity", "5")
+        .body("survive anything")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // delete object data from 4 of 6 disks
+    for i in 0..4 {
+        let obj_dir = paths[i].join("resilient").join("key");
+        if obj_dir.exists() {
+            std::fs::remove_dir_all(&obj_dir).unwrap();
+        }
+    }
+
+    // should still be readable
+    let resp = client
+        .get(url(&addr, "/resilient/key"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"survive anything");
+}
+
+#[tokio::test]
+async fn per_object_ec_default_uses_pool_subset() {
+    // 6 disks, default EC 2+2 -- should only use 4 of 6 disks
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 2, 2).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/pooltest")).send().await.unwrap();
+
+    let resp = client
+        .put(url(&addr, "/pooltest/obj"))
+        .body("pool test data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .get(url(&addr, "/pooltest/obj"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"pool test data");
+
+    // count how many disks have the object (should be exactly 4 = 2+2)
+    let mut disks_with_obj = 0;
+    for p in &paths {
+        if p.join("pooltest").join("obj").join("meta.json").exists() {
+            disks_with_obj += 1;
+        }
+    }
+    assert_eq!(disks_with_obj, 4, "default EC 2+2 should use exactly 4 of 6 disks");
 }
