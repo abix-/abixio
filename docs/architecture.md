@@ -9,10 +9,10 @@ cluster-control direction.
    `meta.json` (only `erasure.index` and `checksum` vary per shard). Data shards
    are Reed-Solomon encoded.
 
-2. **Pluggable storage backends.** The `Backend` trait defines the per-disk storage
-   interface. `LocalVolume` implements it for local directories. Any storage service
-   that can read/write blobs by key can implement `Backend` and plug into the
-   erasure set without changing the core logic.
+2. **Pluggable storage backends.** The `Backend` trait defines the per-volume storage
+   interface. `LocalVolume` implements it for local directories. `RemoteVolume`
+   implements it over HTTP for volumes on other nodes. The erasure set treats all
+   backends identically -- it does not know whether a volume is local or remote.
 
 3. **Deterministic shard distribution.** Each object's key is mapped
    deterministically onto shard locations. In the single-node path this is a
@@ -38,14 +38,19 @@ cluster-control direction.
    Objects with different EC ratios coexist in the same bucket and disk pool.
    See [per-object-ec.md](per-object-ec.md).
 
-9. **Disk pool model.** Disks form a pool. Objects select a subset of disks via
-   hash-based permutation. Pool can have more disks than any single object's
-   data+parity, spreading I/O across the full pool.
+9. **Volume pool model.** Volumes form a pool across all nodes. Objects select a
+   subset via hash-based permutation. Pool can have more volumes than any single
+   object's data+parity, spreading I/O across nodes.
 
-11. **Self-describing disks.** Every disk carries `.abixio.sys/format.json` with
-    its identity (deployment, set, node, disk UUIDs) and the full erasure set
-    membership. A fresh binary pointed at formatted disks can reconstruct the
-    cluster without external config. See [storage-layout.md](storage-layout.md).
+10. **Self-describing volumes.** Every volume carries `.abixio.sys/volume.json`
+    with its identity (deployment, set, node, volume UUIDs) and the full erasure
+    set membership. A fresh binary pointed at formatted volumes can reconstruct
+    the cluster without external config. See [storage-layout.md](storage-layout.md).
+
+11. **Internode shard RPC.** Remote volumes are accessed over HTTP via
+    `/_storage/v1/*` endpoints. Each request carries a JWT signed with the S3
+    credentials. The storage server dispatches to the local `LocalVolume` for
+    the target volume path.
 
 10. **Cluster control fences unsafe nodes.** Multi-node control-plane behavior
     must fail closed. A node that cannot confirm safe cluster state stops
@@ -62,9 +67,9 @@ AbixIO has a node-based cluster-control layer:
 - node monitoring and quorum tracking
 - hard fencing when quorum is lost
 
-This is not yet a full distributed object-store data plane. Distributed shard
-RPC, live topology changes, heterogeneous set planning, and rebalance are still
-future work.
+Internode shard RPC is implemented: each node can read/write shards on remote
+nodes via `RemoteVolume` over HTTP. Live topology changes, heterogeneous set
+planning, and rebalance are still future work.
 
 Nodes generate their own identity on first boot, exchange it with other nodes, and
 persist the full membership on their volumes. Unsafe nodes fence themselves.
@@ -76,7 +81,7 @@ See [cluster.md](cluster.md) for the full design and current behavior.
 | Aspect | MinIO | AbixIO |
 |---|---|---|
 | Language | Go | Rust |
-| Scope | distributed multi-node | single process today, node-based cluster control in progress |
+| Scope | distributed multi-node | multi-node with internode shard RPC |
 | Erasure coding | cluster-level EC ratio | per-object EC (data/parity per object) |
 | EC config | fixed per server pool | per-object header > bucket config > server default |
 | Min disks | 4 (enforced) | 1 (with 0 parity) |
@@ -98,15 +103,18 @@ src/
     mod.rs                # persisted cluster state, node monitoring, fencing, cluster types
     identity.rs           # node identity exchange and boot sequence
     placement.rs          # deterministic node-first placement planner and invariants
-  config.rs               # Config struct (clap derive) + validation
+  config.rs               # Config struct (clap derive) + {N...M} range expansion
   query.rs                # URL query string parsing
   storage/
     mod.rs                # Backend trait, Store trait, StorageError, BackendInfo, EcConfig
     metadata.rs           # ObjectMetaFile, ObjectMeta, ErasureMeta, EcConfig, PutOptions
     bitrot.rs             # sha256_hex(), md5_hex()
     local_volume.rs       # LocalVolume: Backend impl for local directories
-    erasure_set.rs        # ErasureSet: disk pool with per-object EC resolution
-    erasure_encode.rs     # split_data + reed-solomon encode + disk subset selection
+    remote_volume.rs      # RemoteVolume: Backend impl over HTTP (internode RPC)
+    storage_server.rs     # Storage REST server: dispatches /_storage/v1/* to local volumes
+    internode_auth.rs     # JWT sign/validate for internode RPC
+    erasure_set.rs        # ErasureSet: volume pool with per-object EC resolution
+    erasure_encode.rs     # split_data + reed-solomon encode + volume subset selection
     erasure_decode.rs     # read from backends + bitrot check + reconstruct
     volume.rs             # VolumeFormat: read/write .abixio.sys/volume.json
   s3/
@@ -165,4 +173,6 @@ docs/
 | `tracing` | structured logging |
 | `uuid` | version IDs |
 | `subtle` | constant-time compare (auth) |
+| `jsonwebtoken` | JWT sign/validate (internode RPC auth) |
+| `reqwest` | HTTP client (internode RPC) |
 | `form_urlencoded` | URL query parsing |

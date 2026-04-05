@@ -49,14 +49,15 @@ The current implementation provides:
 - mutating admin request rejection while fenced
 - deterministic placement planning metadata with stable `epoch_id`, `set_id`,
   `node_ids`, and `volume_ids` stored in object shard metadata
+- internode shard RPC via `RemoteVolume` over HTTP (`/_storage/v1/*`)
+- JWT-authenticated internode requests (signed with S3 credentials)
+- mixed local + remote backend construction after identity exchange
 - 4-node, 2-volume distributed placement tests that validate exact object maps,
   node-first shard spread, and fencing behavior
 
 The current implementation does **not** provide:
 
 - Raft or another real distributed consensus log
-- production internode shard writes or distributed reads over RPC
-- remote volume backends over internode RPC
 - live committed topology epochs negotiated across the cluster
 - heterogeneous set-class planning
 - rebalance or topology migration
@@ -191,11 +192,18 @@ see whether the node is `ready` or `fenced`.
 - `volume_id`
 - shard status and checksum
 
-### Node Probe Authentication
+### Internode Authentication
 
-Node probes use the `x-abixio-cluster-secret` header when `--cluster-secret` is
-configured. This is only a lightweight internode gate for the current control
-plane. It is not a full cluster PKI or mTLS design.
+Two layers of internode auth:
+
+1. **Control plane probes** use the `x-abixio-cluster-secret` header when
+   `--cluster-secret` is configured. Lightweight gate for cluster status checks.
+
+2. **Storage RPC** (`/_storage/v1/*`) uses JWT signed with the S3 credentials
+   (`ABIXIO_ACCESS_KEY` / `ABIXIO_SECRET_KEY`). Each request carries a
+   `Bearer` token with 15-minute expiry and an `x-abixio-time` header for
+   clock skew detection (rejects >15min drift). When `--no-auth` is set,
+   JWT validation is skipped.
 
 ## Placement Model
 
@@ -238,10 +246,9 @@ test harness, not production RPC.
 
 AbixIO still needs:
 
-1. Internode RPC for storage and metadata operations
-2. Topology planning for heterogeneous nodes
-3. Reconfiguration and rebalance workflows
-4. A real consensus-backed control-plane log (Raft or equivalent)
+1. Topology planning for heterogeneous nodes
+2. Reconfiguration and rebalance workflows
+3. A real consensus-backed control-plane log (Raft or equivalent)
 
 The current cluster layer should be treated as the minimal safe operating model
 and the scaffold those features would build on.
@@ -250,8 +257,8 @@ and the scaffold those features would build on.
 
 - Standalone mode remains supported and automatically reports `ready`.
 - Node-based cluster mode is the primary clustered configuration.
-- Multi-node service is still experimental as a full distributed storage data
-  plane until remote shard RPC is implemented.
+- Internode shard RPC is implemented: `RemoteVolume` proxies all `Backend`
+  operations over HTTP to the target node's `StorageServer`.
 - A fenced node is working as designed. It is refusing service to avoid
   inconsistent behavior.
 - Cluster status can be checked without S3 requests through the admin endpoints.

@@ -10,7 +10,7 @@ volume, lose nothing. Any S3 client works out of the box.
 
 - 1 volume minimum, scale up by adding volumes
 - Per-object erasure coding (data/parity per object, bucket, or server default)
-- Pluggable storage backends via `Backend` trait (local disk, NFS, S3, anything)
+- Pluggable storage backends via `Backend` trait (local volumes + internode RPC)
 - Self-describing volumes -- identity stored on the volumes themselves
 - Node-based cluster formation -- no topology file, no master server
 - Per-shard SHA256 bitrot detection
@@ -25,21 +25,18 @@ volume, lose nothing. Any S3 client works out of the box.
 
 ## Status
 
-**Alpha.** Single-node storage works and is tested (251 tests). The S3 API
-covers the core operations (57% of the spec). Cluster control-plane is
-implemented (identity exchange, quorum tracking, fencing) but the distributed
-data plane is not -- there is no internode shard RPC yet. Each node operates
-on its own local volumes.
+**Alpha.** Erasure-coded storage with internode shard RPC is implemented and
+tested (262 tests). The S3 API covers the core operations (57% of the spec).
 
 What works today:
-- Single-node erasure-coded object storage with full S3 API
+- Erasure-coded object storage across local and remote volumes
+- Internode shard RPC over HTTP with JWT authentication
 - Multi-node cluster formation and identity exchange
 - Quorum-aware fencing (unsafe nodes stop serving)
 - Deterministic placement metadata in object shards
 - Background healing (MRF queue + integrity scanner)
 
 What does not work yet:
-- Internode shard RPC (distributed reads/writes across nodes)
 - Live topology changes or rebalance
 - Consensus-backed control plane (Raft or equivalent)
 - Encryption at rest

@@ -409,11 +409,39 @@ While fenced:
 This is intentional. AbixIO prefers stopping service over serving from stale or
 unsafe cluster state.
 
+## Internode Storage RPC
+
+AbixIO exposes internal storage operations under `/_storage/v1/` for internode
+shard reads and writes. These are not user-facing -- they are called by
+`RemoteVolume` on other nodes.
+
+All requests require:
+- `Authorization: Bearer <jwt>` -- JWT signed with `ABIXIO_SECRET_KEY`
+- `x-abixio-time: <unix_nanos>` -- clock skew detection (rejects >15min drift)
+- `x-abixio-volume-path: <path>` -- target local volume path
+
+| Endpoint | Method | Purpose |
+|---|---|---|
+| `/_storage/v1/write-shard` | POST | Write shard data + metadata |
+| `/_storage/v1/read-shard` | GET | Read shard data (metadata in `x-abixio-meta` header) |
+| `/_storage/v1/stat-object` | GET | Read object metadata |
+| `/_storage/v1/delete-object` | POST | Delete object from volume |
+| `/_storage/v1/list-objects` | GET | List objects in bucket |
+| `/_storage/v1/list-buckets` | GET | List buckets on volume |
+| `/_storage/v1/make-bucket` | POST | Create bucket directory |
+| `/_storage/v1/delete-bucket` | POST | Delete bucket |
+| `/_storage/v1/bucket-exists` | GET | Check bucket existence |
+| `/_storage/v1/info` | GET | Volume health and space info |
+
+When `--no-auth` is set, JWT validation is skipped.
+
 ## Cluster Notes
 
 When `--nodes` is used, nodes exchange identity at startup and build the
-erasure set membership from the node handshake. See [cluster.md](cluster.md)
-for the full cluster design.
+erasure set membership from the node handshake. After exchange, each node
+constructs `LocalVolume` backends for its own volumes and `RemoteVolume`
+backends for volumes on other nodes. The `ErasureSet` treats all backends
+identically. See [cluster.md](cluster.md) for the full cluster design.
 
 See [per-object-ec.md](per-object-ec.md) for the full EC precedence chain
 (per-object header > bucket config > server default).
@@ -423,5 +451,8 @@ See [per-object-ec.md](per-object-ec.md) for the full EC precedence chain
 - `src/admin/handlers.rs` -- `AdminHandler` with dispatch and all endpoint methods
 - `src/admin/types.rs` -- JSON response structs (serde `Serialize`)
 - `src/admin/mod.rs` -- `HealStats` shared state (atomic counters + uptime)
+- `src/storage/storage_server.rs` -- internode storage RPC server
+- `src/storage/remote_volume.rs` -- `RemoteVolume` HTTP client
+- `src/storage/internode_auth.rs` -- JWT sign/validate for internode RPC
 - `tests/admin_integration.rs` -- admin integration tests
 - `tests/e2e.py` -- end-to-end Python test covering admin endpoints
