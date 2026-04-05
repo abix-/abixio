@@ -12,14 +12,25 @@ use super::{StorageError, Store};
 use crate::cluster::placement::{PlacementVolume, PlacementPlanner};
 use crate::heal::mrf::MrfQueue;
 
-/// Auto-compute server default EC from volume count.
-/// Aims for 1-failure tolerance when possible.
-pub fn default_ec(num_volumes: usize) -> (usize, usize) {
-    if num_volumes <= 1 {
-        (1, 0)
-    } else {
-        (num_volumes - 1, 1)
+/// Convert a failures-to-tolerate (FTT) count into (data, parity) shards.
+/// Maximizes data shards for space efficiency: data = disks - ftt, parity = ftt.
+pub fn ftt_to_ec(ftt: usize, num_disks: usize) -> Result<(usize, usize), StorageError> {
+    if num_disks == 0 || ftt >= num_disks {
+        return Err(StorageError::InvalidConfig(format!(
+            "ftt {} requires at least {} disks, have {}",
+            ftt,
+            ftt + 1,
+            num_disks
+        )));
     }
+    Ok((num_disks - ftt, ftt))
+}
+
+/// Auto-compute server default EC from volume count.
+/// Default is FTT=1 (survive 1 failure) when possible.
+pub fn default_ec(num_volumes: usize) -> (usize, usize) {
+    let ftt = 1.min(num_volumes.saturating_sub(1));
+    ftt_to_ec(ftt, num_volumes).unwrap_or((1, 0))
 }
 
 #[derive(Debug, Clone)]
@@ -124,9 +135,9 @@ impl ErasureSet {
     }
 
     /// Resolve EC params for a write operation.
-    /// Precedence: per-object (PutOptions) > bucket config > server defaults.
+    /// Precedence: per-object raw > per-object FTT > bucket raw > bucket FTT > server defaults.
     fn resolve_ec(&self, bucket: &str, opts: &PutOptions) -> (usize, usize) {
-        // per-object override from PutOptions
+        // per-object raw override from PutOptions
         if let (Some(d), Some(p)) = (opts.ec_data, opts.ec_parity)
             && d >= 1
             && d + p <= self.disks.len()
@@ -134,7 +145,14 @@ impl ErasureSet {
             return (d, p);
         }
 
-        // bucket-level config
+        // per-object FTT
+        if let Some(ftt) = opts.ec_ftt {
+            if let Ok((d, p)) = ftt_to_ec(ftt, self.disks.len()) {
+                return (d, p);
+            }
+        }
+
+        // bucket-level config (FTT configs store computed data/parity alongside ftt)
         if let Some(ec) = self
             .disks
             .iter()
@@ -910,7 +928,7 @@ mod tests {
         assert!(set.get_ec_config("test").unwrap().is_none());
 
         // set bucket EC config
-        let config = EcConfig { data: 3, parity: 3 };
+        let config = EcConfig { data: 3, parity: 3, ftt: None };
         set.set_ec_config("test", &config).unwrap();
 
         // verify it's stored
@@ -937,7 +955,7 @@ mod tests {
         set.make_bucket("test").unwrap();
 
         // set bucket config to 3+3
-        set.set_ec_config("test", &EcConfig { data: 3, parity: 3 })
+        set.set_ec_config("test", &EcConfig { data: 3, parity: 3, ftt: None })
             .unwrap();
 
         // write with per-object override 1+1
@@ -962,21 +980,116 @@ mod tests {
 
         // data=0 should fail
         assert!(
-            set.set_ec_config("test", &EcConfig { data: 0, parity: 2 })
+            set.set_ec_config("test", &EcConfig { data: 0, parity: 2, ftt: None })
                 .is_err()
         );
 
         // exceeds disk count should fail
         assert!(
-            set.set_ec_config("test", &EcConfig { data: 3, parity: 3 })
+            set.set_ec_config("test", &EcConfig { data: 3, parity: 3, ftt: None })
                 .is_err()
         );
 
         // valid config should succeed
         assert!(
-            set.set_ec_config("test", &EcConfig { data: 2, parity: 2 })
+            set.set_ec_config("test", &EcConfig { data: 2, parity: 2, ftt: None })
                 .is_ok()
         );
+    }
+
+    // -- FTT mapping --
+
+    #[test]
+    fn ftt_to_ec_mapping() {
+        // 1 disk
+        assert_eq!(ftt_to_ec(0, 1).unwrap(), (1, 0));
+        assert!(ftt_to_ec(1, 1).is_err());
+
+        // 2 disks
+        assert_eq!(ftt_to_ec(0, 2).unwrap(), (2, 0));
+        assert_eq!(ftt_to_ec(1, 2).unwrap(), (1, 1));
+        assert!(ftt_to_ec(2, 2).is_err());
+
+        // 4 disks
+        assert_eq!(ftt_to_ec(0, 4).unwrap(), (4, 0));
+        assert_eq!(ftt_to_ec(1, 4).unwrap(), (3, 1));
+        assert_eq!(ftt_to_ec(2, 4).unwrap(), (2, 2));
+        assert_eq!(ftt_to_ec(3, 4).unwrap(), (1, 3));
+        assert!(ftt_to_ec(4, 4).is_err());
+
+        // 6 disks
+        assert_eq!(ftt_to_ec(0, 6).unwrap(), (6, 0));
+        assert_eq!(ftt_to_ec(1, 6).unwrap(), (5, 1));
+        assert_eq!(ftt_to_ec(2, 6).unwrap(), (4, 2));
+        assert_eq!(ftt_to_ec(3, 6).unwrap(), (3, 3));
+
+        // 0 disks
+        assert!(ftt_to_ec(0, 0).is_err());
+    }
+
+    #[test]
+    fn default_ec_unchanged() {
+        assert_eq!(default_ec(1), (1, 0));
+        assert_eq!(default_ec(2), (1, 1));
+        assert_eq!(default_ec(4), (3, 1));
+        assert_eq!(default_ec(6), (5, 1));
+    }
+
+    #[test]
+    fn resolve_ec_ftt_per_object() {
+        let (_base, paths) = make_disk_dirs(6);
+        let set = make_set(&paths, 5, 1);
+        set.make_bucket("test").unwrap();
+
+        // FTT=2 on 6 disks should give 4+2
+        let opts = PutOptions {
+            content_type: "text/plain".to_string(),
+            ec_ftt: Some(2),
+            ..Default::default()
+        };
+        set.put_object("test", "ftt2", b"ftt test", opts).unwrap();
+        let meta = set.read_ec_from_meta("test", "ftt2").unwrap();
+        assert_eq!(meta, (4, 2));
+    }
+
+    #[test]
+    fn resolve_ec_raw_overrides_ftt() {
+        let (_base, paths) = make_disk_dirs(6);
+        let set = make_set(&paths, 5, 1);
+        set.make_bucket("test").unwrap();
+
+        // raw data/parity should win over FTT
+        let opts = PutOptions {
+            content_type: "text/plain".to_string(),
+            ec_data: Some(1),
+            ec_parity: Some(1),
+            ec_ftt: Some(3),
+            ..Default::default()
+        };
+        set.put_object("test", "raw-wins", b"raw wins", opts).unwrap();
+        let meta = set.read_ec_from_meta("test", "raw-wins").unwrap();
+        assert_eq!(meta, (1, 1));
+    }
+
+    #[test]
+    fn resolve_ec_bucket_ftt() {
+        let (_base, paths) = make_disk_dirs(6);
+        let set = make_set(&paths, 5, 1);
+        set.make_bucket("test").unwrap();
+
+        // set bucket config with FTT=2 on 6 disks -> 4+2
+        let (data, parity) = ftt_to_ec(2, 6).unwrap();
+        let config = EcConfig { data, parity, ftt: Some(2) };
+        set.set_ec_config("test", &config).unwrap();
+
+        // write with no per-object EC -- should use bucket config 4+2
+        let opts = PutOptions {
+            content_type: "text/plain".to_string(),
+            ..Default::default()
+        };
+        set.put_object("test", "bucket-ftt", b"bucket ftt", opts).unwrap();
+        let meta = set.read_ec_from_meta("test", "bucket-ftt").unwrap();
+        assert_eq!(meta, (4, 2));
     }
 
     // -- erasure resilience --

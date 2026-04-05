@@ -987,6 +987,68 @@ async fn admin_inspect_object_shows_per_object_ec() {
 }
 
 // =============================================================================
+// FTT (failures-to-tolerate) admin tests
+// =============================================================================
+
+#[tokio::test]
+async fn admin_set_bucket_ec_via_ftt() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/fttadmin")).send().await.unwrap();
+
+    // set bucket EC via FTT=2 on 6 disks
+    let resp = client
+        .put(format!(
+            "http://{}/_admin/bucket/fttadmin/ec?ftt=2",
+            addr
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"], 4);
+    assert_eq!(body["parity"], 2);
+    assert_eq!(body["ftt"], 2);
+
+    // GET should return the same config
+    let resp = client
+        .get(format!(
+            "http://{}/_admin/bucket/fttadmin/ec",
+            addr
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["data"], 4);
+    assert_eq!(body["parity"], 2);
+}
+
+#[tokio::test]
+async fn admin_set_bucket_ec_ftt_exceeding_disks_returns_400() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/fttbadmin")).send().await.unwrap();
+
+    let resp = client
+        .put(format!(
+            "http://{}/_admin/bucket/fttbadmin/ec?ftt=6",
+            addr
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+// =============================================================================
 // Security tests -- admin endpoint exploitation coverage
 // =============================================================================
 

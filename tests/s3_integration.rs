@@ -3115,6 +3115,159 @@ async fn per_object_ec_default_uses_pool_subset() {
 }
 
 // =============================================================================
+// FTT (failures-to-tolerate) tests
+// =============================================================================
+
+#[tokio::test]
+async fn ftt_header_sets_correct_ec() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/fttbucket")).send().await.unwrap();
+
+    // FTT=2 on 6 disks -> 4 data + 2 parity = 6 shards across all disks
+    let resp = client
+        .put(url(&addr, "/fttbucket/critical.txt"))
+        .header("x-amz-meta-ec-ftt", "2")
+        .body("critical data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // verify all 6 disks have the object (4+2 = 6 total shards)
+    let mut disks_with_obj = 0;
+    for p in &paths {
+        if p.join("fttbucket").join("critical.txt").join("meta.json").exists() {
+            disks_with_obj += 1;
+        }
+    }
+    assert_eq!(disks_with_obj, 6, "FTT=2 on 6 disks -> 4+2 should use all 6 disks");
+}
+
+#[tokio::test]
+async fn ftt_zero_means_no_parity() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/ftt0bucket")).send().await.unwrap();
+
+    let resp = client
+        .put(url(&addr, "/ftt0bucket/bulk.log"))
+        .header("x-amz-meta-ec-ftt", "0")
+        .body("bulk log data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // FTT=0 on 6 disks -> 6+0, all 6 disks should have the object
+    let mut disks_with_obj = 0;
+    for p in &paths {
+        if p.join("ftt0bucket").join("bulk.log").join("meta.json").exists() {
+            disks_with_obj += 1;
+        }
+    }
+    assert_eq!(disks_with_obj, 6, "FTT=0 on 6 disks -> 6+0 should use all 6 disks");
+
+    // verify data is readable
+    let resp = client
+        .get(url(&addr, "/ftt0bucket/bulk.log"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"bulk log data");
+}
+
+#[tokio::test]
+async fn ftt_exceeding_disks_returns_400() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/fttbadbucket")).send().await.unwrap();
+
+    // FTT=6 on 6 disks is invalid (need at least 1 data shard)
+    let resp = client
+        .put(url(&addr, "/fttbadbucket/obj"))
+        .header("x-amz-meta-ec-ftt", "6")
+        .body("should fail")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn ftt_raw_overrides_ftt_header() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/fttrawbucket")).send().await.unwrap();
+
+    // raw data/parity (1+1=2 disks) should override FTT=3 (3+3=6 disks)
+    let resp = client
+        .put(url(&addr, "/fttrawbucket/obj"))
+        .header("x-amz-meta-ec-data", "1")
+        .header("x-amz-meta-ec-parity", "1")
+        .header("x-amz-meta-ec-ftt", "3")
+        .body("raw wins")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // only 2 disks should have the object (1+1, not 3+3)
+    let mut disks_with_obj = 0;
+    for p in &paths {
+        if p.join("fttrawbucket").join("obj").join("meta.json").exists() {
+            disks_with_obj += 1;
+        }
+    }
+    assert_eq!(disks_with_obj, 2, "raw 1+1 should override FTT=3");
+}
+
+#[tokio::test]
+async fn ftt_object_survives_expected_failures() {
+    let (_base, paths) = setup_n(6);
+    let (addr, _handle) = start_server_pool(&paths, 5, 1).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/fttsurvive")).send().await.unwrap();
+
+    // FTT=2 -> 4+2, should survive 2 disk failures
+    let resp = client
+        .put(url(&addr, "/fttsurvive/important.dat"))
+        .header("x-amz-meta-ec-ftt", "2")
+        .body("survive test data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // delete object data from 2 disks
+    for i in 0..2 {
+        let obj_dir = paths[i].join("fttsurvive").join("important.dat");
+        if obj_dir.exists() {
+            std::fs::remove_dir_all(&obj_dir).unwrap();
+        }
+    }
+
+    // should still be readable
+    let resp = client
+        .get(url(&addr, "/fttsurvive/important.dat"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"survive test data");
+}
+
+// =============================================================================
 // Security tests -- comprehensive exploitation coverage
 // Derived from RustFS security fixes and OWASP top 10 for object storage
 // =============================================================================

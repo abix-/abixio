@@ -1,8 +1,25 @@
 # Per-Object Erasure Coding
 
-Every abixio object has its own data/parity ratio. Critical files can be stored
-with maximum redundancy while large files use throughput-optimized settings --
-within the same bucket, on the same disk pool.
+Every abixio object has its own fault tolerance. Critical files can survive
+5 disk failures while bulk logs tolerate only 1, all within the same bucket
+on the same disk pool.
+
+## Failures to tolerate (FTT)
+
+The primary interface is FTT: a single number saying how many volume failures
+an object can survive. The system computes optimal data/parity shards from
+FTT and the available disk count.
+
+| Disks | FTT=0 | FTT=1 | FTT=2 | FTT=3 |
+|---|---|---|---|---|
+| 1 | 1+0 | invalid | invalid | invalid |
+| 2 | 2+0 | 1+1 | invalid | invalid |
+| 4 | 4+0 | 3+1 | 2+2 | 1+3 |
+| 6 | 6+0 | 5+1 | 4+2 | 3+3 |
+
+FTT means volume/disk failures. Node-awareness is handled separately by the
+placement engine, which round-robins shards across nodes before reusing a
+node. In single-node mode, FTT means local disk failures.
 
 ## How it works
 
@@ -25,28 +42,27 @@ itself.
 
 | Priority | Source | How to set |
 |---|---|---|
-| 1 (highest) | Per-object | `x-amz-meta-ec-data` / `x-amz-meta-ec-parity` headers on PUT |
-| 2 | Bucket default | Admin API: `PUT /_admin/bucket/{name}/ec?data=N&parity=N` |
-| 3 (lowest) | Server default | Auto-computed from volume count |
+| 1 (highest) | Per-object raw | `x-amz-meta-ec-data` / `x-amz-meta-ec-parity` headers on PUT |
+| 2 | Per-object FTT | `x-amz-meta-ec-ftt` header on PUT |
+| 3 | Bucket config | Admin API: `PUT /_admin/bucket/{name}/ec?ftt=N` or `?data=N&parity=N` |
+| 4 (lowest) | Server default | Auto-computed from volume count (FTT=1) |
 
-If no override is specified, objects use the auto-computed server default:
-1 volume = `1+0`, 2+ volumes = `(N-1)+1` for 1-failure tolerance.
+If no override is specified, objects use the server default: FTT=1 for 2+
+volumes, FTT=0 for 1 volume.
 
 ## Per-object EC via S3 headers
 
 Standard S3 `x-amz-meta-*` custom metadata headers. Any S3 client works.
 
 ```bash
-# critical config: 1 data + 5 parity (survives 5 of 6 disk failures)
+# critical config: survive 5 failures (FTT=5 on 6 disks -> 1+5)
 curl -X PUT -d "critical data" \
-  -H "x-amz-meta-ec-data: 1" \
-  -H "x-amz-meta-ec-parity: 5" \
+  -H "x-amz-meta-ec-ftt: 5" \
   http://localhost:10000/mybucket/critical.txt
 
-# large video: 4 data + 2 parity (throughput-optimized)
+# bulk data: survive 1 failure (FTT=1 on 6 disks -> 5+1)
 curl -X PUT -T bigfile.bin \
-  -H "x-amz-meta-ec-data: 4" \
-  -H "x-amz-meta-ec-parity: 2" \
+  -H "x-amz-meta-ec-ftt: 1" \
   http://localhost:10000/mybucket/bigfile.bin
 
 # no headers: uses bucket default or server default
@@ -54,23 +70,37 @@ curl -X PUT -d "normal data" \
   http://localhost:10000/mybucket/normal.txt
 ```
 
+Raw data/parity headers are still supported as an advanced escape hatch:
+
+```bash
+# explicit 1 data + 5 parity
+curl -X PUT -d "critical data" \
+  -H "x-amz-meta-ec-data: 1" \
+  -H "x-amz-meta-ec-parity: 5" \
+  http://localhost:10000/mybucket/critical.txt
+```
+
 The EC headers are returned on GET and HEAD like all S3 custom metadata.
 
 ### Validation
 
-- `data` must be >= 1
-- `data + parity` must be <= total disk count in the pool
+- FTT must be >= 0 and < total disk count
+- Raw `data` must be >= 1
+- Raw `data + parity` must be <= total disk count in the pool
 - Invalid values return HTTP 400 `InvalidRequest`
 
 ## Bucket EC config
 
-Set a default EC ratio for all new objects in a bucket. Stored in
+Set a default EC for all new objects in a bucket. Stored in
 `.abixio.sys/buckets/<bucket>/settings.json` under the `ec` field.
 
 ### Admin API
 
 ```bash
-# set bucket default
+# set bucket default via FTT (recommended)
+curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?ftt=2"
+
+# set bucket default via raw data/parity (advanced)
 curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=3&parity=3"
 
 # get bucket config (returns auto-computed default if not set)
@@ -81,8 +111,9 @@ Response format:
 
 ```json
 {
-  "data": 3,
-  "parity": 3
+  "data": 4,
+  "parity": 2,
+  "ftt": 2
 }
 ```
 
@@ -170,7 +201,7 @@ disk0/
   .abixio.sys/
     buckets/
       mybucket/
-        settings.json     # { "ec": { "data": 3, "parity": 3 } }
+        settings.json     # { "ec": { "data": 4, "parity": 2, "ftt": 2 } }
   mybucket/
     critical.txt/
       meta.json           # erasure: { data: 1, parity: 5, ... }

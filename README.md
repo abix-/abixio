@@ -130,33 +130,41 @@ On later boots, the node reloads identity from disk and checks quorum. If quorum
 | `--nodes` | no | empty | All node endpoints (comma-separated, supports `{N...M}`) |
 | `--no-auth` | no | false | Disable all authentication |
 
-## Erasure Coding Defaults
+## Erasure Coding
 
-Server defaults are derived from volume count to target 1-failure tolerance.
+AbixIO uses failures-to-tolerate (FTT) as the primary EC interface. FTT is the number of volume failures an object can survive. The system computes the optimal data/parity layout automatically.
 
-| Volumes | Auto EC | Behavior |
-|---|---|---|
-| 1 | `1+0` | Plain object storage. No redundancy. |
-| 2 | `1+1` | Mirror. Survives 1 failure. |
-| 4 | `3+1` | Erasure coding. Survives 1 failure. |
-| 6 | `5+1` | Erasure coding. Survives 1 failure. |
+| Volumes | Default FTT | Auto EC | Behavior |
+|---|---|---|---|
+| 1 | 0 | `1+0` | Plain object storage. No redundancy. |
+| 2 | 1 | `1+1` | Mirror. Survives 1 failure. |
+| 4 | 1 | `3+1` | Erasure coding. Survives 1 failure. |
+| 6 | 1 | `5+1` | Erasure coding. Survives 1 failure. |
 
-You can override this per bucket through the admin API:
-
-```bash
-curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=2&parity=2"
-```
-
-Or per object through S3 metadata headers:
+Override per object with an FTT header:
 
 ```bash
 curl -X PUT -d "important" \
+  -H "x-amz-meta-ec-ftt: 2" \
+  http://localhost:10000/mybucket/critical.txt
+```
+
+Override per bucket through the admin API:
+
+```bash
+curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?ftt=2"
+```
+
+Raw data/parity overrides are still available as an advanced escape hatch:
+
+```bash
+curl -X PUT -d "data" \
   -H "x-amz-meta-ec-data: 1" \
   -H "x-amz-meta-ec-parity: 5" \
   http://localhost:10000/mybucket/critical.txt
 ```
 
-Precedence is: per-object header, then bucket config, then server default.
+Precedence: per-object raw > per-object FTT > bucket config > server default.
 
 ## S3 API Coverage
 
