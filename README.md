@@ -8,7 +8,7 @@ S3-compatible object stores all inherit the same MinIO model: identical nodes, u
 
 **Heterogeneous everything.** Mixed disk counts, mixed node sizes, mixed volume types. One flat pool. Think vSAN meets S3.
 
-**One node to many.** Single disk, six disks, three nodes -- same storage model. Node count changes the resilience envelope, not the product.
+**One node to many.** Single disk, six disks, three nodes. Same storage model. Node count changes the resilience envelope, not the product.
 
 Early. Foundation works. Vision is what to watch.
 
