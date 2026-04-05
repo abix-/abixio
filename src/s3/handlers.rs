@@ -121,6 +121,7 @@ impl S3Handler {
         let is_uploads = query.contains("uploads");
         let has_upload_id = query.contains("uploadId");
         let has_part_number = query.contains("partNumber");
+        let is_policy = query.contains("policy");
 
         let mut resp = match (bucket, key, &method) {
             ("", _, &Method::GET) => self.list_buckets().await,
@@ -136,6 +137,11 @@ impl S3Handler {
 
             // list multipart uploads
             (b, "", &Method::GET) if is_uploads => self.list_multipart_uploads(b).await,
+
+            // bucket policy
+            (b, "", &Method::GET) if is_policy => self.get_bucket_policy(b).await,
+            (b, "", &Method::PUT) if is_policy => self.put_bucket_policy(b, req).await,
+            (b, "", &Method::DELETE) if is_policy => self.delete_bucket_policy(b).await,
 
             // bucket tagging (must precede bucket catch-alls)
             (b, "", &Method::GET) if is_tagging => self.get_bucket_tagging(b).await,
@@ -941,6 +947,74 @@ impl S3Handler {
             }
             Err(e) => error_response(&map_error(&e)),
         }
+    }
+
+    // -- bucket policy --
+
+    async fn get_bucket_policy(&self, bucket: &str) -> Response<BoxBody> {
+        match self.store.head_bucket(bucket) {
+            Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
+            Ok(true) => {}
+        }
+        let path = self.bucket_metadata_path(bucket, ".policy.json");
+        match std::fs::read(&path) {
+            Ok(data) => Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/json")
+                .body(Full::new(Bytes::from(data)))
+                .unwrap(),
+            Err(_) => error_response(&super::errors::ERR_NO_SUCH_BUCKET_POLICY),
+        }
+    }
+
+    async fn put_bucket_policy(&self, bucket: &str, req: Request<Incoming>) -> Response<BoxBody> {
+        match self.store.head_bucket(bucket) {
+            Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
+            Ok(true) => {}
+        }
+        let body = match req.collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+        // max 20KiB
+        if body.len() > 20 * 1024 {
+            return error_response(&super::errors::ERR_POLICY_TOO_LARGE);
+        }
+        // validate JSON
+        let policy: serde_json::Value = match serde_json::from_slice(&body) {
+            Ok(v) => v,
+            Err(_) => return error_response(&ERR_MALFORMED_XML), // reuse 400
+        };
+        // validate Version field
+        match policy.get("Version").and_then(|v| v.as_str()) {
+            Some(v) if !v.is_empty() => {}
+            _ => return error_response(&ERR_MALFORMED_XML),
+        }
+        let path = self.bucket_metadata_path(bucket, ".policy.json");
+        match std::fs::write(&path, &body) {
+            Ok(()) => empty_response(StatusCode::NO_CONTENT),
+            Err(_) => error_response(&super::errors::ERR_INTERNAL),
+        }
+    }
+
+    async fn delete_bucket_policy(&self, bucket: &str) -> Response<BoxBody> {
+        let path = self.bucket_metadata_path(bucket, ".policy.json");
+        let _ = std::fs::remove_file(&path);
+        empty_response(StatusCode::NO_CONTENT)
+    }
+
+    fn bucket_metadata_path(&self, bucket: &str, filename: &str) -> std::path::PathBuf {
+        let disk_root = if let Some(disk) = self.store.disks().first() {
+            let info = disk.info();
+            if let Some(path) = info.label.strip_prefix("local:") {
+                std::path::PathBuf::from(path)
+            } else {
+                std::path::PathBuf::from(".")
+            }
+        } else {
+            std::path::PathBuf::from(".")
+        };
+        disk_root.join(bucket).join(filename)
     }
 
     // -- multipart upload --

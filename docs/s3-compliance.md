@@ -3,7 +3,7 @@
 Authoritative audit of every S3 API operation. Compared against MinIO's
 72 unique handler routes in `cmd/api-router.go`.
 
-abixio implements **26 of 72** operations. 175 tests.
+abixio implements **29 of 72** operations. 181 tests.
 
 ## All operations
 
@@ -23,9 +23,9 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 | GetBucketTagging | `GET /{bucket}?tagging` | Done | 8/10 | |
 | PutBucketTagging | `PUT /{bucket}?tagging` | Done | 8/10 | |
 | DeleteBucketTagging | `DELETE /{bucket}?tagging` | Done | 8/10 | |
-| GetBucketPolicy | `GET /{bucket}?policy` | No | 0/10 | |
-| PutBucketPolicy | `PUT /{bucket}?policy` | No | 0/10 | |
-| DeleteBucketPolicy | `DELETE /{bucket}?policy` | No | 0/10 | |
+| GetBucketPolicy | `GET /{bucket}?policy` | Done | 8/10 | Returns JSON. 404 if none set. |
+| PutBucketPolicy | `PUT /{bucket}?policy` | Done | 8/10 | Validates JSON + Version. Max 20KiB. |
+| DeleteBucketPolicy | `DELETE /{bucket}?policy` | Done | 8/10 | Idempotent. |
 | GetBucketEncryption | `GET /{bucket}?encryption` | No | 0/10 | |
 | PutBucketEncryption | `PUT /{bucket}?encryption` | No | 0/10 | |
 | DeleteBucketEncryption | `DELETE /{bucket}?encryption` | No | 0/10 | |
@@ -139,10 +139,10 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 
 ## Summary
 
-26 of 72 operations (36%). The implemented operations are well-tested
-(175 tests) and cover the core S3 workflow: object CRUD, multipart upload,
-versioning, tagging, batch delete, copy, range requests, conditional
-requests, presigned URLs.
+29 of 72 operations (40%). The implemented operations are well-tested
+(181 tests) and cover the core S3 workflow: object CRUD, multipart upload,
+versioning, tagging, bucket policies, batch delete, copy, range requests,
+conditional requests, presigned URLs.
 
-Not implemented: bucket policies, lifecycle, encryption config, CORS,
-replication, notifications, object lock/retention, ACLs, S3 Select.
+Not implemented: lifecycle, encryption config, CORS, replication,
+notifications, object lock/retention, ACLs, S3 Select.

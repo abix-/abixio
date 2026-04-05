@@ -76,6 +76,18 @@ pub const ERR_EXPIRED_PRESIGN: S3Error = S3Error {
     http_status: 403,
 };
 
+pub const ERR_NO_SUCH_BUCKET_POLICY: S3Error = S3Error {
+    code: "NoSuchBucketPolicy",
+    message: "The bucket policy does not exist",
+    http_status: 404,
+};
+
+pub const ERR_POLICY_TOO_LARGE: S3Error = S3Error {
+    code: "PolicyTooLarge",
+    message: "Policy exceeds the maximum allowed document size",
+    http_status: 400,
+};
+
 pub const ERR_ACCESS_DENIED: S3Error = S3Error {
     code: "AccessDenied",
     message: "Access Denied",

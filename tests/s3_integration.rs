@@ -2173,3 +2173,141 @@ fn md5_hex(data: &[u8]) -> String {
     hasher.update(data);
     format!("{:x}", hasher.finalize())
 }
+
+// --- Bucket policy ---
+
+#[tokio::test]
+async fn bucket_policy_put_get_delete() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let policy_json = r#"{"Version":"2012-10-17","Statement":[{"Sid":"PublicRead","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::tb/*"]}]}"#;
+
+    // PUT policy
+    let resp = client
+        .put(url(&addr, "/tb?policy"))
+        .body(policy_json)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    // GET policy
+    let resp = client
+        .get(url(&addr, "/tb?policy"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers()["content-type"], "application/json");
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("2012-10-17"), "body: {}", body);
+    assert!(body.contains("s3:GetObject"), "body: {}", body);
+
+    // DELETE policy
+    let resp = client
+        .delete(url(&addr, "/tb?policy"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    // GET after delete returns 404
+    let resp = client
+        .get(url(&addr, "/tb?policy"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn bucket_policy_get_when_none_returns_404() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .get(url(&addr, "/tb?policy"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("NoSuchBucketPolicy"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn bucket_policy_put_invalid_json_returns_400() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb?policy"))
+        .body("not json at all")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn bucket_policy_put_missing_version_returns_400() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb?policy"))
+        .body(r#"{"Statement":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn bucket_policy_put_empty_version_returns_400() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb?policy"))
+        .body(r#"{"Version":"","Statement":[]}"#)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn bucket_policy_delete_idempotent() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    // delete when no policy exists -- should still return 204
+    let resp = client
+        .delete(url(&addr, "/tb?policy"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    // delete again
+    let resp = client
+        .delete(url(&addr, "/tb?policy"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+}
