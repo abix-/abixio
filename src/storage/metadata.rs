@@ -6,6 +6,15 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
+/// Single meta.json per object, containing all version metadata.
+/// Matches MinIO's xl.meta pattern.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ObjectMetaFile {
+    pub versions: Vec<ObjectMeta>,
+}
+
+/// Per-version metadata. Each entry in ObjectMetaFile.versions is one version.
+/// For unversioned objects, there is exactly one entry.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ObjectMeta {
     pub size: u64,
@@ -20,6 +29,10 @@ pub struct ObjectMeta {
     pub tags: HashMap<String, String>,
     #[serde(default)]
     pub version_id: String,
+    #[serde(default)]
+    pub is_latest: bool,
+    #[serde(default)]
+    pub is_delete_marker: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -77,29 +90,8 @@ pub struct PutOptions {
 // -- versioning --
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct VersionEntry {
-    pub version_id: String,
-    pub is_latest: bool,
-    pub is_delete_marker: bool,
-    pub created_at: u64,
-    pub size: u64,
-    pub etag: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VersioningConfig {
     pub status: String, // "Enabled", "Suspended", or absent
-}
-
-pub fn read_versions(path: &Path) -> io::Result<Vec<VersionEntry>> {
-    let data = fs::read(path)?;
-    serde_json::from_slice(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
-}
-
-pub fn write_versions(path: &Path, entries: &[VersionEntry]) -> io::Result<()> {
-    let json = serde_json::to_vec_pretty(entries)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    fs::write(path, json)
 }
 
 impl ObjectMeta {
@@ -118,13 +110,13 @@ impl ObjectMeta {
     }
 }
 
-pub fn write_meta(path: &Path, meta: &ObjectMeta) -> io::Result<()> {
+pub fn write_meta_file(path: &Path, meta: &ObjectMetaFile) -> io::Result<()> {
     let json = serde_json::to_vec_pretty(meta)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     fs::write(path, json)
 }
 
-pub fn read_meta(path: &Path) -> io::Result<ObjectMeta> {
+pub fn read_meta_file(path: &Path) -> io::Result<ObjectMetaFile> {
     let data = fs::read(path)?;
     serde_json::from_slice(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
@@ -141,120 +133,94 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    #[test]
-    fn meta_serde_round_trip() {
-        let meta = ObjectMeta {
+    fn test_version(index: usize) -> ObjectMeta {
+        ObjectMeta {
             size: 1024,
-            etag: "d41d8cd98f00b204e9800998ecf8427e".to_string(),
+            etag: "abc".to_string(),
             content_type: "text/plain".to_string(),
             created_at: 1700000000,
             erasure: ErasureMeta {
                 data: 2,
                 parity: 2,
-                index: 0,
+                index,
                 distribution: vec![2, 0, 3, 1],
             },
             checksum: "abc123".to_string(),
             user_metadata: HashMap::new(),
             tags: HashMap::new(),
             version_id: String::new(),
-        };
-        let json = serde_json::to_string(&meta).unwrap();
-        let decoded: ObjectMeta = serde_json::from_str(&json).unwrap();
-        assert_eq!(meta, decoded);
+            is_latest: true,
+            is_delete_marker: false,
+        }
     }
 
     #[test]
-    fn write_read_meta_round_trip() {
+    fn meta_file_serde_round_trip() {
+        let mf = ObjectMetaFile {
+            versions: vec![test_version(0)],
+        };
+        let json = serde_json::to_string(&mf).unwrap();
+        let decoded: ObjectMetaFile = serde_json::from_str(&json).unwrap();
+        assert_eq!(mf, decoded);
+    }
+
+    #[test]
+    fn write_read_meta_file_round_trip() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("meta.json");
-        let meta = ObjectMeta {
-            size: 512,
-            etag: "abc".to_string(),
-            content_type: "application/octet-stream".to_string(),
-            created_at: 1700000000,
-            erasure: ErasureMeta {
-                data: 2,
-                parity: 2,
-                index: 1,
-                distribution: vec![0, 1, 2, 3],
-            },
-            checksum: "def456".to_string(),
-            user_metadata: HashMap::new(),
-            tags: HashMap::new(),
-            version_id: String::new(),
+        let mf = ObjectMetaFile {
+            versions: vec![test_version(1)],
         };
-        write_meta(&path, &meta).unwrap();
-        let loaded = read_meta(&path).unwrap();
-        assert_eq!(meta, loaded);
+        write_meta_file(&path, &mf).unwrap();
+        let loaded = read_meta_file(&path).unwrap();
+        assert_eq!(mf, loaded);
     }
 
     #[test]
-    fn read_meta_missing_file_returns_error() {
+    fn read_meta_file_missing_returns_error() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("nonexistent.json");
-        assert!(read_meta(&path).is_err());
+        assert!(read_meta_file(&path).is_err());
     }
 
     #[test]
     fn quorum_eq_ignores_index_and_checksum() {
-        let meta_a = ObjectMeta {
-            size: 100,
-            etag: "aaa".to_string(),
-            content_type: "text/plain".to_string(),
-            created_at: 1700000000,
-            erasure: ErasureMeta {
-                data: 2,
-                parity: 2,
-                index: 0,
-                distribution: vec![2, 0, 3, 1],
-            },
-            checksum: "checksum_shard_0".to_string(),
-            user_metadata: HashMap::new(),
-            tags: HashMap::new(),
-            version_id: String::new(),
-        };
-        let meta_b = ObjectMeta {
-            size: 100,
-            etag: "aaa".to_string(),
-            content_type: "text/plain".to_string(),
-            created_at: 1700000000,
-            erasure: ErasureMeta {
-                data: 2,
-                parity: 2,
-                index: 3,
-                distribution: vec![2, 0, 3, 1],
-            },
-            checksum: "checksum_shard_3".to_string(),
-            user_metadata: HashMap::new(),
-            tags: HashMap::new(),
-            version_id: String::new(),
-        };
+        let meta_a = test_version(0);
+        let mut meta_b = test_version(3);
+        meta_b.checksum = "different_checksum".to_string();
         assert!(meta_a.quorum_eq(&meta_b));
     }
 
     #[test]
     fn quorum_eq_different_size_not_compatible() {
-        let meta_a = ObjectMeta {
-            size: 100,
-            etag: "aaa".to_string(),
-            content_type: "text/plain".to_string(),
-            created_at: 1700000000,
-            erasure: ErasureMeta {
-                data: 2,
-                parity: 2,
-                index: 0,
-                distribution: vec![0, 1, 2, 3],
-            },
-            checksum: "x".to_string(),
-            user_metadata: HashMap::new(),
-            tags: HashMap::new(),
-            version_id: String::new(),
-        };
-        let meta_b = ObjectMeta {
-            size: 200,
-            ..meta_a.clone()
-        };
+        let meta_a = test_version(0);
+        let mut meta_b = meta_a.clone();
+        meta_b.size = 200;
         assert!(!meta_a.quorum_eq(&meta_b));
+    }
+
+    #[test]
+    fn multi_version_meta_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("meta.json");
+        let mf = ObjectMetaFile {
+            versions: vec![
+                ObjectMeta {
+                    version_id: "uuid-2".to_string(),
+                    is_latest: true,
+                    ..test_version(0)
+                },
+                ObjectMeta {
+                    version_id: "uuid-1".to_string(),
+                    is_latest: false,
+                    ..test_version(0)
+                },
+            ],
+        };
+        write_meta_file(&path, &mf).unwrap();
+        let loaded = read_meta_file(&path).unwrap();
+        assert_eq!(loaded.versions.len(), 2);
+        assert_eq!(loaded.versions[0].version_id, "uuid-2");
+        assert!(loaded.versions[0].is_latest);
     }
 }

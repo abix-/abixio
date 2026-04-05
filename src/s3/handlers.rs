@@ -373,14 +373,10 @@ impl S3Handler {
             .map(|c| c.status == "Suspended")
             .unwrap_or(false);
 
-        if versioning_enabled || versioning_suspended {
-            let version_id = if versioning_enabled {
-                uuid::Uuid::new_v4().to_string()
-            } else {
-                "null".to_string()
-            };
+        if versioning_enabled {
+            let version_id = uuid::Uuid::new_v4().to_string();
 
-            // write directly to versioned path (no legacy overwrite)
+            // write directly to versioned path (preserves old versions)
             let info = match self
                 .store
                 .put_object_versioned(bucket, key, &body, opts, &version_id)
@@ -389,31 +385,7 @@ impl S3Handler {
                 Err(e) => return error_response(&map_error(&e)),
             };
 
-            // update version index on all disks
-            for disk in self.store.disks() {
-                let mut entries = disk.read_version_index(bucket, key).unwrap_or_default();
-                // if suspended and there's an existing "null" version, remove it
-                if versioning_suspended {
-                    entries.retain(|e| e.version_id != "null");
-                }
-                // mark all existing as not latest
-                for e in &mut entries {
-                    e.is_latest = false;
-                }
-                // add new version at front
-                entries.insert(
-                    0,
-                    crate::storage::metadata::VersionEntry {
-                        version_id: version_id.clone(),
-                        is_latest: true,
-                        is_delete_marker: false,
-                        created_at: info.created_at,
-                        size: info.size,
-                        etag: info.etag.clone(),
-                    },
-                );
-                let _ = disk.write_version_index(bucket, key, &entries);
-            }
+            // write_versioned_shard already updated meta.json with the new version
 
             Response::builder()
                 .status(StatusCode::OK)
@@ -422,13 +394,17 @@ impl S3Handler {
                 .body(Full::new(Bytes::new()))
                 .unwrap()
         } else {
-            // unversioned: overwrite as before
+            // unversioned or suspended: use "null" version per S3 spec
             match self.store.put_object(bucket, key, &body, opts) {
-                Ok(info) => Response::builder()
-                    .status(StatusCode::OK)
-                    .header("ETag", format!("\"{}\"", info.etag))
-                    .body(Full::new(Bytes::new()))
-                    .unwrap(),
+                Ok(info) => {
+                    let mut builder = Response::builder()
+                        .status(StatusCode::OK)
+                        .header("ETag", format!("\"{}\"", info.etag));
+                    if versioning_suspended {
+                        builder = builder.header("x-amz-version-id", "null");
+                    }
+                    builder.body(Full::new(Bytes::new())).unwrap()
+                }
                 Err(e) => error_response(&map_error(&e)),
             }
         }
@@ -568,22 +544,32 @@ impl S3Handler {
             let marker_id = uuid::Uuid::new_v4().to_string();
             let now = crate::storage::metadata::unix_timestamp_secs();
             for disk in self.store.disks() {
-                let mut entries = disk.read_version_index(bucket, key).unwrap_or_default();
-                for e in &mut entries {
-                    e.is_latest = false;
+                let mut versions = disk.read_meta_versions(bucket, key).unwrap_or_default();
+                for v in &mut versions {
+                    v.is_latest = false;
                 }
-                entries.insert(
+                versions.insert(
                     0,
-                    crate::storage::metadata::VersionEntry {
+                    crate::storage::metadata::ObjectMeta {
                         version_id: marker_id.clone(),
                         is_latest: true,
                         is_delete_marker: true,
                         created_at: now,
                         size: 0,
                         etag: String::new(),
+                        content_type: String::new(),
+                        erasure: crate::storage::metadata::ErasureMeta {
+                            data: 0,
+                            parity: 0,
+                            index: 0,
+                            distribution: Vec::new(),
+                        },
+                        checksum: String::new(),
+                        user_metadata: std::collections::HashMap::new(),
+                        tags: std::collections::HashMap::new(),
                     },
                 );
-                let _ = disk.write_version_index(bucket, key, &entries);
+                let _ = disk.write_meta_versions(bucket, key, &versions);
             }
             let mut resp = empty_response(StatusCode::NO_CONTENT);
             resp.headers_mut().insert(
@@ -803,21 +789,19 @@ impl S3Handler {
         }
     }
 
-    /// Find the latest non-delete-marker version ID from the version index.
-    /// Returns None if no versions.json exists (unversioned object).
+    /// Find the latest non-delete-marker version ID from meta.json.
+    /// Returns None if object has no versioned entries.
     fn find_latest_version(&self, bucket: &str, key: &str) -> Option<String> {
         for disk in self.store.disks() {
-            let entries = disk.read_version_index(bucket, key).unwrap_or_default();
-            if entries.is_empty() {
+            let versions = disk.read_meta_versions(bucket, key).unwrap_or_default();
+            if versions.is_empty() {
                 continue;
             }
-            // find first non-delete-marker
-            for e in &entries {
-                if !e.is_delete_marker {
-                    return Some(e.version_id.clone());
+            for v in &versions {
+                if !v.is_delete_marker && !v.version_id.is_empty() {
+                    return Some(v.version_id.clone());
                 }
             }
-            // all entries are delete markers -- object is "deleted"
             return None;
         }
         None

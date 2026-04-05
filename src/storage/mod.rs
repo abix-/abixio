@@ -10,8 +10,7 @@ use std::io;
 use std::collections::HashMap;
 
 use metadata::{
-    BucketInfo, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions, VersionEntry,
-    VersioningConfig,
+    BucketInfo, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions, VersioningConfig,
 };
 
 /// Backend is the per-disk storage interface. Each erasure "disk" implements
@@ -49,6 +48,14 @@ pub trait Backend: Send + Sync {
 
     fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError>;
 
+    fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError>;
+    fn write_meta_versions(
+        &self,
+        bucket: &str,
+        key: &str,
+        versions: &[ObjectMeta],
+    ) -> Result<(), StorageError>;
+
     // versioned shard ops
     fn write_versioned_shard(
         &self,
@@ -71,19 +78,6 @@ pub trait Backend: Send + Sync {
         bucket: &str,
         key: &str,
         version_id: &str,
-    ) -> Result<(), StorageError>;
-
-    fn read_version_index(
-        &self,
-        bucket: &str,
-        key: &str,
-    ) -> Result<Vec<VersionEntry>, StorageError>;
-
-    fn write_version_index(
-        &self,
-        bucket: &str,
-        key: &str,
-        entries: &[VersionEntry],
     ) -> Result<(), StorageError>;
 
     fn read_versioning_config(&self, bucket: &str) -> Option<VersioningConfig>;
@@ -182,7 +176,7 @@ pub trait Store: Send + Sync {
         &self,
         bucket: &str,
         prefix: &str,
-    ) -> Result<Vec<(String, Vec<VersionEntry>)>, StorageError>;
+    ) -> Result<Vec<(String, Vec<ObjectMeta>)>, StorageError>;
 }
 
 #[derive(Debug, thiserror::Error)]

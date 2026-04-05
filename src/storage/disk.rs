@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 
 use super::{Backend, BackendInfo, StorageError};
 use super::metadata::{
-    ObjectMeta, VersionEntry, VersioningConfig, read_meta, read_versions, write_meta,
-    write_versions,
+    ObjectMeta, ObjectMetaFile, VersioningConfig, read_meta_file, write_meta_file,
 };
 
 pub struct LocalDisk {
@@ -14,7 +13,6 @@ pub struct LocalDisk {
 const TMP_DIR: &str = ".abixio.tmp";
 const SHARD_FILE: &str = "shard.dat";
 const META_FILE: &str = "meta.json";
-const VERSIONS_FILE: &str = "versions.json";
 const VERSIONING_FILE: &str = ".versioning.json";
 
 impl LocalDisk {
@@ -52,12 +50,8 @@ impl LocalDisk {
                 if name.starts_with('.') {
                     continue;
                 }
-                // check if this dir is an object:
-                // - legacy: has shard.dat directly
-                // - versioned: has versions.json
-                let is_legacy_object = entry.path().join(SHARD_FILE).exists();
-                let is_versioned_object = entry.path().join(VERSIONS_FILE).exists();
-                if is_legacy_object || is_versioned_object {
+                // check if this dir is an object (has meta.json)
+                if entry.path().join(META_FILE).exists() {
                     let rel = entry
                         .path()
                         .strip_prefix(base)
@@ -86,28 +80,18 @@ impl Backend for LocalDisk {
         meta: &ObjectMeta,
     ) -> Result<(), StorageError> {
         let obj_dir = self.root.join(bucket).join(key);
-        let tmp_id = uuid::Uuid::new_v4().to_string();
-        let tmp_dir = self.root.join(TMP_DIR).join(&tmp_id);
+        fs::create_dir_all(&obj_dir)?;
 
-        fs::create_dir_all(&tmp_dir)?;
+        // write shard data directly to key/shard.dat
+        fs::write(obj_dir.join(SHARD_FILE), data)?;
 
-        // write shard data to tmp
-        fs::write(tmp_dir.join(SHARD_FILE), data)?;
-
-        // write metadata to tmp
-        write_meta(&tmp_dir.join(META_FILE), meta).map_err(StorageError::Io)?;
-
-        // ensure parent of final destination exists
-        if let Some(parent) = obj_dir.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        // atomic rename (same filesystem)
-        // on Windows, target must not exist for rename to succeed
-        if obj_dir.exists() {
-            fs::remove_dir_all(&obj_dir)?;
-        }
-        fs::rename(&tmp_dir, &obj_dir)?;
+        // update meta.json: single version entry (unversioned = overwrite)
+        let mut version = meta.clone();
+        version.is_latest = true;
+        let mf = ObjectMetaFile {
+            versions: vec![version],
+        };
+        write_meta_file(&obj_dir.join(META_FILE), &mf).map_err(StorageError::Io)?;
 
         Ok(())
     }
@@ -121,9 +105,25 @@ impl Backend for LocalDisk {
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
-        let data = fs::read(obj_dir.join(SHARD_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
-        let meta = read_meta(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
-        Ok((data, meta))
+        let mf = read_meta_file(&obj_dir.join(META_FILE))
+            .map_err(|_| StorageError::ObjectNotFound)?;
+
+        // find latest non-delete-marker version
+        let version = mf
+            .versions
+            .iter()
+            .find(|v| !v.is_delete_marker)
+            .ok_or(StorageError::ObjectNotFound)?;
+
+        // determine shard path: unversioned = key/shard.dat, versioned = key/<uuid>/shard.dat
+        let shard_path = if version.version_id.is_empty() {
+            obj_dir.join(SHARD_FILE)
+        } else {
+            obj_dir.join(&version.version_id).join(SHARD_FILE)
+        };
+
+        let data = fs::read(&shard_path).map_err(|_| StorageError::ObjectNotFound)?;
+        Ok((data, version.clone()))
     }
 
     fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
@@ -206,7 +206,13 @@ impl Backend for LocalDisk {
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
-        read_meta(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)
+        let mf = read_meta_file(&obj_dir.join(META_FILE))
+            .map_err(|_| StorageError::ObjectNotFound)?;
+        mf.versions
+            .iter()
+            .find(|v| !v.is_delete_marker)
+            .cloned()
+            .ok_or(StorageError::ObjectNotFound)
     }
 
     fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError> {
@@ -214,7 +220,17 @@ impl Backend for LocalDisk {
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
-        write_meta(&obj_dir.join(META_FILE), meta).map_err(StorageError::Io)
+        // replace the matching version entry (by index) in meta.json
+        let mut mf = read_meta_file(&obj_dir.join(META_FILE))
+            .map_err(|_| StorageError::ObjectNotFound)?;
+        if let Some(v) = mf
+            .versions
+            .iter_mut()
+            .find(|v| v.erasure.index == meta.erasure.index || v.version_id == meta.version_id)
+        {
+            *v = meta.clone();
+        }
+        write_meta_file(&obj_dir.join(META_FILE), &mf).map_err(StorageError::Io)
     }
 
     fn write_versioned_shard(
@@ -225,21 +241,26 @@ impl Backend for LocalDisk {
         data: &[u8],
         meta: &ObjectMeta,
     ) -> Result<(), StorageError> {
-        let ver_dir = self.root.join(bucket).join(key).join(version_id);
-        let tmp_id = uuid::Uuid::new_v4().to_string();
-        let tmp_dir = self.root.join(TMP_DIR).join(&tmp_id);
+        let obj_dir = self.root.join(bucket).join(key);
+        let ver_dir = obj_dir.join(version_id);
+        fs::create_dir_all(&ver_dir)?;
 
-        fs::create_dir_all(&tmp_dir)?;
-        fs::write(tmp_dir.join(SHARD_FILE), data)?;
-        write_meta(&tmp_dir.join(META_FILE), meta).map_err(StorageError::Io)?;
+        // write shard data to key/<uuid>/shard.dat
+        fs::write(ver_dir.join(SHARD_FILE), data)?;
 
-        if let Some(parent) = ver_dir.parent() {
-            fs::create_dir_all(parent)?;
+        // update meta.json: add new version entry at front, mark others as not latest
+        let mut mf = read_meta_file(&obj_dir.join(META_FILE)).unwrap_or(ObjectMetaFile {
+            versions: Vec::new(),
+        });
+        for v in &mut mf.versions {
+            v.is_latest = false;
         }
-        if ver_dir.exists() {
-            fs::remove_dir_all(&ver_dir)?;
-        }
-        fs::rename(&tmp_dir, &ver_dir)?;
+        let mut version = meta.clone();
+        version.is_latest = true;
+        version.version_id = version_id.to_string();
+        mf.versions.insert(0, version);
+        write_meta_file(&obj_dir.join(META_FILE), &mf).map_err(StorageError::Io)?;
+
         Ok(())
     }
 
@@ -249,13 +270,19 @@ impl Backend for LocalDisk {
         key: &str,
         version_id: &str,
     ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
-        let ver_dir = self.root.join(bucket).join(key).join(version_id);
-        if !ver_dir.is_dir() {
-            return Err(StorageError::ObjectNotFound);
-        }
-        let data = fs::read(ver_dir.join(SHARD_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
-        let meta = read_meta(&ver_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
-        Ok((data, meta))
+        let obj_dir = self.root.join(bucket).join(key);
+        let mf = read_meta_file(&obj_dir.join(META_FILE))
+            .map_err(|_| StorageError::ObjectNotFound)?;
+
+        let version = mf
+            .versions
+            .iter()
+            .find(|v| v.version_id == version_id)
+            .ok_or(StorageError::ObjectNotFound)?;
+
+        let shard_path = obj_dir.join(version_id).join(SHARD_FILE);
+        let data = fs::read(&shard_path).map_err(|_| StorageError::ObjectNotFound)?;
+        Ok((data, version.clone()))
     }
 
     fn delete_version_data(
@@ -264,34 +291,50 @@ impl Backend for LocalDisk {
         key: &str,
         version_id: &str,
     ) -> Result<(), StorageError> {
-        let ver_dir = self.root.join(bucket).join(key).join(version_id);
+        let obj_dir = self.root.join(bucket).join(key);
+
+        // remove shard data dir
+        let ver_dir = obj_dir.join(version_id);
         if ver_dir.is_dir() {
             fs::remove_dir_all(&ver_dir)?;
+        }
+
+        // remove version entry from meta.json
+        if let Ok(mut mf) = read_meta_file(&obj_dir.join(META_FILE)) {
+            mf.versions.retain(|v| v.version_id != version_id);
+            // update is_latest
+            if let Some(first) = mf.versions.first_mut() {
+                first.is_latest = true;
+            }
+            let _ = write_meta_file(&obj_dir.join(META_FILE), &mf);
         }
         Ok(())
     }
 
-    fn read_version_index(
+    fn read_meta_versions(
         &self,
         bucket: &str,
         key: &str,
-    ) -> Result<Vec<VersionEntry>, StorageError> {
-        let path = self.root.join(bucket).join(key).join(VERSIONS_FILE);
-        match read_versions(&path) {
-            Ok(v) => Ok(v),
+    ) -> Result<Vec<ObjectMeta>, StorageError> {
+        let obj_dir = self.root.join(bucket).join(key);
+        match read_meta_file(&obj_dir.join(META_FILE)) {
+            Ok(mf) => Ok(mf.versions),
             Err(_) => Ok(Vec::new()),
         }
     }
 
-    fn write_version_index(
+    fn write_meta_versions(
         &self,
         bucket: &str,
         key: &str,
-        entries: &[VersionEntry],
+        versions: &[ObjectMeta],
     ) -> Result<(), StorageError> {
         let obj_dir = self.root.join(bucket).join(key);
         fs::create_dir_all(&obj_dir)?;
-        write_versions(&obj_dir.join(VERSIONS_FILE), entries).map_err(StorageError::Io)
+        let mf = ObjectMetaFile {
+            versions: versions.to_vec(),
+        };
+        write_meta_file(&obj_dir.join(META_FILE), &mf).map_err(StorageError::Io)
     }
 
     fn read_versioning_config(&self, bucket: &str) -> Option<VersioningConfig> {
@@ -391,6 +434,8 @@ mod tests {
             user_metadata: std::collections::HashMap::new(),
             tags: std::collections::HashMap::new(),
             version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
         }
     }
 

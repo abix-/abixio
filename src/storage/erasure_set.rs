@@ -4,7 +4,7 @@ use super::Backend;
 use super::erasure_decode::{read_and_decode, read_and_decode_versioned};
 use super::erasure_encode::{encode_and_write_versioned, encode_and_write_with_mrf};
 use super::metadata::{
-    BucketInfo, ListOptions, ListResult, ObjectInfo, PutOptions, VersionEntry, VersioningConfig,
+    BucketInfo, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions, VersioningConfig,
 };
 use super::{StorageError, Store};
 use crate::heal::mrf::MrfQueue;
@@ -70,10 +70,10 @@ impl Store for ErasureSet {
         data: &[u8],
         opts: PutOptions,
     ) -> Result<ObjectInfo, StorageError> {
-        // verify bucket exists on quorum of disks
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
+        // unversioned: write_shard handles meta.json (single version entry)
         encode_and_write_with_mrf(
             &self.disks,
             self.data_n,
@@ -90,7 +90,9 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
-        let (data, meta) = read_and_decode(&self.disks, self.data_n, self.parity_n, bucket, key)?;
+        // read_and_decode uses read_shard which reads meta.json -> latest version -> correct shard
+        let (data, meta) =
+            read_and_decode(&self.disks, self.data_n, self.parity_n, bucket, key)?;
         Ok((
             data,
             ObjectInfo {
@@ -103,13 +105,16 @@ impl Store for ErasureSet {
                 user_metadata: meta.user_metadata,
                 tags: meta.tags,
                 version_id: meta.version_id,
-                is_delete_marker: false,
+                is_delete_marker: meta.is_delete_marker,
             },
         ))
     }
 
     fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo, StorageError> {
-        // read meta from first responsive disk
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        // stat_object reads meta.json -> latest version
         for disk in &self.disks {
             match disk.stat_object(bucket, key) {
                 Ok(meta) => {
@@ -123,7 +128,7 @@ impl Store for ErasureSet {
                         user_metadata: meta.user_metadata,
                         tags: meta.tags,
                         version_id: meta.version_id,
-                        is_delete_marker: false,
+                        is_delete_marker: meta.is_delete_marker,
                     });
                 }
                 Err(_) => continue,
@@ -313,15 +318,13 @@ impl Store for ErasureSet {
         let mut successes = 0;
         let mut found = false;
         for disk in &self.disks {
-            match disk.stat_object(bucket, key) {
-                Ok(mut meta) => {
-                    found = true;
-                    meta.tags = tags.clone();
-                    if disk.update_meta(bucket, key, &meta).is_ok() {
-                        successes += 1;
-                    }
+            let mut versions = disk.read_meta_versions(bucket, key).unwrap_or_default();
+            if let Some(latest) = versions.iter_mut().find(|v| !v.is_delete_marker) {
+                found = true;
+                latest.tags = tags.clone();
+                if disk.write_meta_versions(bucket, key, &versions).is_ok() {
+                    successes += 1;
                 }
-                Err(_) => continue,
             }
         }
         if !found {
@@ -446,20 +449,9 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
-        // remove version data from all disks
+        // delete_version_data handles both shard removal and meta.json update
         for disk in &self.disks {
             let _ = disk.delete_version_data(bucket, key, version_id);
-        }
-        // update version index: remove this version entry
-        for disk in &self.disks {
-            if let Ok(mut entries) = disk.read_version_index(bucket, key) {
-                entries.retain(|e| e.version_id != version_id);
-                // recalculate is_latest
-                if let Some(first) = entries.first_mut() {
-                    first.is_latest = true;
-                }
-                let _ = disk.write_version_index(bucket, key, &entries);
-            }
         }
         Ok(())
     }
@@ -468,7 +460,7 @@ impl Store for ErasureSet {
         &self,
         bucket: &str,
         prefix: &str,
-    ) -> Result<Vec<(String, Vec<VersionEntry>)>, StorageError> {
+    ) -> Result<Vec<(String, Vec<ObjectMeta>)>, StorageError> {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -485,26 +477,10 @@ impl Store for ErasureSet {
         }
         let mut result = Vec::new();
         for key in &keys {
-            // try versioned index first
             for disk in &self.disks {
-                let entries = disk.read_version_index(bucket, key).unwrap_or_default();
-                if !entries.is_empty() {
-                    result.push((key.clone(), entries));
-                    break;
-                }
-                // fallback: legacy object without versions.json
-                if let Ok(meta) = disk.stat_object(bucket, key) {
-                    result.push((
-                        key.clone(),
-                        vec![VersionEntry {
-                            version_id: "null".to_string(),
-                            is_latest: true,
-                            is_delete_marker: false,
-                            created_at: meta.created_at,
-                            size: meta.size,
-                            etag: meta.etag.clone(),
-                        }],
-                    ));
+                let versions = disk.read_meta_versions(bucket, key).unwrap_or_default();
+                if !versions.is_empty() {
+                    result.push((key.clone(), versions));
                     break;
                 }
             }

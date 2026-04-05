@@ -149,6 +149,8 @@ fn encode_and_write_impl(
             user_metadata: opts.user_metadata.clone(),
             tags: opts.tags.clone(),
             version_id: version_id.unwrap_or("").to_string(),
+            is_latest: true,
+            is_delete_marker: false,
         };
         let write_result = if let Some(vid) = version_id {
             disks[disk_idx].write_versioned_shard(bucket, key, vid, shard_data, &meta)
