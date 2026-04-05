@@ -13,12 +13,12 @@ repositories, upstream docs, and public compatibility pages checked on
 2026-04-05. These projects change over time. For any serious decision, verify
 current behavior yourself.
 
-`Strong` means the capability is clearly present or central to the project's
-public story.
-`Partial` means it exists in some form, but not in the same shape or not as a
-primary feature.
-`Not found in checked docs/source` means it was not found after checking the
-upstream public docs and source references used for this page.
+Legend:
+
+- `✅ Yes` = clearly supported / strong fit
+- `⚠️ Partial` = supported in some form, but with limits or a different model
+- `❌ No` = not supported or explicitly rejected
+- `?` = not verified strongly enough to claim more
 
 ## Snapshot
 
@@ -32,7 +32,7 @@ upstream public docs and source references used for this page.
 | **OpenStack Swift** | Long-running object store with native Swift API and optional S3 compatibility. | **Medium** |
 | **OpenIO** | Object storage platform with an S3-compatible interface. | **Medium-low** |
 | **Riak CS** | Older S3-compatible storage layer on top of Riak. | **Medium-low** |
-| **AbixIO** | Early Rust S3 server with unusual storage-engine choices. | Baseline |
+| **AbixIO** | Early Rust S3 server that works as either a single-node deployment or a clustered system. | Baseline |
 
 ## Project Status
 
@@ -46,7 +46,7 @@ upstream public docs and source references used for this page.
 | **OpenStack Swift** | Python | Active OpenStack project. | Distributed object storage with native Swift API and documented S3 compatibility information |
 | **OpenIO** | Multiple / platform stack | Public docs and compatibility references exist; not one clean single-repo story here. | Object storage platform with S3-compatible interface |
 | **Riak CS** | Erlang ecosystem | Legacy / older project docs remain available. | S3-compatible storage API layer for Riak |
-| **AbixIO** | Rust | Active public repo. Very early stage. | S3-compatible erasure-coded object store |
+| **AbixIO** | Rust | Active public repo. Very early stage. | S3-compatible erasure-coded object store for single-node or clustered deployment |
 
 ## Overlap Map
 
@@ -66,7 +66,7 @@ important names are:
 |---|---|
 | **Garage** | Smaller-scale, geo-distributed, explicitly duplication-based Rust object store. |
 | **RustFS** | Much larger public footprint, aggressive performance positioning, and direct S3 object-store ambitions in Rust. |
-| **AbixIO** | Earlier and smaller, but differentiated by per-object EC and the planned backend model. |
+| **AbixIO** | Earlier and smaller, but differentiated by per-object EC, single-node friendliness, and the planned backend model. |
 
 ## Broader Ecosystem
 
@@ -84,37 +84,37 @@ closest architectural match.
 
 | Capability | MinIO | Garage | RustFS | SeaweedFS | Ceph RGW | Swift | OpenIO | Riak CS | AbixIO |
 |---|---|---|---|---|---|---|---|---|---|
-| Self-hosted multi-node storage | Strong | Strong | Strong | Strong | Strong | Strong | Strong | Strong | Strong |
-| S3-compatible API | Strong | Strong | Strong | Strong | Strong | Partial | Strong | Strong | Strong |
-| Object-store-first identity | Strong | Strong | Strong | Partial | Partial | Strong | Strong | Strong | Strong |
-| Rust implementation | No | Strong | Strong | No | No | No | No | No | Strong |
-| Operational maturity | Very high historically | High | Medium-high | High | High | High | Medium | Legacy | Very early |
+| Self-hosted multi-node storage | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes |
+| S3-compatible API | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes | ⚠️ Partial | ✅ Yes | ✅ Yes | ✅ Yes |
+| Object-store-first identity | ✅ Yes | ✅ Yes | ✅ Yes | ⚠️ Partial | ⚠️ Partial | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes |
+| Rust implementation | ❌ No | ✅ Yes | ✅ Yes | ❌ No | ❌ No | ❌ No | ❌ No | ❌ No | ✅ Yes |
+| Operational maturity | ✅ Yes: very high historically | ✅ Yes: high | ✅ Yes: medium-high | ✅ Yes: high | ✅ Yes: high | ✅ Yes: high | ⚠️ Partial: medium | ⚠️ Partial: legacy | ⚠️ Partial: very early |
 
 ## Storage Model Matrix
 
 | Capability | MinIO | Garage | RustFS | SeaweedFS | Ceph RGW | Swift | OpenIO | Riak CS | AbixIO |
 |---|---|---|---|---|---|---|---|---|---|
-| **Heterogeneous nodes / mixed disk layouts** | Partial: mixed hardware is feasible across server pools, but MinIO expects strong sameness within a pool/erasure-set layout | Strong: native multi-HDD support allows different per-drive capacities on a node and balances proportionally | Partial: RustFS scaling docs require identical disk type/capacity/quantity within a storage pool; heterogeneity is pool-to-pool, not node-to-node within a pool | Strong: SeaweedFS explicitly allows adding any server with disk space as more volume capacity | Strong: Ceph is built around weighted heterogeneous OSDs and CRUSH placement across mixed devices | Strong: Swift rings weight devices and support heterogeneous capacity layouts | Partial: OpenIO policy/placement model is flexible, but I did not verify a clean upstream statement specifically about mixed node disk layouts | Partial: Riak CS sits on Riak KV and does not present a first-class mixed-volume layout story in the checked docs | **Strong**: AbixIO's volume-pool design does not require identical node disk layouts, though live topology changes and rebalance are still future work |
-| Erasure coding | Strong: parity is described at the erasure-set / deployment level | No: Garage design docs explicitly reject erasure coding and limit Garage to duplication | Strong: source and docs show an erasure-coded storage engine, erasure-set healing, and EC planning guidance | Strong: documented around erasure-coded volumes and warm storage | Partial: comes from the underlying Ceph storage stack rather than RGW as its own storage model | Strong: Swift documents erasure coding as a storage policy | Strong: OpenIO documents erasure-coding storage policies with configurable `k` and `m` | Not central to checked docs used here; Riak CS docs emphasize chunking plus replication on Riak | Strong |
-| **Per-object EC / parity selection** | No: checked MinIO EC docs describe erasure-set parity, not object-level parity selection | No: Garage explicitly avoids erasure coding | No verified user-facing per-object EC selector; checked docs point to EC planning and storage-class style configuration | No: checked SeaweedFS docs describe EC at volume / warm-storage level | No verified RGW-level per-object EC selector; placement/storage classes are bucket-centric in checked docs | No: Swift EC is attached to a storage policy chosen when the container is created | Partial: OpenIO docs state storage policy can be chosen at object, container, or namespace level, and EC `k/m` live in the selected policy | No verified per-object EC selector in checked docs | **Strong** |
-| Self-describing volume identity on disk | No evidence in checked docs/source; MinIO docs focus on erasure sets and deployment topology | No evidence in checked docs/source; Garage public docs focus on cluster/distribution properties instead | No evidence in checked docs/source; checked docs emphasize JBOD disks and EC sets, not self-describing disk identity | No evidence in checked docs/source | No evidence in checked docs/source; RGW docs describe placement on Ceph, not self-describing gateway volumes | No: Swift uses externally managed rings to map data to devices | No evidence in checked docs/source | No evidence in checked docs/source; Riak CS docs focus on Riak backends beneath the API layer | Strong |
-| Arbitrary pluggable volume backends | Partial: official docs expose object tiering to remote MinIO, Azure, GCS, and S3, but not arbitrary interchangeable volume backends | No: checked Garage docs position it as duplicated storage nodes, not pluggable backend volumes | Partial: source includes warm-tier backends for S3, MinIO, Azure, GCS, R2, Aliyun, Tencent, and Huawei Cloud, but not as arbitrary interchangeable primary volume backends | Partial: Cloud Drive, remote object-store gateway, and cloud tiering are documented, but not as arbitrary interchangeable volume backends | No: gateway surface over Ceph, not arbitrary volume plugins | Partial: Swift has pluggable on-disk back-end APIs, but not a generic cloud-volume plugin model | No: checked docs describe storage/data-security policies and protocol connectors rather than arbitrary pluggable backend volumes | Partial: Riak KV beneath Riak CS supports multiple backends, but Riak CS itself is an S3 layer over that stack, not a generic volume-plugin model | Partial today through `Backend`; broader third-party backends are planned |
+| **Heterogeneous nodes / mixed disk layouts** | ⚠️ Partial: mixed hardware is feasible across server pools, but MinIO expects strong sameness within a pool/erasure-set layout | ✅ Yes: native multi-HDD support allows different per-drive capacities on a node and balances proportionally | ⚠️ Partial: RustFS scaling docs require identical disk type/capacity/quantity within a storage pool; heterogeneity is pool-to-pool, not node-to-node within a pool | ✅ Yes: SeaweedFS explicitly allows adding any server with disk space as more volume capacity | ✅ Yes: Ceph is built around weighted heterogeneous OSDs and CRUSH placement across mixed devices | ✅ Yes: Swift rings weight devices and support heterogeneous capacity layouts | ⚠️ Partial: OpenIO policy/placement model is flexible, but I did not verify a clean upstream statement specifically about mixed node disk layouts | ⚠️ Partial: Riak CS sits on Riak KV and does not present a first-class mixed-volume layout story in the checked docs | ✅ Yes: AbixIO's volume-pool design does not require identical node disk layouts, though live topology changes and rebalance are still future work |
+| Erasure coding | ✅ Yes: parity is described at the erasure-set / deployment level | ❌ No: Garage design docs explicitly reject erasure coding and limit Garage to duplication | ✅ Yes: source and docs show an erasure-coded storage engine, erasure-set healing, and EC planning guidance | ✅ Yes: documented around erasure-coded volumes and warm storage | ⚠️ Partial: comes from the underlying Ceph storage stack rather than RGW as its own storage model | ✅ Yes: Swift documents erasure coding as a storage policy | ✅ Yes: OpenIO documents erasure-coding storage policies with configurable `k` and `m` | ⚠️ Partial: not central to checked docs used here; Riak CS docs emphasize chunking plus replication on Riak | ✅ Yes |
+| **Per-object EC / parity selection** | ❌ No: checked MinIO EC docs describe erasure-set parity, not object-level parity selection | ❌ No: Garage explicitly avoids erasure coding | ❌ No verified user-facing per-object EC selector; checked docs point to EC planning and storage-class style configuration | ❌ No: checked SeaweedFS docs describe EC at volume / warm-storage level | ❌ No verified RGW-level per-object EC selector; placement/storage classes are bucket-centric in checked docs | ❌ No: Swift EC is attached to a storage policy chosen when the container is created | ⚠️ Partial: OpenIO docs state storage policy can be chosen at object, container, or namespace level, and EC `k/m` live in the selected policy | ❌ No verified per-object EC selector in checked docs | ✅ Yes |
+| Self-describing volume identity on disk | ❌ No evidence in checked docs/source; MinIO docs focus on erasure sets and deployment topology | ❌ No evidence in checked docs/source; Garage public docs focus on cluster/distribution properties instead | ❌ No evidence in checked docs/source; checked docs emphasize JBOD disks and EC sets, not self-describing disk identity | ❌ No evidence in checked docs/source | ❌ No evidence in checked docs/source; RGW docs describe placement on Ceph, not self-describing gateway volumes | ❌ No: Swift uses externally managed rings to map data to devices | ❌ No evidence in checked docs/source | ❌ No evidence in checked docs/source; Riak CS docs focus on Riak backends beneath the API layer | ✅ Yes |
+| Arbitrary pluggable volume backends | ⚠️ Partial: official docs expose object tiering to remote MinIO, Azure, GCS, and S3, but not arbitrary interchangeable volume backends | ❌ No: checked Garage docs position it as duplicated storage nodes, not pluggable backend volumes | ⚠️ Partial: source includes warm-tier backends for S3, MinIO, Azure, GCS, R2, Aliyun, Tencent, and Huawei Cloud, but not as arbitrary interchangeable primary volume backends | ⚠️ Partial: Cloud Drive, remote object-store gateway, and cloud tiering are documented, but not as arbitrary interchangeable volume backends | ❌ No: gateway surface over Ceph, not arbitrary volume plugins | ⚠️ Partial: Swift has pluggable on-disk back-end APIs, but not a generic cloud-volume plugin model | ❌ No: checked docs describe storage/data-security policies and protocol connectors rather than arbitrary pluggable backend volumes | ⚠️ Partial: Riak KV beneath Riak CS supports multiple backends, but Riak CS itself is an S3 layer over that stack, not a generic volume-plugin model | ⚠️ Partial: today through `Backend`; broader third-party backends are planned |
 
 ## Admin And Operations Matrix
 
 | Capability | MinIO | Garage | RustFS | SeaweedFS | Ceph RGW | Swift | OpenIO | Riak CS | AbixIO |
 |---|---|---|---|---|---|---|---|---|---|
-| Admin tooling | Strong | Strong | Strong: README, console routes, admin handlers, Helm, and deployment assets all point to a substantial admin surface | Strong | Strong | Strong | Strong: OpenIO docs describe REST-accessible admin and maintenance actions | Partial | Partial |
-| Shard-level inspection | Partial: official docs expose `mc admin object info` for object shard summaries on disk | No specific shard-inspection workflow confirmed from checked docs/source | Partial: docs and source expose erasure-set/object inspection and healing information, but not the same shard-inspection workflow AbixIO exposes | Partial: maintenance and EC tooling exist, but not as the same shard-inspection model | Partial: admin APIs and tooling expose object/bucket state, but I did not verify an AbixIO-style shard inspection surface | No AbixIO-style shard inspection; Swift admin model is ring/object replication oriented | Partial: docs describe integrity loops, crawls, and REST maintenance actions over chunks/objects | No AbixIO-style shard inspection confirmed from checked docs | Strong |
-| Healing / repair workflows | Strong | Strong | Strong: docs and source include heal manager, erasure-set healer, scanner, resume logic, and bitrot handling | Strong | Strong | Strong: Swift documents replication, auditors, and EC repair flows | Strong: OpenIO docs explicitly describe self-healing / integrity loops and on-demand maintenance actions | Partial | Strong |
+| Admin tooling | ✅ Yes | ✅ Yes | ✅ Yes: README, console routes, admin handlers, Helm, and deployment assets all point to a substantial admin surface | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes: OpenIO docs describe REST-accessible admin and maintenance actions | ⚠️ Partial | ⚠️ Partial |
+| Shard-level inspection | ⚠️ Partial: official docs expose `mc admin object info` for object shard summaries on disk | ❌ No specific shard-inspection workflow confirmed from checked docs/source | ⚠️ Partial: docs and source expose erasure-set/object inspection and healing information, but not the same shard-inspection workflow AbixIO exposes | ⚠️ Partial: maintenance and EC tooling exist, but not as the same shard-inspection model | ⚠️ Partial: admin APIs and tooling expose object/bucket state, but I did not verify an AbixIO-style shard inspection surface | ❌ No AbixIO-style shard inspection; Swift admin model is ring/object replication oriented | ⚠️ Partial: docs describe integrity loops, crawls, and REST maintenance actions over chunks/objects | ❌ No AbixIO-style shard inspection confirmed from checked docs | ✅ Yes |
+| Healing / repair workflows | ✅ Yes | ✅ Yes | ✅ Yes: docs and source include heal manager, erasure-set healer, scanner, resume logic, and bitrot handling | ✅ Yes | ✅ Yes | ✅ Yes: Swift documents replication, auditors, and EC repair flows | ✅ Yes: OpenIO docs explicitly describe self-healing / integrity loops and on-demand maintenance actions | ⚠️ Partial | ✅ Yes |
 
 ## Scope Matrix
 
 | Capability | MinIO | Garage | RustFS | SeaweedFS | Ceph RGW | Swift | OpenIO | Riak CS | AbixIO |
 |---|---|---|---|---|---|---|---|---|---|
-| Narrow S3 server focus | Strong | Strong | Strong | No | Partial | No | Partial | Strong | Strong |
-| Broader storage platform beyond S3 | Partial | Partial | Partial | **Strong** | **Strong** via the wider Ceph platform | Partial: broader OpenStack object-storage ecosystem, but not an S3-first product | Partial | Partial | No |
-| Cloud tiering / cloud-integrated storage story | Strong: object tiering is documented | No cloud tiering story confirmed from checked docs/source | Partial: source includes warm-tier backends for multiple cloud/object targets, and docs position RustFS for multi-cloud use, but the tiering story is less explicit than MinIO/SeaweedFS | Strong: cloud tiering, Cloud Drive, and remote object-store gateway are documented | Partial: replication / multisite / wider Ceph ecosystem, but not the same tiering story | Not central to checked docs used here | Partial: OpenIO docs describe protocol connectors and policy-driven architecture, but not the same tiering story | Not found in checked docs/source | Planned direction only |
+| Narrow S3 server focus | ✅ Yes | ✅ Yes | ✅ Yes | ❌ No | ⚠️ Partial | ❌ No | ⚠️ Partial | ✅ Yes | ✅ Yes |
+| Broader storage platform beyond S3 | ⚠️ Partial | ⚠️ Partial | ⚠️ Partial | ✅ Yes | ✅ Yes: via the wider Ceph platform | ⚠️ Partial: broader OpenStack object-storage ecosystem, but not an S3-first product | ⚠️ Partial | ⚠️ Partial | ❌ No |
+| Cloud tiering / cloud-integrated storage story | ✅ Yes: object tiering is documented | ❌ No cloud tiering story confirmed from checked docs/source | ⚠️ Partial: source includes warm-tier backends for multiple cloud/object targets, and docs position RustFS for multi-cloud use, but the tiering story is less explicit than MinIO/SeaweedFS | ✅ Yes: cloud tiering, Cloud Drive, and remote object-store gateway are documented | ⚠️ Partial: replication / multisite / wider Ceph ecosystem, but not the same tiering story | ❌ No: not central to checked docs used here | ⚠️ Partial: OpenIO docs describe protocol connectors and policy-driven architecture, but not the same tiering story | ? Unclear | ⚠️ Partial: planned direction only |
 
 ## Where AbixIO Is Different
 
@@ -147,6 +147,22 @@ Current state:
 
 - local directory volumes exist
 - remote AbixIO node volumes exist over internode RPC
+
+### Single-node is a first-class deployment mode
+
+AbixIO is not only for clustered deployments.
+
+It is intended to run as:
+
+- a single-node server on Windows, Linux, or macOS
+- a multi-volume local server on one machine
+- a multi-node clustered deployment
+
+The tradeoff is simple:
+
+- single-node mode is fully valid
+- what you lose is node-level resilience, not product support
+- local disk redundancy still depends on the erasure-coding layout you choose
 
 Planned direction:
 
@@ -228,6 +244,8 @@ Specific upstream claims this page is anchored to:
     `x-amz-meta-ec-data` and `x-amz-meta-ec-parity`
   - the repo uses a `Backend` trait with local and `RemoteVolume` backends
   - volumes carry `.abixio.sys/volume.json`
+  - the repo and README support standalone single-node operation as well as
+    clustered deployment; the difference is node resilience, not support status
 
 ## Where AbixIO Is Weak
 
@@ -244,9 +262,9 @@ Specific upstream claims this page is anchored to:
 
 > AbixIO is an early Rust S3-compatible object storage server that overlaps most
 > with MinIO, Garage, and RustFS, but currently differentiates with per-object
-> erasure coding, self-describing clustered volumes, shard-level admin
-> workflows, and a planned backend model that could treat arbitrary storage
-> providers as volume backends.
+> erasure coding, support for both single-node and clustered deployment,
+> self-describing clustered volumes, shard-level admin workflows, and a planned
+> backend model that could treat arbitrary storage providers as volume backends.
 
 ## Sources
 
