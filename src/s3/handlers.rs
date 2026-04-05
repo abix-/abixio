@@ -15,7 +15,7 @@ use super::errors::{
 };
 use super::response::*;
 use crate::admin::handlers::AdminHandler;
-use crate::cluster::{ClusterManager, cluster_probe_header};
+use crate::cluster::ClusterManager;
 use crate::storage::storage_server::StorageServer;
 use crate::query::parse_query;
 use crate::storage::Store;
@@ -99,7 +99,7 @@ impl S3Handler {
             return error_response(&ERR_METHOD_NOT_ALLOWED);
         }
 
-        if path == "_admin/cluster/status" && self.cluster_probe_authorized(&req) {
+        if path == "_admin/cluster/status" && self.internode_authorized(&req) {
             if let Some(admin) = &self.admin {
                 return admin.dispatch(
                     "cluster/status",
@@ -316,15 +316,19 @@ impl S3Handler {
         }
     }
 
-    fn cluster_probe_authorized(&self, req: &Request<Incoming>) -> bool {
-        let secret = self.cluster.cluster_secret();
-        if secret.is_empty() {
-            return false;
-        }
+    fn internode_authorized(&self, req: &Request<Incoming>) -> bool {
+        // check for JWT Bearer token from another node
         req.headers()
-            .get(cluster_probe_header())
-            .and_then(|value| value.to_str().ok())
-            .map(|value| value == secret)
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "))
+            .map(|token| {
+                crate::storage::internode_auth::validate_token(
+                    token,
+                    &self.auth.access_key,
+                    &self.auth.secret_key,
+                ).is_ok()
+            })
             .unwrap_or(false)
     }
 

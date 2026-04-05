@@ -385,8 +385,7 @@ and externally inspectable across nodes.
 | `--volumes` | yes | -- | Volume paths (comma-separated, supports `{N...M}`) |
 | `--listen` | no | `:10000` | Bind address |
 | `--nodes` | no | empty | All node endpoints (supports `{N...M}`) |
-| `--cluster-secret` | no | empty | Shared secret for peer probes |
-| `--no-auth` | no | false | Disable S3 authentication |
+| `--no-auth` | no | false | Disable all authentication |
 
 EC defaults are auto-computed from the volume count: 1 volume = `1+0`,
 2+ volumes = `(N-1)+1` for 1-failure tolerance. Override per bucket or

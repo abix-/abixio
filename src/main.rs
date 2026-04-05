@@ -37,7 +37,6 @@ async fn main() {
         &volume_paths,
         &cfg.listen,
         &cfg.nodes,
-        &cfg.cluster_secret,
     )
     .await
     .unwrap_or_else(|err| {
@@ -161,7 +160,9 @@ async fn main() {
             advertise_s3: identity.advertise.clone(),
             advertise_cluster: identity.advertise.clone(),
             nodes: identity.nodes.clone(),
-            cluster_secret: cfg.cluster_secret.clone(),
+            access_key: access_key.clone(),
+            secret_key: secret_key.clone(),
+            no_auth: cfg.no_auth,
             disk_paths: volume_paths.clone(),
         })
         .unwrap_or_else(|err| {

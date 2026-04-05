@@ -49,7 +49,6 @@ pub async fn resolve_identity(
     disk_paths: &[PathBuf],
     listen: &str,
     nodes: &[String],
-    cluster_secret: &str,
 ) -> Result<ResolvedIdentity, String> {
     // step 1: load or format volumes
     let mut formats = match load_volumes(disk_paths)? {
@@ -157,10 +156,7 @@ pub async fn resolve_identity(
             }
 
             let url = format!("{}/_admin/cluster/join", node.trim_end_matches('/'));
-            let mut req = client.post(&url).json(&local_identity);
-            if !cluster_secret.is_empty() {
-                req = req.header("x-abixio-cluster-secret", cluster_secret);
-            }
+            let req = client.post(&url).json(&local_identity);
             match req.send().await {
                 Ok(resp) if resp.status().is_success() => {
                     if let Ok(peer_identity) = resp.json::<NodeIdentity>().await {

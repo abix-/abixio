@@ -303,7 +303,9 @@ impl ClusterHarness {
                     advertise_s3: "http://127.0.0.1:0".to_string(),
                     advertise_cluster: "http://127.0.0.1:0".to_string(),
                     nodes: Vec::new(),
-                    cluster_secret: String::new(),
+                    access_key: String::new(),
+                    secret_key: String::new(),
+                    no_auth: true,
                     disk_paths: vec![
                         disk_paths[node_index * 2].clone(),
                         disk_paths[node_index * 2 + 1].clone(),

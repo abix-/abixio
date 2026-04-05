@@ -16,7 +16,6 @@ pub mod topology;
 
 
 const CLUSTER_STATE_FILE: &str = ".abixio.sys/cluster.json";
-const CLUSTER_PROBE_HEADER: &str = "x-abixio-cluster-secret";
 
 #[derive(Debug, Clone)]
 pub struct ClusterConfig {
@@ -24,7 +23,9 @@ pub struct ClusterConfig {
     pub advertise_s3: String,
     pub advertise_cluster: String,
     pub nodes: Vec<String>,
-    pub cluster_secret: String,
+    pub access_key: String,
+    pub secret_key: String,
+    pub no_auth: bool,
     pub disk_paths: Vec<PathBuf>,
 }
 
@@ -123,7 +124,9 @@ impl ClusterManager {
             advertise_s3: normalize_endpoint(&config.advertise_s3),
             advertise_cluster: normalize_endpoint(&config.advertise_cluster),
             nodes: normalize_nodes(&config.nodes),
-            cluster_secret: config.cluster_secret,
+            access_key: config.access_key,
+            secret_key: config.secret_key,
+            no_auth: config.no_auth,
             disk_paths: config.disk_paths,
         };
         let cluster_id = cluster_id_for(&config.node_id, &config.nodes);
@@ -154,10 +157,6 @@ impl ClusterManager {
 
     pub fn cluster_enabled(&self) -> bool {
         !self.config.nodes.is_empty()
-    }
-
-    pub fn cluster_secret(&self) -> &str {
-        &self.config.cluster_secret
     }
 
     pub fn local_node_id(&self) -> &str {
@@ -333,8 +332,14 @@ impl ClusterManager {
         for peer in &self.config.nodes {
             let url = format!("{}/_admin/cluster/status", peer.trim_end_matches('/'));
             let mut req = self.http.get(&url);
-            if !self.config.cluster_secret.is_empty() {
-                req = req.header(CLUSTER_PROBE_HEADER, &self.config.cluster_secret);
+            if !self.config.no_auth {
+                if let Ok(token) = crate::storage::internode_auth::sign_token(
+                    &self.config.access_key,
+                    &self.config.secret_key,
+                ) {
+                    req = req.header("authorization", format!("Bearer {}", token));
+                    req = req.header("x-abixio-time", crate::storage::internode_auth::current_time_nanos());
+                }
             }
             match req.send().await {
                 Ok(resp) if resp.status().is_success() => {
@@ -653,10 +658,6 @@ fn unix_secs() -> u64 {
         .as_secs()
 }
 
-pub fn cluster_probe_header() -> &'static str {
-    CLUSTER_PROBE_HEADER
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,14 +683,16 @@ mod tests {
             advertise_s3: "http://127.0.0.1:10000".to_string(),
             advertise_cluster: "http://127.0.0.1:10000".to_string(),
             nodes: Vec::new(),
-            cluster_secret: String::new(),
+            access_key: String::new(),
+            secret_key: String::new(),
+            no_auth: true,
             disk_paths: vec![disk],
         }
     }
 
     async fn start_mock_peer(
         summary: Arc<RwLock<ClusterSummary>>,
-        expected_secret: Option<String>,
+        expected_credentials: Option<(String, String)>,
     ) -> (String, tokio::task::JoinHandle<()>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -698,11 +701,11 @@ mod tests {
                 let (stream, _) = listener.accept().await.unwrap();
                 let io = TokioIo::new(stream);
                 let summary = Arc::clone(&summary);
-                let expected_secret = expected_secret.clone();
+                let expected_credentials = expected_credentials.clone();
                 tokio::spawn(async move {
                     let service = service_fn(move |req: Request<Incoming>| {
                         let summary = Arc::clone(&summary);
-                        let expected_secret = expected_secret.clone();
+                        let expected_credentials = expected_credentials.clone();
                         async move {
                             if req.uri().path() != "/_admin/cluster/status" {
                                 return Ok::<_, hyper::Error>(
@@ -712,12 +715,19 @@ mod tests {
                                         .unwrap(),
                                 );
                             }
-                            if let Some(secret) = expected_secret.as_ref() {
-                                let got = req
+                            if let Some((access_key, secret_key)) = expected_credentials.as_ref() {
+                                let auth_ok = req
                                     .headers()
-                                    .get(cluster_probe_header())
-                                    .and_then(|value| value.to_str().ok());
-                                if got != Some(secret.as_str()) {
+                                    .get("authorization")
+                                    .and_then(|v| v.to_str().ok())
+                                    .and_then(|v| v.strip_prefix("Bearer "))
+                                    .map(|token| {
+                                        crate::storage::internode_auth::validate_token(
+                                            token, access_key, secret_key,
+                                        ).is_ok()
+                                    })
+                                    .unwrap_or(false);
+                                if !auth_ok {
                                     return Ok::<_, hyper::Error>(
                                         Response::builder()
                                             .status(StatusCode::FORBIDDEN)
@@ -879,7 +889,7 @@ mod tests {
         }));
         let (peer, handle) = start_mock_peer(
             Arc::clone(&peer_summary),
-            Some("expected-secret".to_string()),
+            Some(("test-key".to_string(), "test-secret".to_string())),
         )
         .await;
         let all_nodes = vec!["http://127.0.0.1:10000".to_string(), peer];
@@ -888,7 +898,9 @@ mod tests {
 
         let mut cfg = test_config(disk);
         cfg.nodes = all_nodes;
-        cfg.cluster_secret = "wrong-secret".to_string();
+        cfg.access_key = "wrong-key".to_string();
+        cfg.secret_key = "wrong-secret".to_string();
+        cfg.no_auth = false;
         let manager = ClusterManager::new(cfg).unwrap();
         manager.refresh_from_nodes().await.unwrap();
 

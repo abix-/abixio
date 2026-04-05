@@ -95,8 +95,7 @@ quorum confirmation. If quorum is lost, the node fences itself.
 | `--volumes` | yes | -- | Volume paths (comma-separated, supports `{N...M}`) |
 | `--listen` | no | `:10000` | Bind address |
 | `--nodes` | no | empty | All node endpoints (comma-separated, supports `{N...M}`) |
-| `--cluster-secret` | no | empty | Shared secret for node probes |
-| `--no-auth` | no | false | Disable S3 authentication |
+| `--no-auth` | no | false | Disable all authentication |
 
 EC defaults are auto-computed from volume count: 1 volume = `1+0` (no
 redundancy), 2+ volumes = `(N-1)+1` (1-failure tolerance). Override per

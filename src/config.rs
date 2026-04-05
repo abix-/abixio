@@ -18,10 +18,6 @@ pub struct Config {
     #[arg(long, value_delimiter = ',', default_value = "")]
     pub nodes: Vec<String>,
 
-    /// Shared secret for cluster node probes
-    #[arg(long, default_value = "")]
-    pub cluster_secret: String,
-
     /// Disable authentication
     #[arg(long)]
     pub no_auth: bool,
@@ -193,7 +189,6 @@ mod tests {
         Config {
             listen: ":10000".to_string(),
             nodes: Vec::new(),
-            cluster_secret: String::new(),
             volumes,
             no_auth: false,
             scan_interval: "10m".to_string(),

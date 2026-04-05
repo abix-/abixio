@@ -69,8 +69,7 @@ The current implementation does **not** provide:
 | `--volumes` | yes | -- | Volume paths (comma-separated, supports `{N...M}`) |
 | `--listen` | no | `:10000` | Bind address |
 | `--nodes` | no | empty | All node endpoints (supports `{N...M}`) |
-| `--cluster-secret` | no | empty | Shared secret for node probes |
-| `--no-auth` | no | false | Disable S3 authentication |
+| `--no-auth` | no | false | Disable all authentication |
 
 Example:
 
@@ -194,16 +193,15 @@ see whether the node is `ready` or `fenced`.
 
 ### Internode Authentication
 
-Two layers of internode auth:
+All internode communication uses JWT signed with the S3 credentials
+(`ABIXIO_ACCESS_KEY` / `ABIXIO_SECRET_KEY`). This covers both cluster
+probes and storage RPC.
 
-1. **Control plane probes** use the `x-abixio-cluster-secret` header when
-   `--cluster-secret` is configured. Lightweight gate for cluster status checks.
+Each request carries:
+- `Authorization: Bearer <jwt>` -- signed with `ABIXIO_SECRET_KEY`, 15min expiry
+- `x-abixio-time: <unix_nanos>` -- clock skew detection (rejects >15min drift)
 
-2. **Storage RPC** (`/_storage/v1/*`) uses JWT signed with the S3 credentials
-   (`ABIXIO_ACCESS_KEY` / `ABIXIO_SECRET_KEY`). Each request carries a
-   `Bearer` token with 15-minute expiry and an `x-abixio-time` header for
-   clock skew detection (rejects >15min drift). When `--no-auth` is set,
-   JWT validation is skipped.
+When `--no-auth` is set, JWT validation is skipped (development/trusted network).
 
 ## Placement Model
 
