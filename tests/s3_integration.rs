@@ -1371,6 +1371,47 @@ async fn multipart_rejects_invalid_upload_id() {
     assert!(body.contains("InvalidArgument"), "body: {}", body);
 }
 
+#[tokio::test]
+async fn multipart_rejects_percent_encoded_traversal_upload_id() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    // raw URL so %2e%2e in uploadId is not double-encoded
+    let raw = format!("http://{}/tb/key?uploadId=%2e%2e%2fescape&partNumber=1", addr);
+    let resp = client
+        .put(&raw)
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("InvalidArgument"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn list_objects_rejects_percent_encoded_traversal_prefix() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    // raw URL so %2e%2e is not double-encoded
+    let raw = format!("http://{}/tb?list-type=2&prefix=%2e%2e%2fescape", addr);
+    let resp = client
+        .get(&raw)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("InvalidArgument"), "body: {}", body);
+}
+
 // --- CopyObject ---
 
 #[tokio::test]

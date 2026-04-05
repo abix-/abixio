@@ -732,6 +732,26 @@ async fn admin_endpoints_reject_hostile_encoded_key() {
     assert_eq!(resp.status(), 400);
 }
 
+#[tokio::test]
+async fn admin_rejects_percent_encoded_traversal() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    // build raw URL so %2e%2e is not double-encoded -- the server's query
+    // parser decodes this to ".." which the validator must reject
+    let raw = format!(
+        "http://{}/_admin/object?bucket=testbucket&key=%2e%2e%2fescape.txt",
+        addr
+    );
+    let resp = client
+        .get(&raw)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
 // -- unknown admin endpoint --
 
 #[tokio::test]

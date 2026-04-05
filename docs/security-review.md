@@ -56,8 +56,8 @@ What changed:
 
 Regression tests now cover hostile:
 
-- `../`
-- `%2e%2e`
+- `../` (direct traversal in keys and prefixes)
+- `%2e%2e` (percent-encoded traversal via query parameters -- list prefix, multipart uploadId, admin key)
 - invalid bucket names
 - invalid `versionId`
 - invalid `uploadId`
@@ -196,12 +196,16 @@ AbixIO has now copied the important parts of that model.
 
 ## What AbixIO Still Needs To Review
 
-The traversal fix closed the most urgent gap, but this review still leaves active follow-up work:
+Most follow-up items from the initial review are now closed:
 
-1. Review auth bootstrap and reject unsafe default or empty credentials at startup.
-2. Audit all future backend implementations against the same validation/pathing rules.
-3. Keep coverage for Windows path forms, percent-decoded traversal, and internode query handling.
-4. Re-run this review whenever new volume backends or admin inspection features land.
+- Auth bootstrap: startup now rejects empty or missing credentials unless `--no-auth` is passed.
+- Internode query handling: `StorageServer` now validates all bucket, key, prefix, and version_id inputs at the API boundary before dispatching to volumes (defense-in-depth).
+- Percent-decoded traversal: explicit integration tests now cover `%2e%2e`-encoded traversal via query parameters (S3 list prefix, multipart uploadId, and admin key). URL path segments are not percent-decoded by the HTTP framework, so `%2e%2e` in paths is stored as a literal key name (harmless). The attack surface is query parameters where `form_urlencoded::parse` decodes `%2e%2e` to `..`, and those paths are now tested.
+
+Remaining active follow-up work:
+
+1. Audit all future backend implementations against the same validation/pathing rules.
+2. Re-run this review whenever new volume backends or admin inspection features land.
 
 ## What AbixIO Is Still Doing Better Conceptually
 

@@ -7,6 +7,7 @@ use hyper::{Request, Response, StatusCode};
 use super::local_volume::LocalVolume;
 use super::metadata::{BucketSettings, ObjectMeta};
 use super::{Backend, StorageError};
+use super::pathing;
 use crate::query::parse_query;
 
 use super::internode_auth;
@@ -90,6 +91,21 @@ impl StorageServer {
         parse_query(query).get(key).cloned()
     }
 
+    fn validate_bucket(bucket: &str) -> Result<(), Response<BoxBody>> {
+        pathing::validate_bucket_name(bucket).map_err(|e| storage_error_response(e))
+    }
+
+    fn validate_bucket_key(bucket: &str, key: &str) -> Result<(), Response<BoxBody>> {
+        pathing::validate_bucket_name(bucket).map_err(|e| storage_error_response(e))?;
+        pathing::validate_object_key(key).map_err(|e| storage_error_response(e))
+    }
+
+    fn validate_bucket_key_version(bucket: &str, key: &str, version_id: &str) -> Result<(), Response<BoxBody>> {
+        pathing::validate_bucket_name(bucket).map_err(|e| storage_error_response(e))?;
+        pathing::validate_object_key(key).map_err(|e| storage_error_response(e))?;
+        pathing::validate_version_id(version_id).map_err(|e| storage_error_response(e))
+    }
+
     fn handle_info(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
@@ -106,6 +122,7 @@ impl StorageServer {
         };
         let bucket = Self::query_param(&req, "bucket").unwrap_or_default();
         let key = Self::query_param(&req, "key").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
         let meta_json = Self::query_param(&req, "meta").unwrap_or_default();
         let meta: ObjectMeta = match serde_json::from_str(&meta_json) {
             Ok(m) => m,
@@ -128,6 +145,7 @@ impl StorageServer {
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         let key = Self::query_param(req, "key").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
         match vol.read_shard(&bucket, &key) {
             Ok((data, meta)) => {
                 let meta_json = serde_json::to_string(&meta).unwrap_or_default();
@@ -148,6 +166,7 @@ impl StorageServer {
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         let key = Self::query_param(req, "key").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
         match vol.delete_object(&bucket, &key) {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
@@ -161,6 +180,7 @@ impl StorageServer {
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         let key = Self::query_param(req, "key").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
         match vol.stat_object(&bucket, &key) {
             Ok(meta) => json_response(&meta),
             Err(e) => storage_error_response(e),
@@ -174,6 +194,8 @@ impl StorageServer {
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         let prefix = Self::query_param(req, "prefix").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
+        if let Err(e) = pathing::validate_object_prefix(&prefix) { return storage_error_response(e); }
         match vol.list_objects(&bucket, &prefix) {
             Ok(keys) => json_response(&keys),
             Err(e) => storage_error_response(e),
@@ -197,6 +219,7 @@ impl StorageServer {
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
         match vol.make_bucket(&bucket) {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
@@ -209,6 +232,7 @@ impl StorageServer {
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
         match vol.delete_bucket(&bucket) {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
@@ -221,6 +245,7 @@ impl StorageServer {
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
         json_response(&vol.bucket_exists(&bucket))
     }
 
@@ -230,6 +255,7 @@ impl StorageServer {
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
         json_response(&vol.bucket_created_at(&bucket))
     }
 
@@ -240,6 +266,7 @@ impl StorageServer {
         };
         let bucket = Self::query_param(&req, "bucket").unwrap_or_default();
         let key = Self::query_param(&req, "key").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
         let body = match read_body(req).await {
             Ok(b) => b,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -261,6 +288,7 @@ impl StorageServer {
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         let key = Self::query_param(req, "key").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
         match vol.read_meta_versions(&bucket, &key) {
             Ok(versions) => json_response(&versions),
             Err(e) => storage_error_response(e),
@@ -274,6 +302,7 @@ impl StorageServer {
         };
         let bucket = Self::query_param(&req, "bucket").unwrap_or_default();
         let key = Self::query_param(&req, "key").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
         let body = match read_body(req).await {
             Ok(b) => b,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -296,6 +325,7 @@ impl StorageServer {
         let bucket = Self::query_param(&req, "bucket").unwrap_or_default();
         let key = Self::query_param(&req, "key").unwrap_or_default();
         let version_id = Self::query_param(&req, "version_id").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket_key_version(&bucket, &key, &version_id) { return resp; }
         let meta_json = Self::query_param(&req, "meta").unwrap_or_default();
         let meta: ObjectMeta = match serde_json::from_str(&meta_json) {
             Ok(m) => m,
@@ -319,6 +349,7 @@ impl StorageServer {
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         let key = Self::query_param(req, "key").unwrap_or_default();
         let version_id = Self::query_param(req, "version_id").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket_key_version(&bucket, &key, &version_id) { return resp; }
         match vol.read_versioned_shard(&bucket, &key, &version_id) {
             Ok((data, meta)) => {
                 let meta_json = serde_json::to_string(&meta).unwrap_or_default();
@@ -340,6 +371,7 @@ impl StorageServer {
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         let key = Self::query_param(req, "key").unwrap_or_default();
         let version_id = Self::query_param(req, "version_id").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket_key_version(&bucket, &key, &version_id) { return resp; }
         match vol.delete_version_data(&bucket, &key, &version_id) {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
@@ -352,6 +384,7 @@ impl StorageServer {
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
         json_response(&vol.read_bucket_settings(&bucket))
     }
 
@@ -361,6 +394,7 @@ impl StorageServer {
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
         let bucket = Self::query_param(&req, "bucket").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
         let body = match read_body(req).await {
             Ok(b) => b,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),

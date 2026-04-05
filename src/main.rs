@@ -55,6 +55,11 @@ async fn main() {
     let access_key = std::env::var("ABIXIO_ACCESS_KEY").unwrap_or_default();
     let secret_key = std::env::var("ABIXIO_SECRET_KEY").unwrap_or_default();
 
+    if !cfg.no_auth && (access_key.is_empty() || secret_key.is_empty()) {
+        eprintln!("error: ABIXIO_ACCESS_KEY and ABIXIO_SECRET_KEY must be set (or use --no-auth)");
+        std::process::exit(1);
+    }
+
     let mut backends: Vec<Box<dyn Backend>> = Vec::new();
     for nv in &identity.node_volumes {
         if nv.node_id == identity.node_id {
