@@ -67,6 +67,39 @@ pub fn encode_and_write_with_mrf(
     opts: PutOptions,
     mrf: Option<&Arc<MrfQueue>>,
 ) -> Result<ObjectInfo, StorageError> {
+    encode_and_write_impl(disks, data_n, parity_n, bucket, key, data, opts, mrf, None)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn encode_and_write_versioned(
+    disks: &[Box<dyn Backend>],
+    data_n: usize,
+    parity_n: usize,
+    bucket: &str,
+    key: &str,
+    data: &[u8],
+    opts: PutOptions,
+    mrf: Option<&Arc<MrfQueue>>,
+    version_id: &str,
+) -> Result<ObjectInfo, StorageError> {
+    encode_and_write_impl(
+        disks, data_n, parity_n, bucket, key, data, opts, mrf,
+        Some(version_id),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn encode_and_write_impl(
+    disks: &[Box<dyn Backend>],
+    data_n: usize,
+    parity_n: usize,
+    bucket: &str,
+    key: &str,
+    data: &[u8],
+    opts: PutOptions,
+    mrf: Option<&Arc<MrfQueue>>,
+    version_id: Option<&str>,
+) -> Result<ObjectInfo, StorageError> {
     let total = data_n + parity_n;
     let etag = md5_hex(data);
     let created_at = unix_timestamp_secs();
@@ -115,9 +148,14 @@ pub fn encode_and_write_with_mrf(
             checksum,
             user_metadata: opts.user_metadata.clone(),
             tags: opts.tags.clone(),
-            version_id: String::new(),
+            version_id: version_id.unwrap_or("").to_string(),
         };
-        if let Err(e) = disks[disk_idx].write_shard(bucket, key, shard_data, &meta) {
+        let write_result = if let Some(vid) = version_id {
+            disks[disk_idx].write_versioned_shard(bucket, key, vid, shard_data, &meta)
+        } else {
+            disks[disk_idx].write_shard(bucket, key, shard_data, &meta)
+        };
+        if let Err(e) = write_result {
             errs[shard_idx] = Some(e);
         }
     }
@@ -156,7 +194,7 @@ pub fn encode_and_write_with_mrf(
         created_at,
         user_metadata: opts.user_metadata,
         tags: opts.tags,
-        version_id: String::new(),
+        version_id: version_id.unwrap_or("").to_string(),
         is_delete_marker: false,
     })
 }

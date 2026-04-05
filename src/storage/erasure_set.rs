@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use super::Backend;
-use super::erasure_decode::read_and_decode;
-use super::erasure_encode::encode_and_write_with_mrf;
+use super::erasure_decode::{read_and_decode, read_and_decode_versioned};
+use super::erasure_encode::{encode_and_write_versioned, encode_and_write_with_mrf};
 use super::metadata::{
     BucketInfo, ListOptions, ListResult, ObjectInfo, PutOptions, VersionEntry, VersioningConfig,
 };
@@ -344,6 +344,30 @@ impl Store for ErasureSet {
 
     // -- versioning --
 
+    fn put_object_versioned(
+        &self,
+        bucket: &str,
+        key: &str,
+        data: &[u8],
+        opts: PutOptions,
+        version_id: &str,
+    ) -> Result<ObjectInfo, StorageError> {
+        if !self.head_bucket(bucket)? {
+            return Err(StorageError::BucketNotFound);
+        }
+        encode_and_write_versioned(
+            &self.disks,
+            self.data_n,
+            self.parity_n,
+            bucket,
+            key,
+            data,
+            opts,
+            self.mrf.as_ref(),
+            version_id,
+        )
+    }
+
     fn get_versioning_config(
         &self,
         bucket: &str,
@@ -388,31 +412,29 @@ impl Store for ErasureSet {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
-        // read versioned shard from first responsive disk
-        // TODO: proper erasure decode for versioned shards
-        for disk in &self.disks {
-            match disk.read_versioned_shard(bucket, key, version_id) {
-                Ok((data, meta)) => {
-                    return Ok((
-                        data,
-                        ObjectInfo {
-                            bucket: bucket.to_string(),
-                            key: key.to_string(),
-                            size: meta.size,
-                            etag: meta.etag,
-                            content_type: meta.content_type,
-                            created_at: meta.created_at,
-                            user_metadata: meta.user_metadata,
-                            tags: meta.tags,
-                            version_id: meta.version_id,
-                            is_delete_marker: false,
-                        },
-                    ));
-                }
-                Err(_) => continue,
-            }
-        }
-        Err(StorageError::ObjectNotFound)
+        let (data, meta) = read_and_decode_versioned(
+            &self.disks,
+            self.data_n,
+            self.parity_n,
+            bucket,
+            key,
+            version_id,
+        )?;
+        Ok((
+            data,
+            ObjectInfo {
+                bucket: bucket.to_string(),
+                key: key.to_string(),
+                size: meta.size,
+                etag: meta.etag,
+                content_type: meta.content_type,
+                created_at: meta.created_at,
+                user_metadata: meta.user_metadata,
+                tags: meta.tags,
+                version_id: meta.version_id,
+                is_delete_marker: false,
+            },
+        ))
     }
 
     fn delete_object_version(

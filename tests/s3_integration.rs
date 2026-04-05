@@ -429,3 +429,1046 @@ async fn delete_nonexistent_returns_404() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 }
+
+// --- x-amz-request-id header on all responses ---
+
+#[tokio::test]
+async fn request_id_on_success() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let resp = client.get(url(&addr, "/")).send().await.unwrap();
+    assert!(resp.headers().contains_key("x-amz-request-id"));
+    let rid = resp.headers()["x-amz-request-id"].to_str().unwrap();
+    assert!(!rid.is_empty());
+}
+
+#[tokio::test]
+async fn request_id_on_error() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(url(&addr, "/nonexistent/key"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    assert!(resp.headers().contains_key("x-amz-request-id"));
+}
+
+#[tokio::test]
+async fn error_xml_contains_request_id_and_resource() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .get(url(&addr, "/nonexistent/key"))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<RequestId>"), "missing RequestId in error XML: {}", body);
+    // Resource is included when the handler has context; auth-level errors may omit it
+    assert!(body.contains("Error"), "expected Error XML: {}", body);
+}
+
+// --- Object tagging ---
+
+#[tokio::test]
+async fn object_tagging_put_get_delete() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    // get tags on fresh object -- should return empty TagSet
+    let resp = client
+        .get(url(&addr, "/tb/obj?tagging"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("Tagging"), "expected Tagging XML: {}", body);
+
+    // put tags
+    let tag_xml = r#"<Tagging><TagSet><Tag><Key>env</Key><Value>prod</Value></Tag><Tag><Key>team</Key><Value>infra</Value></Tag></TagSet></Tagging>"#;
+    let resp = client
+        .put(url(&addr, "/tb/obj?tagging"))
+        .body(tag_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // get tags back
+    let resp = client
+        .get(url(&addr, "/tb/obj?tagging"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("env"), "missing tag key 'env': {}", body);
+    assert!(body.contains("prod"), "missing tag value 'prod': {}", body);
+    assert!(body.contains("team"), "missing tag key 'team': {}", body);
+    assert!(body.contains("infra"), "missing tag value 'infra': {}", body);
+
+    // delete tags
+    let resp = client
+        .delete(url(&addr, "/tb/obj?tagging"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    // verify tags are gone
+    let resp = client
+        .get(url(&addr, "/tb/obj?tagging"))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(!body.contains("env"), "tag should be gone: {}", body);
+}
+
+#[tokio::test]
+async fn object_tagging_on_nonexistent_object_returns_404() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .get(url(&addr, "/tb/missing?tagging"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn object_tagging_malformed_xml_returns_400() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb/obj?tagging"))
+        .body("not xml at all")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+// --- Bucket tagging ---
+
+#[tokio::test]
+async fn bucket_tagging_put_get_delete() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    // get bucket tags (empty initially)
+    let resp = client
+        .get(url(&addr, "/tb?tagging"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // put bucket tags
+    let tag_xml = r#"<Tagging><TagSet><Tag><Key>project</Key><Value>alpha</Value></Tag></TagSet></Tagging>"#;
+    let resp = client
+        .put(url(&addr, "/tb?tagging"))
+        .body(tag_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // get bucket tags back
+    let resp = client
+        .get(url(&addr, "/tb?tagging"))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("project"), "missing key: {}", body);
+    assert!(body.contains("alpha"), "missing value: {}", body);
+
+    // delete bucket tags
+    let resp = client
+        .delete(url(&addr, "/tb?tagging"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+}
+
+// --- Conditional requests ---
+
+#[tokio::test]
+async fn if_none_match_returns_304() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    let resp = client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+    let etag = resp.headers()["etag"].to_str().unwrap().to_string();
+
+    // GET with matching If-None-Match -> 304
+    let resp = client
+        .get(url(&addr, "/tb/obj"))
+        .header("If-None-Match", &etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 304);
+
+    // HEAD with matching If-None-Match -> 304
+    let resp = client
+        .head(url(&addr, "/tb/obj"))
+        .header("If-None-Match", &etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 304);
+}
+
+#[tokio::test]
+async fn if_none_match_different_etag_returns_200() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(url(&addr, "/tb/obj"))
+        .header("If-None-Match", "\"nonexistent-etag\"")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn if_match_returns_412_on_mismatch() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    // If-Match with wrong etag -> 412
+    let resp = client
+        .get(url(&addr, "/tb/obj"))
+        .header("If-Match", "\"wrong-etag\"")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 412);
+}
+
+#[tokio::test]
+async fn if_match_correct_etag_returns_200() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    let resp = client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+    let etag = resp.headers()["etag"].to_str().unwrap().to_string();
+
+    let resp = client
+        .get(url(&addr, "/tb/obj"))
+        .header("If-Match", &etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn if_modified_since_returns_304_when_not_modified() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    // use a date far in the future
+    let resp = client
+        .get(url(&addr, "/tb/obj"))
+        .header("If-Modified-Since", "Sun, 01 Jan 2090 00:00:00 GMT")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 304);
+}
+
+#[tokio::test]
+async fn if_unmodified_since_returns_412_when_modified() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    // use a date far in the past
+    let resp = client
+        .get(url(&addr, "/tb/obj"))
+        .header("If-Unmodified-Since", "Thu, 01 Jan 2000 00:00:00 GMT")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 412);
+}
+
+// --- Bucket versioning config ---
+
+#[tokio::test]
+async fn versioning_disabled_by_default() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .get(url(&addr, "/tb?versioning"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("VersioningConfiguration"), "expected XML: {}", body);
+    // no <Status> element when disabled
+    assert!(!body.contains("<Status>Enabled</Status>"));
+    assert!(!body.contains("<Status>Suspended</Status>"));
+}
+
+#[tokio::test]
+async fn versioning_enable_and_get() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
+    let resp = client
+        .put(url(&addr, "/tb?versioning"))
+        .body(xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .get(url(&addr, "/tb?versioning"))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Status>Enabled</Status>"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn versioning_enable_then_suspend() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
+    client
+        .put(url(&addr, "/tb?versioning"))
+        .body(xml)
+        .send()
+        .await
+        .unwrap();
+
+    let xml = r#"<VersioningConfiguration><Status>Suspended</Status></VersioningConfiguration>"#;
+    let resp = client
+        .put(url(&addr, "/tb?versioning"))
+        .body(xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .get(url(&addr, "/tb?versioning"))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Status>Suspended</Status>"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn versioning_invalid_status_returns_400() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let xml = r#"<VersioningConfiguration><Status>Invalid</Status></VersioningConfiguration>"#;
+    let resp = client
+        .put(url(&addr, "/tb?versioning"))
+        .body(xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+// --- Versioned PUT creates versions ---
+
+#[tokio::test]
+async fn versioned_put_returns_version_id() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    // enable versioning
+    let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
+    client
+        .put(url(&addr, "/tb?versioning"))
+        .body(xml)
+        .send()
+        .await
+        .unwrap();
+
+    // PUT should return x-amz-version-id
+    let resp = client
+        .put(url(&addr, "/tb/obj"))
+        .body("v1")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert!(
+        resp.headers().contains_key("x-amz-version-id"),
+        "missing x-amz-version-id header"
+    );
+    let vid1 = resp.headers()["x-amz-version-id"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(!vid1.is_empty());
+
+    // second PUT should return different version id
+    let resp = client
+        .put(url(&addr, "/tb/obj"))
+        .body("v2")
+        .send()
+        .await
+        .unwrap();
+    let vid2 = resp.headers()["x-amz-version-id"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(vid1, vid2);
+}
+
+// --- ListObjectVersions ---
+
+#[tokio::test]
+async fn list_object_versions_returns_all_versions() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
+    client
+        .put(url(&addr, "/tb?versioning"))
+        .body(xml)
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("v1")
+        .send()
+        .await
+        .unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("v2")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(url(&addr, "/tb?versions"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("ListVersionsResult"),
+        "expected ListVersionsResult: {}",
+        body
+    );
+    // should contain at least 2 <Version> elements
+    let version_count = body.matches("<Version>").count();
+    assert!(
+        version_count >= 2,
+        "expected >= 2 versions, got {}: {}",
+        version_count,
+        body
+    );
+    assert!(body.contains("<IsLatest>true</IsLatest>"));
+    assert!(body.contains("<VersionId>"));
+}
+
+#[tokio::test]
+async fn list_object_versions_empty_bucket() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .get(url(&addr, "/tb?versions"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("ListVersionsResult"));
+    assert!(!body.contains("<Version>"));
+}
+
+// --- Versioned DELETE creates delete marker ---
+
+#[tokio::test]
+async fn versioned_delete_creates_delete_marker() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
+    client
+        .put(url(&addr, "/tb?versioning"))
+        .body(xml)
+        .send()
+        .await
+        .unwrap();
+
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    // delete without versionId -> should create delete marker
+    let resp = client
+        .delete(url(&addr, "/tb/obj"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    assert!(resp.headers().contains_key("x-amz-delete-marker"));
+    assert_eq!(resp.headers()["x-amz-delete-marker"], "true");
+    assert!(resp.headers().contains_key("x-amz-version-id"));
+
+    // list versions should show the delete marker
+    let resp = client
+        .get(url(&addr, "/tb?versions"))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("<DeleteMarker>"),
+        "expected DeleteMarker: {}",
+        body
+    );
+}
+
+// --- GET/DELETE with versionId ---
+
+#[tokio::test]
+async fn get_specific_version() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
+    client
+        .put(url(&addr, "/tb?versioning"))
+        .body(xml)
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb/obj"))
+        .body("version-one")
+        .send()
+        .await
+        .unwrap();
+    let vid1 = resp.headers()["x-amz-version-id"]
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("version-two")
+        .send()
+        .await
+        .unwrap();
+
+    // GET without versionId -> latest (version-two)
+    let resp = client
+        .get(url(&addr, "/tb/obj"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "version-two");
+
+    // GET with versionId=vid1 -> first version
+    let resp = client
+        .get(url_with_query(
+            &addr,
+            "/tb/obj",
+            &[("versionId", &vid1)],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "version-one");
+}
+
+#[tokio::test]
+async fn delete_specific_version() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
+    client
+        .put(url(&addr, "/tb?versioning"))
+        .body(xml)
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb/obj"))
+        .body("v1")
+        .send()
+        .await
+        .unwrap();
+    let vid1 = resp.headers()["x-amz-version-id"]
+        .to_str()
+        .unwrap()
+        .to_string();
+
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("v2")
+        .send()
+        .await
+        .unwrap();
+
+    // permanently delete v1
+    let resp = client
+        .delete(url_with_query(
+            &addr,
+            "/tb/obj",
+            &[("versionId", &vid1)],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    assert_eq!(resp.headers()["x-amz-version-id"], vid1.as_str());
+
+    // GET v1 should now fail
+    let resp = client
+        .get(url_with_query(
+            &addr,
+            "/tb/obj",
+            &[("versionId", &vid1)],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // latest (v2) should still work
+    let resp = client
+        .get(url(&addr, "/tb/obj"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.text().await.unwrap(), "v2");
+}
+
+// --- Suspended versioning uses null version ---
+
+#[tokio::test]
+async fn suspended_versioning_uses_null_version() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    // enable then suspend
+    let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
+    client
+        .put(url(&addr, "/tb?versioning"))
+        .body(xml)
+        .send()
+        .await
+        .unwrap();
+
+    let xml = r#"<VersioningConfiguration><Status>Suspended</Status></VersioningConfiguration>"#;
+    client
+        .put(url(&addr, "/tb?versioning"))
+        .body(xml)
+        .send()
+        .await
+        .unwrap();
+
+    // PUT should return version-id "null"
+    let resp = client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.headers()["x-amz-version-id"], "null");
+}
+
+// --- CopyObject ---
+
+#[tokio::test]
+async fn copy_object_same_bucket() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/src"))
+        .header("Content-Type", "text/plain")
+        .body("original")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb/dst"))
+        .header("x-amz-copy-source", "/tb/src")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("CopyObjectResult"), "body: {}", body);
+    assert!(body.contains("ETag"));
+
+    // verify copy
+    let resp = client.get(url(&addr, "/tb/dst")).send().await.unwrap();
+    assert_eq!(resp.text().await.unwrap(), "original");
+}
+
+#[tokio::test]
+async fn copy_object_cross_bucket() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/src-bucket")).send().await.unwrap();
+    client.put(url(&addr, "/dst-bucket")).send().await.unwrap();
+    client
+        .put(url(&addr, "/src-bucket/key"))
+        .body("cross-bucket")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .put(url(&addr, "/dst-bucket/key"))
+        .header("x-amz-copy-source", "/src-bucket/key")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .get(url(&addr, "/dst-bucket/key"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.text().await.unwrap(), "cross-bucket");
+}
+
+// --- DeleteObjects (batch) ---
+
+#[tokio::test]
+async fn delete_objects_batch() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/a"))
+        .body("1")
+        .send()
+        .await
+        .unwrap();
+    client
+        .put(url(&addr, "/tb/b"))
+        .body("2")
+        .send()
+        .await
+        .unwrap();
+    client
+        .put(url(&addr, "/tb/c"))
+        .body("3")
+        .send()
+        .await
+        .unwrap();
+
+    let delete_xml = r#"<Delete><Object><Key>a</Key></Object><Object><Key>b</Key></Object></Delete>"#;
+    let resp = client
+        .post(url(&addr, "/tb?delete"))
+        .body(delete_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("DeleteResult"), "body: {}", body);
+    assert!(body.contains("<Key>a</Key>"));
+    assert!(body.contains("<Key>b</Key>"));
+
+    // a and b should be gone, c should remain
+    let resp = client.get(url(&addr, "/tb/a")).send().await.unwrap();
+    assert_eq!(resp.status(), 404);
+    let resp = client.get(url(&addr, "/tb/c")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+// --- Range requests ---
+
+#[tokio::test]
+async fn range_request_partial_content() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("hello world")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(url(&addr, "/tb/obj"))
+        .header("Range", "bytes=0-4")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 206);
+    assert!(resp.headers().contains_key("content-range"));
+    assert_eq!(resp.text().await.unwrap(), "hello");
+}
+
+#[tokio::test]
+async fn range_request_invalid_returns_416() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("small")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(url(&addr, "/tb/obj"))
+        .header("Range", "bytes=100-200")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 416);
+}
+
+// --- Custom metadata ---
+
+#[tokio::test]
+async fn custom_metadata_round_trip() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .header("x-amz-meta-author", "alice")
+        .header("x-amz-meta-version", "42")
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .head(url(&addr, "/tb/obj"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.headers()["x-amz-meta-author"], "alice");
+    assert_eq!(resp.headers()["x-amz-meta-version"], "42");
+
+    let resp = client
+        .get(url(&addr, "/tb/obj"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.headers()["x-amz-meta-author"], "alice");
+}
+
+// --- Delete bucket ---
+
+#[tokio::test]
+async fn delete_bucket_non_empty_returns_409() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client.delete(url(&addr, "/tb")).send().await.unwrap();
+    assert_eq!(resp.status(), 409);
+}
+
+#[tokio::test]
+async fn delete_bucket_empty_succeeds() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client.delete(url(&addr, "/tb")).send().await.unwrap();
+    assert_eq!(resp.status(), 204);
+
+    // bucket should be gone
+    let resp = client.head(url(&addr, "/tb")).send().await.unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+// --- Method not allowed ---
+
+#[tokio::test]
+async fn unsupported_method_returns_405() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .patch(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 405);
+}

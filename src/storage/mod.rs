@@ -155,6 +155,15 @@ pub trait Store: Send + Sync {
         config: &VersioningConfig,
     ) -> Result<(), StorageError>;
 
+    fn put_object_versioned(
+        &self,
+        bucket: &str,
+        key: &str,
+        data: &[u8],
+        opts: PutOptions,
+        version_id: &str,
+    ) -> Result<ObjectInfo, StorageError>;
+
     fn get_object_version(
         &self,
         bucket: &str,

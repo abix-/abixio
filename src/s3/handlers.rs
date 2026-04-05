@@ -36,7 +36,8 @@ fn ok_body(body: Vec<u8>) -> Response<BoxBody> {
 }
 
 fn error_response(err: &S3Error) -> Response<BoxBody> {
-    error_response_ctx(err, "", "")
+    let rid = make_request_id();
+    error_response_ctx(err, &rid, "")
 }
 
 fn error_response_ctx(err: &S3Error, request_id: &str, resource: &str) -> Response<BoxBody> {
@@ -379,25 +380,14 @@ impl S3Handler {
                 "null".to_string()
             };
 
-            // write versioned shard to all disks
-            let info = match self.store.put_object(bucket, key, &body, opts) {
+            // write directly to versioned path (no legacy overwrite)
+            let info = match self
+                .store
+                .put_object_versioned(bucket, key, &body, opts, &version_id)
+            {
                 Ok(i) => i,
                 Err(e) => return error_response(&map_error(&e)),
             };
-
-            // write versioned shard data
-            for disk in self.store.disks() {
-                let mut meta = match disk.stat_object(bucket, key) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                meta.version_id = version_id.clone();
-                let shard_data = match disk.read_shard(bucket, key) {
-                    Ok((d, _)) => d,
-                    Err(_) => continue,
-                };
-                let _ = disk.write_versioned_shard(bucket, key, &version_id, &shard_data, &meta);
-            }
 
             // update version index on all disks
             for disk in self.store.disks() {
@@ -461,9 +451,19 @@ impl S3Handler {
                 Err(e) => return error_response(&map_error(&e)),
             }
         } else {
-            match self.store.get_object(bucket, key) {
-                Ok(r) => r,
-                Err(e) => return error_response(&map_error(&e)),
+            // check if versioned -- find latest non-delete-marker from version index
+            let latest_vid = self.find_latest_version(bucket, key);
+            if let Some(vid) = latest_vid {
+                match self.store.get_object_version(bucket, key, &vid) {
+                    Ok(r) => r,
+                    Err(e) => return error_response(&map_error(&e)),
+                }
+            } else {
+                // unversioned or no versions.json
+                match self.store.get_object(bucket, key) {
+                    Ok(r) => r,
+                    Err(e) => return error_response(&map_error(&e)),
+                }
             }
         };
 
@@ -801,6 +801,26 @@ impl S3Handler {
             Ok(data) => serde_json::from_slice(&data).unwrap_or_default(),
             Err(_) => HashMap::new(),
         }
+    }
+
+    /// Find the latest non-delete-marker version ID from the version index.
+    /// Returns None if no versions.json exists (unversioned object).
+    fn find_latest_version(&self, bucket: &str, key: &str) -> Option<String> {
+        for disk in self.store.disks() {
+            let entries = disk.read_version_index(bucket, key).unwrap_or_default();
+            if entries.is_empty() {
+                continue;
+            }
+            // find first non-delete-marker
+            for e in &entries {
+                if !e.is_delete_marker {
+                    return Some(e.version_id.clone());
+                }
+            }
+            // all entries are delete markers -- object is "deleted"
+            return None;
+        }
+        None
     }
 
     // -- bucket versioning --
