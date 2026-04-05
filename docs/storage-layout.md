@@ -179,7 +179,7 @@ identity. They influence new writes but do not affect existing objects.
 ```json
 {
   "versioning": "Enabled",
-  "ec": { "data": 3, "parity": 3 },
+  "ec": { "ftt": 3 },
   "tags": { "env": "prod" },
   "policy": { "Version": "2012-10-17", "Statement": [] },
   "lifecycle": "<LifecycleConfiguration>...</LifecycleConfiguration>"
@@ -236,8 +236,7 @@ ordered newest-first.
       "content_type": "text/plain",
       "created_at": 1700000000,
       "erasure": {
-        "data": 2,
-        "parity": 2,
+        "ftt": 2,
         "index": 0,
         "distribution": [2, 0, 3, 1],
         "epoch_id": 7,
@@ -286,8 +285,8 @@ disk by comparing `meta.json` volume_ids against `volume.json` volume_id.
 
 ## Directory Structure
 
-AbixIO uses erasure coding across multiple disks. With `--data 2 --parity 2`,
-each object is split into 4 shards distributed across 4 disks.
+AbixIO uses erasure coding across multiple disks. With FTT=1 on 4 disks,
+each object is split into 3 data + 1 parity shard distributed across all 4 disks.
 
 ```
 disk0/
