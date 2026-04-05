@@ -23,7 +23,7 @@ pub struct ObjectMeta {
     pub content_type: String,
     pub created_at: u64, // unix timestamp seconds
     pub erasure: ErasureMeta,
-    pub checksum: String, // SHA256 hex of THIS shard
+    pub checksum: String, // SHA256 hex of THIS shard (empty for multipart)
     #[serde(default)]
     pub user_metadata: HashMap<String, String>,
     #[serde(default)]
@@ -34,6 +34,19 @@ pub struct ObjectMeta {
     pub is_latest: bool,
     #[serde(default)]
     pub is_delete_marker: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<PartEntry>,
+}
+
+/// Per-part metadata for multipart objects. Each part has its own
+/// erasure coding and shard distribution (like MinIO's xl.meta parts).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PartEntry {
+    pub number: i32,
+    pub size: u64,
+    pub etag: String,
+    pub erasure: ErasureMeta,
+    pub checksum: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -139,6 +152,11 @@ pub struct BucketSettings {
 }
 
 impl ObjectMeta {
+    /// True if this object was created via multipart upload.
+    pub fn is_multipart(&self) -> bool {
+        !self.parts.is_empty()
+    }
+
     /// Two metas are quorum-compatible if all fields match except index and checksum
     /// (which are per-shard).
     pub fn quorum_eq(&self, other: &ObjectMeta) -> bool {
@@ -211,6 +229,7 @@ mod tests {
             version_id: String::new(),
             is_latest: true,
             is_delete_marker: false,
+            parts: Vec::new(),
         }
     }
 

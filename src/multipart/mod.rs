@@ -4,28 +4,13 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::cluster::placement::{PlacementVolume, PlacementPlanner};
 use crate::storage::Backend;
 use crate::storage::StorageError;
 use crate::storage::bitrot::{md5_hex, sha256_hex};
-use crate::storage::metadata::{ErasureMeta, ObjectInfo, PutOptions};
+use crate::storage::metadata::{ErasureMeta, ObjectInfo};
 use crate::storage::pathing;
 
 const UPLOAD_FILE: &str = "upload.json";
-
-fn local_planner(disks: &[Box<dyn Backend>]) -> PlacementPlanner {
-    PlacementPlanner::new(
-        1,
-        "multipart-local",
-        (0..disks.len())
-            .map(|backend_index| PlacementVolume {
-                backend_index,
-                node_id: "local".to_string(),
-                volume_id: format!("vol-{}", backend_index),
-            })
-            .collect(),
-    )
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadMeta {
@@ -225,11 +210,12 @@ pub fn list_parts(
     Ok((upload, parts))
 }
 
-/// Complete a multipart upload. Assembles parts into final object.
+/// Complete a multipart upload. Moves part shards into the final object
+/// directory and writes metadata. No data reassembly -- like MinIO.
 pub fn complete_upload(
     disks: &[Box<dyn Backend>],
-    data_n: usize,
-    parity_n: usize,
+    _data_n: usize,
+    _parity_n: usize,
     bucket: &str,
     key: &str,
     upload_id: &str,
@@ -247,14 +233,13 @@ pub fn complete_upload(
         }
     }
 
-    // read and concatenate all part data
-    let mut full_data = Vec::new();
-    let total = data_n + parity_n;
+    // collect part metadata and move shards to final object directory
+    let mut parts = Vec::new();
+    let mut total_size: u64 = 0;
+    let now = crate::storage::metadata::unix_timestamp_secs();
 
     for (pn, _etag) in requested_parts {
-        let part_file = format!("part.{}", pn);
-
-        // read part meta from first responsive disk to get distribution
+        // read part meta from first responsive disk
         let mut part_meta: Option<PartFileMeta> = None;
         for disk in disks {
             let meta_path = upload_dir(disk, bucket, key, upload_id)?
@@ -268,40 +253,36 @@ pub fn complete_upload(
             }
         }
         let pm = part_meta.ok_or(StorageError::ObjectNotFound)?;
-        let distribution = &pm.erasure.distribution;
 
-        // read shards from all disks
-        let mut shard_slots: Vec<Option<Vec<u8>>> = vec![None; total];
-        for (shard_idx, &disk_idx) in distribution.iter().enumerate() {
-            if disk_idx >= disks.len() {
-                continue;
-            }
-            let shard_path = upload_dir(&disks[disk_idx], bucket, key, upload_id)?
+        // move part shard from staging to final object dir on each disk
+        let part_file = format!("part.{}", pn);
+        for (disk_idx, disk) in disks.iter().enumerate() {
+            let staging_path = upload_dir(disk, bucket, key, upload_id)?
                 .join(&upload.data_dir)
                 .join(&part_file);
-            if let Ok(shard_data) = fs::read(&shard_path) {
-                shard_slots[shard_idx] = Some(shard_data);
+            if staging_path.exists() {
+                let obj_dir = pathing::object_dir(&disk_root(disk), bucket, key)?;
+                let _ = fs::create_dir_all(&obj_dir);
+                let final_path = obj_dir.join(&part_file);
+                // rename (same filesystem = instant move, no data copy)
+                if fs::rename(&staging_path, &final_path).is_err() {
+                    // fallback: copy + delete if rename fails (cross-filesystem)
+                    if let Ok(data) = fs::read(&staging_path) {
+                        let _ = fs::write(&final_path, &data);
+                        let _ = fs::remove_file(&staging_path);
+                    }
+                }
             }
         }
 
-        // erasure decode
-        let good = shard_slots.iter().filter(|s| s.is_some()).count();
-        if good < data_n {
-            return Err(StorageError::ReadQuorum);
-        }
-        if parity_n > 0 && good < total {
-            let rs = reed_solomon_erasure::galois_8::ReedSolomon::new(data_n, parity_n)
-                .map_err(|e| StorageError::InvalidConfig(format!("reed-solomon: {}", e)))?;
-            rs.reconstruct(&mut shard_slots)
-                .map_err(|_| StorageError::ReadQuorum)?;
-        }
-
-        let mut part_data = Vec::with_capacity(pm.size as usize);
-        for shard in shard_slots.iter().take(data_n).flatten() {
-            part_data.extend_from_slice(shard);
-        }
-        part_data.truncate(pm.size as usize);
-        full_data.extend_from_slice(&part_data);
+        total_size += pm.size;
+        parts.push(crate::storage::metadata::PartEntry {
+            number: *pn,
+            size: pm.size,
+            etag: pm.etag.clone(),
+            erasure: pm.erasure.clone(),
+            checksum: pm.checksum.clone(),
+        });
     }
 
     // compute final ETag: MD5(concat(part_etags)) + "-N"
@@ -315,41 +296,69 @@ pub fn complete_upload(
         requested_parts.len()
     );
 
-    // write final object using normal put_object path
-    let opts = PutOptions {
+    // write meta.json on each disk with parts manifest
+    let meta = crate::storage::metadata::ObjectMeta {
+        size: total_size,
+        etag: final_etag.clone(),
         content_type: upload.content_type.clone(),
+        created_at: now,
+        erasure: parts.first().map(|p| p.erasure.clone()).unwrap_or(ErasureMeta {
+            ftt: 0,
+            index: 0,
+            distribution: Vec::new(),
+            epoch_id: 0,
+            set_id: String::new(),
+            node_ids: Vec::new(),
+            volume_ids: Vec::new(),
+        }),
+        checksum: String::new(),
         user_metadata: upload.user_metadata.clone(),
-        ..Default::default()
+        tags: HashMap::new(),
+        version_id: String::new(),
+        is_latest: true,
+        is_delete_marker: false,
+        parts: parts.clone(),
     };
 
-    // use the Store's put_object -- but we need to go through the VolumePool.
-    // instead, call the erasure encode directly, matching how put_object works.
-    let info = crate::storage::erasure_encode::encode_and_write_with_mrf(
-        disks,
-        &local_planner(disks),
-        data_n,
-        parity_n,
-        bucket,
-        key,
-        &full_data,
-        opts,
-        None,
-    )?;
+    // write meta.json to each disk
+    let mut meta_successes = 0;
+    for (disk_idx, disk) in disks.iter().enumerate() {
+        let obj_dir = pathing::object_dir(&disk_root(disk), bucket, key)?;
+        let _ = fs::create_dir_all(&obj_dir);
+        let mut disk_meta = meta.clone();
+        disk_meta.erasure.index = disk_idx;
+        let mf = crate::storage::metadata::ObjectMetaFile {
+            versions: vec![disk_meta],
+        };
+        let meta_path = pathing::object_meta_path(&disk_root(disk), bucket, key)?;
+        if crate::storage::metadata::write_meta_file(&meta_path, &mf).is_ok() {
+            meta_successes += 1;
+        }
+    }
 
-    // override the etag with the multipart etag
-    let final_info = ObjectInfo {
-        etag: final_etag,
-        ..info
-    };
+    if meta_successes == 0 {
+        return Err(StorageError::WriteQuorum);
+    }
 
-    // cleanup: delete upload dir from all disks
+    // cleanup staging dirs
     for disk in disks {
         if let Ok(dir) = upload_dir(disk, bucket, key, upload_id) {
             let _ = fs::remove_dir_all(&dir);
         }
     }
 
-    Ok(final_info)
+    Ok(ObjectInfo {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+        size: total_size,
+        etag: final_etag,
+        content_type: upload.content_type,
+        created_at: now,
+        user_metadata: upload.user_metadata,
+        tags: HashMap::new(),
+        version_id: String::new(),
+        is_delete_marker: false,
+    })
 }
 
 /// Abort a multipart upload.

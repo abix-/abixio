@@ -85,6 +85,68 @@ pub fn read_and_decode(
     Ok((result, good_meta))
 }
 
+/// Decode a multipart object by reading and decoding each part's shards
+/// independently, then concatenating the results.
+pub fn read_and_decode_multipart(
+    disks: &[Box<dyn Backend>],
+    bucket: &str,
+    key: &str,
+    meta: &ObjectMeta,
+) -> Result<Vec<u8>, StorageError> {
+    let mut result = Vec::with_capacity(meta.size as usize);
+
+    for part in &meta.parts {
+        let data_n = part.erasure.data();
+        let parity_n = part.erasure.parity();
+        let total = data_n + parity_n;
+        let distribution = &part.erasure.distribution;
+        let part_file = format!("part.{}", part.number);
+
+        // read this part's shard from each disk using the part's distribution
+        let mut shard_slots: Vec<Option<Vec<u8>>> = vec![None; total];
+        for (shard_idx, &disk_idx) in distribution.iter().enumerate() {
+            if disk_idx >= disks.len() {
+                continue;
+            }
+            // read part.N from this disk's object directory
+            let info = disks[disk_idx].info();
+            let root = if let Some(path) = info.label.strip_prefix("local:") {
+                std::path::PathBuf::from(path)
+            } else {
+                continue; // skip non-local disks for now
+            };
+            let obj_dir = super::pathing::object_dir(&root, bucket, key)?;
+            let part_path = obj_dir.join(&part_file);
+            if let Ok(data) = std::fs::read(&part_path) {
+                if sha256_hex(&data) == part.checksum || shard_idx != part.erasure.index {
+                    shard_slots[shard_idx] = Some(data);
+                }
+            }
+        }
+
+        let good_count = shard_slots.iter().filter(|s| s.is_some()).count();
+        if good_count < data_n {
+            return Err(StorageError::ReadQuorum);
+        }
+
+        if parity_n > 0 && good_count < total {
+            let rs = ReedSolomon::new(data_n, parity_n)
+                .map_err(|e| StorageError::InvalidConfig(format!("reed-solomon: {}", e)))?;
+            rs.reconstruct(&mut shard_slots)
+                .map_err(|_| StorageError::ReadQuorum)?;
+        }
+
+        let mut part_data = Vec::with_capacity(part.size as usize);
+        for data in shard_slots.iter().take(data_n).flatten() {
+            part_data.extend_from_slice(data);
+        }
+        part_data.truncate(part.size as usize);
+        result.extend_from_slice(&part_data);
+    }
+
+    Ok(result)
+}
+
 pub fn read_and_decode_versioned(
     disks: &[Box<dyn Backend>],
     data_n: usize,

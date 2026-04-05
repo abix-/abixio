@@ -696,6 +696,7 @@ impl S3Handler {
                         checksum: String::new(),
                         user_metadata: std::collections::HashMap::new(),
                         tags: std::collections::HashMap::new(),
+                        parts: Vec::new(),
                     },
                 );
                 let _ = disk.write_meta_versions(bucket, key, &versions);

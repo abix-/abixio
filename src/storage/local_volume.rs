@@ -72,6 +72,53 @@ impl LocalVolume {
     }
 }
 
+impl LocalVolume {
+    /// Write a part shard file (part.N) into the object directory.
+    pub fn write_part_shard(
+        &self,
+        bucket: &str,
+        key: &str,
+        part_number: i32,
+        data: &[u8],
+    ) -> Result<(), StorageError> {
+        let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
+        fs::create_dir_all(&obj_dir)?;
+        let part_path = obj_dir.join(format!("part.{}", part_number));
+        fs::write(part_path, data)?;
+        Ok(())
+    }
+
+    /// Read a part shard file (part.N) from the object directory.
+    pub fn read_part_shard(
+        &self,
+        bucket: &str,
+        key: &str,
+        part_number: i32,
+    ) -> Result<Vec<u8>, StorageError> {
+        let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
+        let part_path = obj_dir.join(format!("part.{}", part_number));
+        fs::read(&part_path).map_err(|_| StorageError::ObjectNotFound)
+    }
+
+    /// Write only meta.json without shard data (used by multipart complete).
+    pub fn write_meta_only(
+        &self,
+        bucket: &str,
+        key: &str,
+        meta: &ObjectMeta,
+    ) -> Result<(), StorageError> {
+        let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
+        fs::create_dir_all(&obj_dir)?;
+        let mut version = meta.clone();
+        version.is_latest = true;
+        let mf = ObjectMetaFile {
+            versions: vec![version],
+        };
+        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf)
+            .map_err(StorageError::Io)
+    }
+}
+
 impl Backend for LocalVolume {
     fn write_shard(
         &self,
@@ -446,6 +493,7 @@ mod tests {
             version_id: String::new(),
             is_latest: true,
             is_delete_marker: false,
+            parts: Vec::new(),
         }
     }
 

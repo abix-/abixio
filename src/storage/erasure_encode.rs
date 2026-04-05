@@ -184,6 +184,7 @@ fn encode_and_write_impl(
             version_id: version_id.unwrap_or("").to_string(),
             is_latest: true,
             is_delete_marker: false,
+            parts: Vec::new(),
         };
         let write_result = if let Some(vid) = version_id {
             disks[disk_idx].write_versioned_shard(bucket, key, vid, shard_data, &meta)

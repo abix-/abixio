@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use super::Backend;
-use super::erasure_decode::{read_and_decode, read_and_decode_versioned};
+use super::erasure_decode::{read_and_decode, read_and_decode_multipart, read_and_decode_versioned};
 use super::erasure_encode::{encode_and_write_versioned, encode_and_write_with_mrf};
 use super::metadata::{
     BucketInfo, BucketSettings, EcConfig, ListOptions, ListResult, ObjectInfo, ObjectMeta,
@@ -193,6 +193,19 @@ impl Store for VolumePool {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
+
+        // check if object is multipart by reading meta from any disk
+        for disk in &self.disks {
+            if let Ok(meta) = disk.stat_object(bucket, key) {
+                if meta.is_multipart() {
+                    let data = read_and_decode_multipart(&self.disks, bucket, key, &meta)?;
+                    return Ok((data, Self::meta_to_info(bucket, key, &meta)));
+                }
+                break;
+            }
+        }
+
+        // non-multipart: standard shard decode
         let (data_n, parity_n) = self
             .read_ec_from_meta(bucket, key)
             .unwrap_or_else(|| self.bucket_ec(bucket));

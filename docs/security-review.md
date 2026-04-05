@@ -1,14 +1,8 @@
-# RustFS Security Review
+# Security Review
 
-This review was done against a fresh clone of `rustfs/rustfs` in `C:\code\rustfs` on April 5, 2026.
+Internal security audit of AbixIO's storage paths, authentication, and input validation. RustFS was reviewed as a reference point for comparison.
 
-It focused on the exact claims that were circulating:
-
-- hardcoded or dangerously defaulted secrets
-- path traversal in bucket/object/version/upload paths
-- unsanitized storage-server query handling
-
-This is a source-backed review, not a repost of social media claims.
+Date: 2026-04-05
 
 ## Current Status
 

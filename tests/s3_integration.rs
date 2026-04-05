@@ -3701,6 +3701,7 @@ async fn windows_forbidden_chars_rejected_at_storage_layer() {
             version_id: String::new(),
             is_latest: false,
             is_delete_marker: false,
+            parts: Vec::new(),
         };
         let result = vol.write_shard("tb", &key, b"data", &meta);
         assert!(

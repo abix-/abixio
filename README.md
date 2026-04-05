@@ -21,7 +21,7 @@ This repository is the AbixIO server: an S3-compatible object storage server wri
 Current reality as of 2026-04-05:
 - First commit: 2026-04-04
 - No releases, packaging, or production deployments
-- 314 automated tests (unit + integration)
+- 316 automated tests (unit + integration)
 - 41 of 72 S3 API operations implemented (57%)
 - Core storage engine works with real S3 clients, but several important gaps remain
 
@@ -72,7 +72,7 @@ Key properties:
 - AWS Signature V4 authentication and presigned URL support
 - Object versioning
 - Object and bucket tagging
-- Multipart upload for large objects
+- Multipart upload with per-part erasure coding (parts stay separate on disk)
 - Bucket policy and lifecycle configuration storage
 - Admin API for volume health, healing status, shard inspection, and bucket EC config
 - Thick-console administration model for serious multi-node visibility, rather than depending only on a thin per-node web UI
