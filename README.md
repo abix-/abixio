@@ -1,18 +1,9 @@
 # AbixIO Server
 
-S3-compatible object storage with per-object fault tolerance, heterogeneous volume pools, and single-node to multi-node clustering. Written in Rust.
+Rust S3-compatible object storage where each object chooses its own fault tolerance. Mix any disks, any nodes, one pool. Runs on a single machine or a cluster with no mode switch.
 
 > **Home lab use only.** Early development. Do not store business data on this.
 > For production, see [RustFS](https://github.com/rustfs/rustfs) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
-
----
-
-### What makes it different
-
-- **Per-object fault tolerance** -- set failures to tolerate per object, not per pool
-- **Heterogeneous pools** -- mixed disk counts, mixed node sizes, one flat pool
-- **Single node to cluster** -- same storage model whether you run 1 disk or 30 across 5 nodes
-- **Self-describing volumes** -- volumes carry their own identity, no external database
 
 ### Quick start
 
