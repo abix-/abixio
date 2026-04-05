@@ -134,12 +134,15 @@ How complete our responses are compared to what S3 clients expect.
 
 ## Summary
 
-### Overall S3 compliance: 7/10
+### Overall S3 compliance: 4/10
 
-abixio implements 17 of ~100 S3 API operations. The 17 it implements cover
-the core object CRUD path including batch delete, server-side copy, range
-requests, custom metadata, bucket lifecycle, and object/bucket tagging.
-Response headers follow RFC 7231 (HTTP-date format). Everything else returns 405.
+abixio implements 17 of ~100 S3 API operations. The 17 it implements are
+solid (auth, conditionals, presigned URLs, tagging, batch delete, copy,
+range requests, custom metadata) but the missing surface is large: no
+multipart upload (blocks files >5GB), no versioning, no policies, no
+lifecycle, no encryption config, no replication. Everything unimplemented
+returns 405. The 17 endpoints that exist are well-implemented (8-9/10 each)
+but coverage of the full S3 API surface is low.
 
 ### Next priorities for server-side compliance
 
