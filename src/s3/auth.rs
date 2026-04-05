@@ -133,16 +133,24 @@ pub fn verify_presigned_v4(
 ) -> Result<(), String> {
     let params = parse_query_params(query);
 
-    let algorithm = params.get("X-Amz-Algorithm").ok_or("missing X-Amz-Algorithm")?;
+    let algorithm = params
+        .get("X-Amz-Algorithm")
+        .ok_or("missing X-Amz-Algorithm")?;
     if *algorithm != "AWS4-HMAC-SHA256" {
         return Err("unsupported algorithm".to_string());
     }
 
-    let credential = params.get("X-Amz-Credential").ok_or("missing X-Amz-Credential")?;
+    let credential = params
+        .get("X-Amz-Credential")
+        .ok_or("missing X-Amz-Credential")?;
     let amz_date = params.get("X-Amz-Date").ok_or("missing X-Amz-Date")?;
     let expires_str = params.get("X-Amz-Expires").ok_or("missing X-Amz-Expires")?;
-    let signed_headers_str = params.get("X-Amz-SignedHeaders").ok_or("missing X-Amz-SignedHeaders")?;
-    let provided_sig = params.get("X-Amz-Signature").ok_or("missing X-Amz-Signature")?;
+    let signed_headers_str = params
+        .get("X-Amz-SignedHeaders")
+        .ok_or("missing X-Amz-SignedHeaders")?;
+    let provided_sig = params
+        .get("X-Amz-Signature")
+        .ok_or("missing X-Amz-Signature")?;
 
     // parse credential: access_key/date/region/s3/aws4_request
     let cred_parts: Vec<&str> = credential.split('/').collect();
@@ -170,7 +178,9 @@ pub fn verify_presigned_v4(
     }
 
     // check expiration
-    let expires: u64 = expires_str.parse().map_err(|_| "invalid X-Amz-Expires".to_string())?;
+    let expires: u64 = expires_str
+        .parse()
+        .map_err(|_| "invalid X-Amz-Expires".to_string())?;
     if expires > 604800 {
         return Err("expires too large (max 7 days)".to_string());
     }
@@ -228,10 +238,7 @@ fn parse_query_params(query: &str) -> std::collections::HashMap<String, String> 
     }
     for pair in query.split('&') {
         if let Some((k, v)) = pair.split_once('=') {
-            map.insert(
-                percent_decode(k),
-                percent_decode(v),
-            );
+            map.insert(percent_decode(k), percent_decode(v));
         }
     }
     map
@@ -243,10 +250,9 @@ fn percent_decode(s: &str) -> String {
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(byte) = u8::from_str_radix(
-                std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""),
-                16,
-            ) {
+            if let Ok(byte) =
+                u8::from_str_radix(std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or(""), 16)
+            {
                 result.push(byte);
                 i += 3;
                 continue;
@@ -684,13 +690,23 @@ mod tests {
     fn verify_presigned_valid() {
         let (date, amz_date) = current_amz_timestamps();
         let query = presign_query(
-            "GET", "/test/key", "myaccesskey", "mysecretkey",
-            &date, &amz_date, "us-east-1", 3600,
+            "GET",
+            "/test/key",
+            "myaccesskey",
+            "mysecretkey",
+            &date,
+            &amz_date,
+            "us-east-1",
+            3600,
         );
         let headers = vec![("host".to_string(), "localhost:9000".to_string())];
         let result = verify_presigned_v4(
-            "GET", "/test/key", &query, &headers,
-            "myaccesskey", "mysecretkey",
+            "GET",
+            "/test/key",
+            &query,
+            &headers,
+            "myaccesskey",
+            "mysecretkey",
         );
         assert!(result.is_ok(), "expected ok, got: {:?}", result);
     }
@@ -701,13 +717,23 @@ mod tests {
         let date = "20200101";
         let amz_date = "20200101T000000Z";
         let query = presign_query(
-            "GET", "/test/key", "myaccesskey", "mysecretkey",
-            date, amz_date, "us-east-1", 1,
+            "GET",
+            "/test/key",
+            "myaccesskey",
+            "mysecretkey",
+            date,
+            amz_date,
+            "us-east-1",
+            1,
         );
         let headers = vec![("host".to_string(), "localhost:9000".to_string())];
         let result = verify_presigned_v4(
-            "GET", "/test/key", &query, &headers,
-            "myaccesskey", "mysecretkey",
+            "GET",
+            "/test/key",
+            &query,
+            &headers,
+            "myaccesskey",
+            "mysecretkey",
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("expired"));
@@ -717,20 +743,32 @@ mod tests {
     fn verify_presigned_bad_key() {
         let (date, amz_date) = current_amz_timestamps();
         let query = presign_query(
-            "GET", "/test/key", "myaccesskey", "mysecretkey",
-            &date, &amz_date, "us-east-1", 3600,
+            "GET",
+            "/test/key",
+            "myaccesskey",
+            "mysecretkey",
+            &date,
+            &amz_date,
+            "us-east-1",
+            3600,
         );
         let headers = vec![("host".to_string(), "localhost:9000".to_string())];
         let result = verify_presigned_v4(
-            "GET", "/test/key", &query, &headers,
-            "wrongkey", "mysecretkey",
+            "GET",
+            "/test/key",
+            &query,
+            &headers,
+            "wrongkey",
+            "mysecretkey",
         );
         assert!(result.is_err());
     }
 
     #[test]
     fn is_presigned_detects_params() {
-        assert!(is_presigned("X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=key"));
+        assert!(is_presigned(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=key"
+        ));
         assert!(!is_presigned("prefix=foo&delimiter=/"));
     }
 }

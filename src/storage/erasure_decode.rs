@@ -1,8 +1,8 @@
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
+use super::Backend;
 use super::StorageError;
 use super::bitrot::sha256_hex;
-use super::Backend;
 use super::metadata::ObjectMeta;
 
 pub fn read_and_decode(

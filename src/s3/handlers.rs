@@ -10,10 +10,12 @@ use quick_xml::se::to_string as xml_to_string;
 use super::auth::{AuthConfig, is_presigned, verify_presigned_v4, verify_sig_v4};
 use super::errors::{
     ERR_ACCESS_DENIED, ERR_INVALID_RANGE, ERR_MALFORMED_XML, ERR_METHOD_NOT_ALLOWED,
-    ERR_PRECONDITION_FAILED, S3Error, error_to_xml, make_request_id, map_error,
+    ERR_PRECONDITION_FAILED, ERR_SERVICE_UNAVAILABLE, S3Error, error_to_xml, make_request_id,
+    map_error,
 };
 use super::response::*;
 use crate::admin::handlers::AdminHandler;
+use crate::cluster::{ClusterManager, cluster_probe_header};
 use crate::query::parse_query;
 use crate::storage::Store;
 use crate::storage::erasure_set::ErasureSet;
@@ -23,6 +25,7 @@ pub struct S3Handler {
     store: Arc<ErasureSet>,
     auth: AuthConfig,
     admin: Option<Arc<AdminHandler>>,
+    cluster: Arc<ClusterManager>,
 }
 
 type BoxBody = Full<Bytes>;
@@ -64,11 +67,12 @@ fn empty_response(status: StatusCode) -> Response<BoxBody> {
 }
 
 impl S3Handler {
-    pub fn new(store: Arc<ErasureSet>, auth: AuthConfig) -> Self {
+    pub fn new(store: Arc<ErasureSet>, auth: AuthConfig, cluster: Arc<ClusterManager>) -> Self {
         Self {
             store,
             auth,
             admin: None,
+            cluster,
         }
     }
 
@@ -78,6 +82,17 @@ impl S3Handler {
 
     pub async fn dispatch(&self, req: Request<Incoming>) -> Response<BoxBody> {
         let request_id = make_request_id();
+        let path = req.uri().path().trim_start_matches('/').to_string();
+
+        if path == "_admin/cluster/status" && self.cluster_probe_authorized(&req) {
+            if let Some(admin) = &self.admin {
+                return admin.dispatch(
+                    "cluster/status",
+                    req.method(),
+                    req.uri().query().unwrap_or(""),
+                );
+            }
+        }
 
         // auth check
         if !self.auth.no_auth
@@ -108,6 +123,15 @@ impl S3Handler {
             if let Some(admin) = &self.admin {
                 return admin.dispatch("status", &method, &query);
             }
+        }
+
+        if self.cluster.blocks_data_plane() {
+            let mut resp = error_response(&ERR_SERVICE_UNAVAILABLE);
+            resp.headers_mut().insert(
+                "x-amz-request-id",
+                request_id.parse().expect("valid header value"),
+            );
+            return resp;
         }
 
         let (bucket, key) = match path.find('/') {
@@ -145,7 +169,9 @@ impl S3Handler {
             // bucket CORS (stubs matching MinIO -- not implemented, 2.0 item)
             (_, "", &Method::GET) if is_cors => error_response(&super::errors::ERR_NO_SUCH_CORS),
             (_, "", &Method::PUT) if is_cors => error_response(&super::errors::ERR_NOT_IMPLEMENTED),
-            (_, "", &Method::DELETE) if is_cors => error_response(&super::errors::ERR_NOT_IMPLEMENTED),
+            (_, "", &Method::DELETE) if is_cors => {
+                error_response(&super::errors::ERR_NOT_IMPLEMENTED)
+            }
 
             // bucket notification (stub -- returns empty config on GET, 501 on PUT)
             (_, "", &Method::GET) if is_notification => {
@@ -179,9 +205,7 @@ impl S3Handler {
             (b, "", &Method::HEAD) => self.head_bucket(b).await,
             (b, "", &Method::DELETE) => self.delete_bucket_handler(b).await,
             (b, "", &Method::GET) => self.list_objects_handler(b, &req).await,
-            (b, "", &Method::POST) if query.contains("delete") => {
-                self.delete_objects(b, req).await
-            }
+            (b, "", &Method::POST) if query.contains("delete") => self.delete_objects(b, req).await,
 
             // object ACL (stubs matching MinIO)
             (_, _, &Method::GET) if is_acl => self.get_acl_stub().await,
@@ -203,9 +227,7 @@ impl S3Handler {
             (b, k, &Method::DELETE) if has_upload_id => {
                 self.abort_multipart_upload(b, k, &query).await
             }
-            (b, k, &Method::GET) if has_upload_id => {
-                self.list_parts_handler(b, k, &query).await
-            }
+            (b, k, &Method::GET) if has_upload_id => self.list_parts_handler(b, k, &query).await,
 
             (b, k, &Method::PUT) => self.put_object(b, k, req).await,
             (b, k, &Method::GET) => self.get_object(b, k, &req).await,
@@ -277,6 +299,18 @@ impl S3Handler {
             Ok(()) => Ok(()),
             Err(_) => Err(error_response(&ERR_ACCESS_DENIED)),
         }
+    }
+
+    fn cluster_probe_authorized(&self, req: &Request<Incoming>) -> bool {
+        let secret = self.cluster.cluster_secret();
+        if secret.is_empty() {
+            return false;
+        }
+        req.headers()
+            .get(cluster_probe_header())
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value == secret)
+            .unwrap_or(false)
     }
 
     async fn list_buckets(&self) -> Response<BoxBody> {
@@ -562,10 +596,16 @@ impl S3Handler {
         builder.body(Full::new(Bytes::from(body_bytes))).unwrap()
     }
 
-    async fn head_object(&self, bucket: &str, key: &str, req: &Request<Incoming>) -> Response<BoxBody> {
+    async fn head_object(
+        &self,
+        bucket: &str,
+        key: &str,
+        req: &Request<Incoming>,
+    ) -> Response<BoxBody> {
         match self.store.head_object(bucket, key) {
             Ok(info) => {
-                if let Some(resp) = check_preconditions(req.headers(), &info.etag, info.created_at) {
+                if let Some(resp) = check_preconditions(req.headers(), &info.etag, info.created_at)
+                {
                     return resp;
                 }
                 let mut builder = Response::builder()
@@ -595,10 +635,8 @@ impl S3Handler {
             match self.store.delete_object_version(bucket, key, &vid) {
                 Ok(()) => {
                     let mut resp = empty_response(StatusCode::NO_CONTENT);
-                    resp.headers_mut().insert(
-                        "x-amz-version-id",
-                        vid.parse().expect("valid header"),
-                    );
+                    resp.headers_mut()
+                        .insert("x-amz-version-id", vid.parse().expect("valid header"));
                     return resp;
                 }
                 Err(e) => return error_response(&map_error(&e)),
@@ -636,6 +674,10 @@ impl S3Handler {
                             parity: 0,
                             index: 0,
                             distribution: Vec::new(),
+                            epoch_id: 0,
+                            set_id: String::new(),
+                            node_ids: Vec::new(),
+                            disk_ids: Vec::new(),
                         },
                         checksum: String::new(),
                         user_metadata: std::collections::HashMap::new(),
@@ -645,14 +687,10 @@ impl S3Handler {
                 let _ = disk.write_meta_versions(bucket, key, &versions);
             }
             let mut resp = empty_response(StatusCode::NO_CONTENT);
-            resp.headers_mut().insert(
-                "x-amz-delete-marker",
-                "true".parse().expect("valid header"),
-            );
-            resp.headers_mut().insert(
-                "x-amz-version-id",
-                marker_id.parse().expect("valid header"),
-            );
+            resp.headers_mut()
+                .insert("x-amz-delete-marker", "true".parse().expect("valid header"));
+            resp.headers_mut()
+                .insert("x-amz-version-id", marker_id.parse().expect("valid header"));
             resp
         } else {
             // unversioned: actually delete
@@ -793,16 +831,10 @@ impl S3Handler {
         }
     }
 
-    async fn put_bucket_tagging(
-        &self,
-        bucket: &str,
-        req: Request<Incoming>,
-    ) -> Response<BoxBody> {
+    async fn put_bucket_tagging(&self, bucket: &str, req: Request<Incoming>) -> Response<BoxBody> {
         // verify bucket exists
         match self.store.head_bucket(bucket) {
-            Ok(false) | Err(_) => {
-                return error_response(&super::errors::ERR_NO_SUCH_BUCKET)
-            }
+            Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
             Ok(true) => {}
         }
         let body = match req.collect().await {
@@ -852,10 +884,7 @@ impl S3Handler {
         disk_root.join(bucket).join(".tagging.json")
     }
 
-    fn read_bucket_tags(
-        &self,
-        path: &std::path::Path,
-    ) -> HashMap<String, String> {
+    fn read_bucket_tags(&self, path: &std::path::Path) -> HashMap<String, String> {
         match std::fs::read(path) {
             Ok(data) => serde_json::from_slice(&data).unwrap_or_default(),
             Err(_) => HashMap::new(),
@@ -940,10 +969,7 @@ impl S3Handler {
         let params = parse_query(query_str);
         let prefix = params.get("prefix").cloned().unwrap_or_default();
         let key_marker = params.get("key-marker").cloned().unwrap_or_default();
-        let version_id_marker = params
-            .get("version-id-marker")
-            .cloned()
-            .unwrap_or_default();
+        let version_id_marker = params.get("version-id-marker").cloned().unwrap_or_default();
         let max_keys: usize = params
             .get("max-keys")
             .and_then(|v| v.parse().ok())
@@ -1301,12 +1327,7 @@ impl S3Handler {
         }
     }
 
-    async fn list_parts_handler(
-        &self,
-        bucket: &str,
-        key: &str,
-        query: &str,
-    ) -> Response<BoxBody> {
+    async fn list_parts_handler(&self, bucket: &str, key: &str, query: &str) -> Response<BoxBody> {
         let params = parse_query(query);
         let upload_id = match params.get("uploadId") {
             Some(id) => id.clone(),
@@ -1604,7 +1625,10 @@ fn check_preconditions(
     let quoted_etag = format!("\"{}\"", etag);
 
     // If-None-Match: return 304 if ETag matches
-    if let Some(val) = req_headers.get("if-none-match").and_then(|v| v.to_str().ok()) {
+    if let Some(val) = req_headers
+        .get("if-none-match")
+        .and_then(|v| v.to_str().ok())
+    {
         let val = val.trim().trim_matches('"');
         if val == etag || val == quoted_etag || val == "*" {
             return Some(
@@ -1618,7 +1642,10 @@ fn check_preconditions(
     }
 
     // If-Modified-Since: return 304 if not modified
-    if let Some(val) = req_headers.get("if-modified-since").and_then(|v| v.to_str().ok()) {
+    if let Some(val) = req_headers
+        .get("if-modified-since")
+        .and_then(|v| v.to_str().ok())
+    {
         if let Some(since) = parse_http_date(val) {
             // object is not modified if last_modified <= since (with 1s tolerance)
             if last_modified <= since {
@@ -1642,7 +1669,10 @@ fn check_preconditions(
     }
 
     // If-Unmodified-Since: return 412 if modified since
-    if let Some(val) = req_headers.get("if-unmodified-since").and_then(|v| v.to_str().ok()) {
+    if let Some(val) = req_headers
+        .get("if-unmodified-since")
+        .and_then(|v| v.to_str().ok())
+    {
         if let Some(since) = parse_http_date(val) {
             if last_modified > since {
                 return Some(error_response(&ERR_PRECONDITION_FAILED));

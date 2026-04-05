@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod cluster;
 pub mod config;
 pub mod heal;
 pub mod multipart;

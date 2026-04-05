@@ -2,10 +2,11 @@ use std::sync::Arc;
 
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
+use super::Backend;
 use super::StorageError;
 use super::bitrot::{md5_hex, sha256_hex};
-use super::Backend;
 use super::metadata::{ErasureMeta, ObjectInfo, ObjectMeta, PutOptions, unix_timestamp_secs};
+use crate::cluster::placement::PlacementPlanner;
 use crate::heal::mrf::{MrfEntry, MrfQueue};
 
 /// Compute a hash-based permutation of disk indices for a given key.
@@ -46,6 +47,7 @@ pub fn split_data(data: &[u8], count: usize) -> Vec<Vec<u8>> {
 
 pub fn encode_and_write(
     disks: &[Box<dyn Backend>],
+    planner: &PlacementPlanner,
     data_n: usize,
     parity_n: usize,
     bucket: &str,
@@ -53,12 +55,13 @@ pub fn encode_and_write(
     data: &[u8],
     opts: PutOptions,
 ) -> Result<ObjectInfo, StorageError> {
-    encode_and_write_with_mrf(disks, data_n, parity_n, bucket, key, data, opts, None)
+    encode_and_write_with_mrf(disks, planner, data_n, parity_n, bucket, key, data, opts, None)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn encode_and_write_with_mrf(
     disks: &[Box<dyn Backend>],
+    planner: &PlacementPlanner,
     data_n: usize,
     parity_n: usize,
     bucket: &str,
@@ -67,12 +70,13 @@ pub fn encode_and_write_with_mrf(
     opts: PutOptions,
     mrf: Option<&Arc<MrfQueue>>,
 ) -> Result<ObjectInfo, StorageError> {
-    encode_and_write_impl(disks, data_n, parity_n, bucket, key, data, opts, mrf, None)
+    encode_and_write_impl(disks, planner, data_n, parity_n, bucket, key, data, opts, mrf, None)
 }
 
 #[allow(clippy::too_many_arguments)]
 pub fn encode_and_write_versioned(
     disks: &[Box<dyn Backend>],
+    planner: &PlacementPlanner,
     data_n: usize,
     parity_n: usize,
     bucket: &str,
@@ -83,7 +87,15 @@ pub fn encode_and_write_versioned(
     version_id: &str,
 ) -> Result<ObjectInfo, StorageError> {
     encode_and_write_impl(
-        disks, data_n, parity_n, bucket, key, data, opts, mrf,
+        disks,
+        planner,
+        data_n,
+        parity_n,
+        bucket,
+        key,
+        data,
+        opts,
+        mrf,
         Some(version_id),
     )
 }
@@ -91,6 +103,7 @@ pub fn encode_and_write_versioned(
 #[allow(clippy::too_many_arguments)]
 fn encode_and_write_impl(
     disks: &[Box<dyn Backend>],
+    planner: &PlacementPlanner,
     data_n: usize,
     parity_n: usize,
     bucket: &str,
@@ -109,13 +122,24 @@ fn encode_and_write_impl(
         opts.content_type.clone()
     };
 
-    // when pool has more disks than data+parity, select a subset
-    let distribution = if disks.len() > total {
-        let full_perm = hash_order(&format!("{}/{}", bucket, key), disks.len());
-        full_perm[..total].to_vec()
-    } else {
-        hash_order(&format!("{}/{}", bucket, key), total)
-    };
+    let placement = planner
+        .plan(bucket, key, data_n, parity_n)
+        .map_err(StorageError::InvalidConfig)?;
+    let distribution = placement
+        .shards
+        .iter()
+        .map(|shard| shard.backend_index)
+        .collect::<Vec<_>>();
+    let node_ids = placement
+        .shards
+        .iter()
+        .map(|shard| shard.node_id.clone())
+        .collect::<Vec<_>>();
+    let disk_ids = placement
+        .shards
+        .iter()
+        .map(|shard| shard.disk_id.clone())
+        .collect::<Vec<_>>();
 
     // split data into data_n shards
     let mut shards = split_data(data, data_n);
@@ -150,6 +174,10 @@ fn encode_and_write_impl(
                 parity: parity_n,
                 index: shard_idx,
                 distribution: distribution.clone(),
+                epoch_id: placement.epoch_id,
+                set_id: placement.set_id.clone(),
+                node_ids: node_ids.clone(),
+                disk_ids: disk_ids.clone(),
             },
             checksum,
             user_metadata: opts.user_metadata.clone(),

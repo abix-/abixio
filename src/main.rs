@@ -5,6 +5,7 @@ use clap::Parser;
 
 use abixio::admin::HealStats;
 use abixio::admin::handlers::{AdminConfig, AdminHandler};
+use abixio::cluster::{ClusterConfig, ClusterManager};
 use abixio::config::Config;
 use abixio::heal::mrf::MrfQueue;
 use abixio::heal::scanner::ScanState;
@@ -95,6 +96,21 @@ async fn main() {
     };
 
     let heal_stats = Arc::new(HealStats::new());
+    let cluster = Arc::new(
+        ClusterManager::new(ClusterConfig {
+            node_id: cfg.node_id.clone(),
+            advertise_s3: cfg.advertise_s3.clone(),
+            advertise_cluster: cfg.advertise_cluster.clone(),
+            peers: cfg.peers.clone(),
+            cluster_secret: cfg.cluster_secret.clone(),
+            disk_paths: cfg.disks.clone(),
+        })
+        .unwrap_or_else(|err| {
+            eprintln!("error: {}", err);
+            std::process::exit(1);
+        }),
+    );
+    cluster.clone().spawn_peer_monitor(shutdown_rx.clone());
 
     let admin_config = AdminConfig::from_config(&cfg);
     let admin = Arc::new(AdminHandler::new(
@@ -103,9 +119,10 @@ async fn main() {
         Arc::clone(&mrf),
         Arc::clone(&heal_stats),
         admin_config,
+        Arc::clone(&cluster),
     ));
 
-    let mut handler = S3Handler::new(set, auth);
+    let mut handler = S3Handler::new(set, auth, cluster);
     handler.set_admin(admin);
     let handler = Arc::new(handler);
     let addr = parse_listen_addr(&cfg.listen);

@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use abixio::admin::HealStats;
 use abixio::admin::handlers::{AdminConfig, AdminHandler};
+use abixio::cluster::{ClusterConfig, ClusterManager};
 use abixio::heal::mrf::MrfQueue;
 use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
@@ -27,6 +28,13 @@ fn setup_n(n: usize) -> (TempDir, Vec<std::path::PathBuf>) {
 }
 
 async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let (addr, handle, _cluster) = start_server_with_cluster(paths).await;
+    (addr, handle)
+}
+
+async fn start_server_with_cluster(
+    paths: &[std::path::PathBuf],
+) -> (SocketAddr, tokio::task::JoinHandle<()>, Arc<ClusterManager>) {
     let backends: Vec<Box<dyn Backend>> = paths
         .iter()
         .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
@@ -46,6 +54,17 @@ async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task:
     );
 
     let heal_stats = Arc::new(HealStats::new());
+    let cluster = Arc::new(
+        ClusterManager::new(ClusterConfig {
+            node_id: "test-node".to_string(),
+            advertise_s3: "http://127.0.0.1:0".to_string(),
+            advertise_cluster: "http://127.0.0.1:0".to_string(),
+            peers: Vec::new(),
+            cluster_secret: String::new(),
+            disk_paths: paths.to_vec(),
+        })
+        .unwrap(),
+    );
 
     let admin_config = AdminConfig {
         listen: ":0".to_string(),
@@ -56,6 +75,10 @@ async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task:
         scan_interval: "10m".to_string(),
         heal_interval: "24h".to_string(),
         mrf_workers: 2,
+        node_id: "test-node".to_string(),
+        advertise_s3: "http://127.0.0.1:0".to_string(),
+        advertise_cluster: "http://127.0.0.1:0".to_string(),
+        peer_count: 0,
     };
 
     let admin = Arc::new(AdminHandler::new(
@@ -64,6 +87,7 @@ async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task:
         mrf,
         heal_stats,
         admin_config,
+        Arc::clone(&cluster),
     ));
 
     let auth = AuthConfig {
@@ -71,7 +95,7 @@ async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task:
         secret_key: String::new(),
         no_auth: true,
     };
-    let mut handler = S3Handler::new(set, auth);
+    let mut handler = S3Handler::new(set, auth, Arc::clone(&cluster));
     handler.set_admin(admin);
     let handler = Arc::new(handler);
 
@@ -95,7 +119,7 @@ async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task:
         }
     });
 
-    (addr, handle)
+    (addr, handle, cluster)
 }
 
 async fn start_server_pool(
@@ -122,6 +146,17 @@ async fn start_server_pool(
     );
 
     let heal_stats = Arc::new(HealStats::new());
+    let cluster = Arc::new(
+        ClusterManager::new(ClusterConfig {
+            node_id: "test-node".to_string(),
+            advertise_s3: "http://127.0.0.1:0".to_string(),
+            advertise_cluster: "http://127.0.0.1:0".to_string(),
+            peers: Vec::new(),
+            cluster_secret: String::new(),
+            disk_paths: paths.to_vec(),
+        })
+        .unwrap(),
+    );
 
     let admin_config = AdminConfig {
         listen: ":0".to_string(),
@@ -132,6 +167,10 @@ async fn start_server_pool(
         scan_interval: "10m".to_string(),
         heal_interval: "24h".to_string(),
         mrf_workers: 2,
+        node_id: "test-node".to_string(),
+        advertise_s3: "http://127.0.0.1:0".to_string(),
+        advertise_cluster: "http://127.0.0.1:0".to_string(),
+        peer_count: 0,
     };
 
     let admin = Arc::new(AdminHandler::new(
@@ -140,6 +179,7 @@ async fn start_server_pool(
         mrf,
         heal_stats,
         admin_config,
+        Arc::clone(&cluster),
     ));
 
     let auth = AuthConfig {
@@ -147,7 +187,7 @@ async fn start_server_pool(
         secret_key: String::new(),
         no_auth: true,
     };
-    let mut handler = S3Handler::new(set, auth);
+    let mut handler = S3Handler::new(set, auth, cluster);
     handler.set_admin(admin);
     let handler = Arc::new(handler);
 
@@ -205,6 +245,7 @@ async fn admin_status_returns_json() {
     assert_eq!(body["parity_shards"], 2);
     assert_eq!(body["total_disks"], 4);
     assert_eq!(body["auth_enabled"], false);
+    assert_eq!(body["cluster"]["state"], "ready");
 }
 
 #[tokio::test]
@@ -223,6 +264,109 @@ async fn admin_status_has_uptime() {
         .unwrap();
     assert!(body["uptime_secs"].as_u64().is_some());
     assert!(body["version"].as_str().is_some());
+    assert_eq!(body["cluster"]["enabled"], false);
+}
+
+#[tokio::test]
+async fn admin_cluster_status_returns_ready_for_standalone() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let body: serde_json::Value = client
+        .get(url(&addr, "/_admin/cluster/status"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    assert_eq!(body["summary"]["state"], "ready");
+    assert_eq!(body["summary"]["enabled"], false);
+    assert_eq!(body["topology"]["nodes"][0]["node_id"], "test-node");
+}
+
+#[tokio::test]
+async fn admin_cluster_nodes_returns_local_node() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let body: serde_json::Value = client
+        .get(url(&addr, "/_admin/cluster/nodes"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let nodes = body["nodes"].as_array().unwrap();
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0]["node_id"], "test-node");
+    assert_eq!(nodes[0]["state"], "ready");
+    assert_eq!(nodes[0]["voter"], true);
+}
+
+#[tokio::test]
+async fn admin_cluster_epochs_returns_initial_epoch() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let body: serde_json::Value = client
+        .get(url(&addr, "/_admin/cluster/epochs"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let epochs = body["epochs"].as_array().unwrap();
+    assert_eq!(epochs.len(), 1);
+    assert_eq!(epochs[0]["epoch_id"], 1);
+}
+
+#[tokio::test]
+async fn admin_cluster_topology_returns_disks() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    let body: serde_json::Value = client
+        .get(url(&addr, "/_admin/cluster/topology"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    let disks = body["topology"]["disks"].as_array().unwrap();
+    assert_eq!(disks.len(), 4);
+    assert_eq!(body["topology"]["cluster_id"].as_str().unwrap().starts_with("abixio-"), true);
+}
+
+#[tokio::test]
+async fn fenced_cluster_rejects_mutating_admin_calls() {
+    let (_base, paths) = setup();
+    let (addr, _handle, cluster) = start_server_with_cluster(&paths).await;
+    cluster.force_fence("test fence");
+    let client = reqwest::Client::new();
+
+    let resp = client
+        .post(url_with_query(
+            &addr,
+            "/_admin/heal",
+            &[("bucket", "bucket"), ("key", "object")],
+        ))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 503);
 }
 
 // -- disks endpoint --
@@ -751,11 +895,7 @@ async fn admin_bucket_ec_config_affects_new_objects() {
     assert_eq!(disks_with_obj, 6, "bucket EC 3+3 should use all 6 disks");
 
     // read back
-    let resp = client
-        .get(url(&addr, "/ecobj/mykey"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/ecobj/mykey")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.bytes().await.unwrap().as_ref(), b"bucket ec test");
 }

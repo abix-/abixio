@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::Backend;
 use super::erasure_decode::{read_and_decode, read_and_decode_versioned};
@@ -8,13 +8,22 @@ use super::metadata::{
     VersioningConfig,
 };
 use super::{StorageError, Store};
+use crate::cluster::placement::{PlacementDisk, PlacementPlanner};
 use crate::heal::mrf::MrfQueue;
+
+#[derive(Debug, Clone)]
+struct PlacementTopology {
+    epoch_id: u64,
+    set_id: String,
+    disks: Vec<PlacementDisk>,
+}
 
 pub struct ErasureSet {
     disks: Vec<Box<dyn Backend>>,
     default_data: usize,
     default_parity: usize,
     mrf: Option<Arc<MrfQueue>>,
+    placement: RwLock<PlacementTopology>,
 }
 
 impl ErasureSet {
@@ -39,6 +48,17 @@ impl ErasureSet {
             )));
         }
         Ok(Self {
+            placement: RwLock::new(PlacementTopology {
+                epoch_id: 1,
+                set_id: "local-set".to_string(),
+                disks: (0..disks.len())
+                    .map(|backend_index| PlacementDisk {
+                        backend_index,
+                        node_id: "local".to_string(),
+                        disk_id: format!("disk-{}", backend_index),
+                    })
+                    .collect(),
+            }),
             disks,
             default_data,
             default_parity,
@@ -60,6 +80,36 @@ impl ErasureSet {
 
     pub fn set_mrf(&mut self, mrf: Arc<MrfQueue>) {
         self.mrf = Some(mrf);
+    }
+
+    pub fn set_placement_topology(
+        &self,
+        epoch_id: u64,
+        set_id: impl Into<String>,
+        disks: Vec<PlacementDisk>,
+    ) -> Result<(), StorageError> {
+        if disks.len() != self.disks.len() {
+            return Err(StorageError::InvalidConfig(format!(
+                "placement disk count mismatch: expected {}, got {}",
+                self.disks.len(),
+                disks.len()
+            )));
+        }
+        let mut guard = self.placement.write().unwrap();
+        guard.epoch_id = epoch_id;
+        guard.set_id = set_id.into();
+        guard.disks = disks;
+        Ok(())
+    }
+
+    pub fn placement_planner(&self) -> PlacementPlanner {
+        let guard = self.placement.read().unwrap();
+        PlacementPlanner::new(guard.epoch_id, guard.set_id.clone(), guard.disks.clone())
+    }
+
+    pub fn placement_snapshot(&self) -> (u64, String, Vec<PlacementDisk>) {
+        let guard = self.placement.read().unwrap();
+        (guard.epoch_id, guard.set_id.clone(), guard.disks.clone())
     }
 
     /// Resolve EC params for a write operation.
@@ -123,8 +173,10 @@ impl Store for ErasureSet {
             return Err(StorageError::BucketNotFound);
         }
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts);
+        let planner = self.placement_planner();
         encode_and_write_with_mrf(
             &self.disks,
+            &planner,
             data_n,
             parity_n,
             bucket,
@@ -142,8 +194,7 @@ impl Store for ErasureSet {
         let (data_n, parity_n) = self
             .read_ec_from_meta(bucket, key)
             .unwrap_or((self.default_data, self.default_parity));
-        let (data, meta) =
-            read_and_decode(&self.disks, data_n, parity_n, bucket, key)?;
+        let (data, meta) = read_and_decode(&self.disks, data_n, parity_n, bucket, key)?;
         Ok((data, Self::meta_to_info(bucket, key, &meta)))
     }
 
@@ -182,11 +233,7 @@ impl Store for ErasureSet {
         if !found {
             return Err(StorageError::ObjectNotFound);
         }
-        let delete_quorum = if parity_n == 0 {
-            data_n
-        } else {
-            data_n + 1
-        };
+        let delete_quorum = if parity_n == 0 { data_n } else { data_n + 1 };
         if successes < delete_quorum {
             return Err(StorageError::WriteQuorum);
         }
@@ -355,11 +402,7 @@ impl Store for ErasureSet {
         if !found {
             return Err(StorageError::ObjectNotFound);
         }
-        let write_quorum = if parity_n == 0 {
-            data_n
-        } else {
-            data_n + 1
-        };
+        let write_quorum = if parity_n == 0 { data_n } else { data_n + 1 };
         if successes < write_quorum {
             return Err(StorageError::WriteQuorum);
         }
@@ -384,8 +427,10 @@ impl Store for ErasureSet {
             return Err(StorageError::BucketNotFound);
         }
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts);
+        let planner = self.placement_planner();
         encode_and_write_versioned(
             &self.disks,
+            &planner,
             data_n,
             parity_n,
             bucket,
@@ -445,14 +490,8 @@ impl Store for ErasureSet {
         let (data_n, parity_n) = self
             .read_ec_from_meta(bucket, key)
             .unwrap_or((self.default_data, self.default_parity));
-        let (data, meta) = read_and_decode_versioned(
-            &self.disks,
-            data_n,
-            parity_n,
-            bucket,
-            key,
-            version_id,
-        )?;
+        let (data, meta) =
+            read_and_decode_versioned(&self.disks, data_n, parity_n, bucket, key, version_id)?;
         Ok((data, Self::meta_to_info(bucket, key, &meta)))
     }
 
@@ -504,10 +543,7 @@ impl Store for ErasureSet {
 
     // -- per-bucket EC config --
 
-    fn get_ec_config(
-        &self,
-        bucket: &str,
-    ) -> Result<Option<EcConfig>, StorageError> {
+    fn get_ec_config(&self, bucket: &str) -> Result<Option<EcConfig>, StorageError> {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -519,11 +555,7 @@ impl Store for ErasureSet {
         Ok(None)
     }
 
-    fn set_ec_config(
-        &self,
-        bucket: &str,
-        config: &EcConfig,
-    ) -> Result<(), StorageError> {
+    fn set_ec_config(&self, bucket: &str, config: &EcConfig) -> Result<(), StorageError> {
         if !self.head_bucket(bucket)? {
             return Err(StorageError::BucketNotFound);
         }
@@ -792,7 +824,8 @@ mod tests {
         set.make_bucket("test").unwrap();
 
         // set bucket config to 3+3
-        set.set_ec_config("test", &EcConfig { data: 3, parity: 3 }).unwrap();
+        set.set_ec_config("test", &EcConfig { data: 3, parity: 3 })
+            .unwrap();
 
         // write with per-object override 1+1
         let opts = PutOptions {
@@ -815,19 +848,22 @@ mod tests {
         set.make_bucket("test").unwrap();
 
         // data=0 should fail
-        assert!(set
-            .set_ec_config("test", &EcConfig { data: 0, parity: 2 })
-            .is_err());
+        assert!(
+            set.set_ec_config("test", &EcConfig { data: 0, parity: 2 })
+                .is_err()
+        );
 
         // exceeds disk count should fail
-        assert!(set
-            .set_ec_config("test", &EcConfig { data: 3, parity: 3 })
-            .is_err());
+        assert!(
+            set.set_ec_config("test", &EcConfig { data: 3, parity: 3 })
+                .is_err()
+        );
 
         // valid config should succeed
-        assert!(set
-            .set_ec_config("test", &EcConfig { data: 2, parity: 2 })
-            .is_ok());
+        assert!(
+            set.set_ec_config("test", &EcConfig { data: 2, parity: 2 })
+                .is_ok()
+        );
     }
 
     // -- erasure resilience --

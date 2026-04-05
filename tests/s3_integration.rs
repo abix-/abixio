@@ -1,6 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use abixio::cluster::{ClusterConfig, ClusterManager};
 use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
 use abixio::storage::Backend;
@@ -24,17 +25,35 @@ fn setup_n(n: usize) -> (TempDir, Vec<std::path::PathBuf>) {
 }
 
 async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let (addr, handle, _cluster) = start_server_with_cluster(paths).await;
+    (addr, handle)
+}
+
+async fn start_server_with_cluster(
+    paths: &[std::path::PathBuf],
+) -> (SocketAddr, tokio::task::JoinHandle<()>, Arc<ClusterManager>) {
     let backends: Vec<Box<dyn Backend>> = paths
         .iter()
         .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
     let set = Arc::new(ErasureSet::new(backends, 2, 2).unwrap());
+    let cluster = Arc::new(
+        ClusterManager::new(ClusterConfig {
+            node_id: "test-node".to_string(),
+            advertise_s3: "http://127.0.0.1:0".to_string(),
+            advertise_cluster: "http://127.0.0.1:0".to_string(),
+            peers: Vec::new(),
+            cluster_secret: String::new(),
+            disk_paths: paths.to_vec(),
+        })
+        .unwrap(),
+    );
     let auth = AuthConfig {
         access_key: String::new(),
         secret_key: String::new(),
         no_auth: true,
     };
-    let handler = Arc::new(S3Handler::new(set, auth));
+    let handler = Arc::new(S3Handler::new(set, auth, Arc::clone(&cluster)));
 
     // bind to random port
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -57,7 +76,7 @@ async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task:
         }
     });
 
-    (addr, handle)
+    (addr, handle, cluster)
 }
 
 async fn start_server_pool(
@@ -70,12 +89,23 @@ async fn start_server_pool(
         .map(|p| Box::new(LocalDisk::new(p.as_path()).unwrap()) as Box<dyn Backend>)
         .collect();
     let set = Arc::new(ErasureSet::new(backends, data, parity).unwrap());
+    let cluster = Arc::new(
+        ClusterManager::new(ClusterConfig {
+            node_id: "test-node".to_string(),
+            advertise_s3: "http://127.0.0.1:0".to_string(),
+            advertise_cluster: "http://127.0.0.1:0".to_string(),
+            peers: Vec::new(),
+            cluster_secret: String::new(),
+            disk_paths: paths.to_vec(),
+        })
+        .unwrap(),
+    );
     let auth = AuthConfig {
         access_key: String::new(),
         secret_key: String::new(),
         no_auth: true,
     };
-    let handler = Arc::new(S3Handler::new(set, auth));
+    let handler = Arc::new(S3Handler::new(set, auth, cluster));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -118,6 +148,17 @@ async fn create_bucket() {
 
     let resp = client.put(url(&addr, "/testbucket")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn fenced_cluster_rejects_s3_requests() {
+    let (_base, paths) = setup();
+    let (addr, _handle, cluster) = start_server_with_cluster(&paths).await;
+    cluster.force_fence("test fence");
+    let client = reqwest::Client::new();
+
+    let resp = client.put(url(&addr, "/testbucket")).send().await.unwrap();
+    assert_eq!(resp.status(), 503);
 }
 
 #[tokio::test]
@@ -515,7 +556,11 @@ async fn error_xml_contains_request_id_and_resource() {
         .await
         .unwrap();
     let body = resp.text().await.unwrap();
-    assert!(body.contains("<RequestId>"), "missing RequestId in error XML: {}", body);
+    assert!(
+        body.contains("<RequestId>"),
+        "missing RequestId in error XML: {}",
+        body
+    );
     // Resource is included when the handler has context; auth-level errors may omit it
     assert!(body.contains("Error"), "expected Error XML: {}", body);
 }
@@ -567,7 +612,11 @@ async fn object_tagging_put_get_delete() {
     assert!(body.contains("env"), "missing tag key 'env': {}", body);
     assert!(body.contains("prod"), "missing tag value 'prod': {}", body);
     assert!(body.contains("team"), "missing tag key 'team': {}", body);
-    assert!(body.contains("infra"), "missing tag value 'infra': {}", body);
+    assert!(
+        body.contains("infra"),
+        "missing tag value 'infra': {}",
+        body
+    );
 
     // delete tags
     let resp = client
@@ -637,15 +686,12 @@ async fn bucket_tagging_put_get_delete() {
     client.put(url(&addr, "/tb")).send().await.unwrap();
 
     // get bucket tags (empty initially)
-    let resp = client
-        .get(url(&addr, "/tb?tagging"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb?tagging")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 
     // put bucket tags
-    let tag_xml = r#"<Tagging><TagSet><Tag><Key>project</Key><Value>alpha</Value></Tag></TagSet></Tagging>"#;
+    let tag_xml =
+        r#"<Tagging><TagSet><Tag><Key>project</Key><Value>alpha</Value></Tag></TagSet></Tagging>"#;
     let resp = client
         .put(url(&addr, "/tb?tagging"))
         .body(tag_xml)
@@ -655,11 +701,7 @@ async fn bucket_tagging_put_get_delete() {
     assert_eq!(resp.status(), 200);
 
     // get bucket tags back
-    let resp = client
-        .get(url(&addr, "/tb?tagging"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb?tagging")).send().await.unwrap();
     let body = resp.text().await.unwrap();
     assert!(body.contains("project"), "missing key: {}", body);
     assert!(body.contains("alpha"), "missing value: {}", body);
@@ -845,7 +887,11 @@ async fn versioning_disabled_by_default() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
-    assert!(body.contains("VersioningConfiguration"), "expected XML: {}", body);
+    assert!(
+        body.contains("VersioningConfiguration"),
+        "expected XML: {}",
+        body
+    );
     // no <Status> element when disabled
     assert!(!body.contains("<Status>Enabled</Status>"));
     assert!(!body.contains("<Status>Suspended</Status>"));
@@ -908,7 +954,11 @@ async fn versioning_enable_then_suspend() {
         .await
         .unwrap();
     let body = resp.text().await.unwrap();
-    assert!(body.contains("<Status>Suspended</Status>"), "body: {}", body);
+    assert!(
+        body.contains("<Status>Suspended</Status>"),
+        "body: {}",
+        body
+    );
 }
 
 #[tokio::test]
@@ -1011,11 +1061,7 @@ async fn list_object_versions_returns_all_versions() {
         .await
         .unwrap();
 
-    let resp = client
-        .get(url(&addr, "/tb?versions"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb?versions")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(
@@ -1043,11 +1089,7 @@ async fn list_object_versions_empty_bucket() {
 
     client.put(url(&addr, "/tb")).send().await.unwrap();
 
-    let resp = client
-        .get(url(&addr, "/tb?versions"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb?versions")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("ListVersionsResult"));
@@ -1080,22 +1122,14 @@ async fn versioned_delete_creates_delete_marker() {
         .unwrap();
 
     // delete without versionId -> should create delete marker
-    let resp = client
-        .delete(url(&addr, "/tb/obj"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.delete(url(&addr, "/tb/obj")).send().await.unwrap();
     assert_eq!(resp.status(), 204);
     assert!(resp.headers().contains_key("x-amz-delete-marker"));
     assert_eq!(resp.headers()["x-amz-delete-marker"], "true");
     assert!(resp.headers().contains_key("x-amz-version-id"));
 
     // list versions should show the delete marker
-    let resp = client
-        .get(url(&addr, "/tb?versions"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb?versions")).send().await.unwrap();
     let body = resp.text().await.unwrap();
     assert!(
         body.contains("<DeleteMarker>"),
@@ -1141,20 +1175,12 @@ async fn get_specific_version() {
         .unwrap();
 
     // GET without versionId -> latest (version-two)
-    let resp = client
-        .get(url(&addr, "/tb/obj"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb/obj")).send().await.unwrap();
     assert_eq!(resp.text().await.unwrap(), "version-two");
 
     // GET with versionId=vid1 -> first version
     let resp = client
-        .get(url_with_query(
-            &addr,
-            "/tb/obj",
-            &[("versionId", &vid1)],
-        ))
+        .get(url_with_query(&addr, "/tb/obj", &[("versionId", &vid1)]))
         .send()
         .await
         .unwrap();
@@ -1198,11 +1224,7 @@ async fn delete_specific_version() {
 
     // permanently delete v1
     let resp = client
-        .delete(url_with_query(
-            &addr,
-            "/tb/obj",
-            &[("versionId", &vid1)],
-        ))
+        .delete(url_with_query(&addr, "/tb/obj", &[("versionId", &vid1)]))
         .send()
         .await
         .unwrap();
@@ -1211,22 +1233,14 @@ async fn delete_specific_version() {
 
     // GET v1 should now fail
     let resp = client
-        .get(url_with_query(
-            &addr,
-            "/tb/obj",
-            &[("versionId", &vid1)],
-        ))
+        .get(url_with_query(&addr, "/tb/obj", &[("versionId", &vid1)]))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
 
     // latest (v2) should still work
-    let resp = client
-        .get(url(&addr, "/tb/obj"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb/obj")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "v2");
 }
@@ -1360,7 +1374,8 @@ async fn delete_objects_batch() {
         .await
         .unwrap();
 
-    let delete_xml = r#"<Delete><Object><Key>a</Key></Object><Object><Key>b</Key></Object></Delete>"#;
+    let delete_xml =
+        r#"<Delete><Object><Key>a</Key></Object><Object><Key>b</Key></Object></Delete>"#;
     let resp = client
         .post(url(&addr, "/tb?delete"))
         .body(delete_xml)
@@ -1448,19 +1463,11 @@ async fn custom_metadata_round_trip() {
         .await
         .unwrap();
 
-    let resp = client
-        .head(url(&addr, "/tb/obj"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.head(url(&addr, "/tb/obj")).send().await.unwrap();
     assert_eq!(resp.headers()["x-amz-meta-author"], "alice");
     assert_eq!(resp.headers()["x-amz-meta-version"], "42");
 
-    let resp = client
-        .get(url(&addr, "/tb/obj"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb/obj")).send().await.unwrap();
     assert_eq!(resp.headers()["x-amz-meta-author"], "alice");
 }
 
@@ -1534,7 +1541,11 @@ async fn multipart_create_upload_returns_upload_id() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
-    assert!(body.contains("InitiateMultipartUploadResult"), "body: {}", body);
+    assert!(
+        body.contains("InitiateMultipartUploadResult"),
+        "body: {}",
+        body
+    );
     assert!(body.contains("<UploadId>"), "missing UploadId: {}", body);
     assert!(body.contains("<Bucket>tb</Bucket>"));
     assert!(body.contains("<Key>bigfile</Key>"));
@@ -1635,7 +1646,11 @@ async fn multipart_full_lifecycle() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
-    assert!(body.contains("CompleteMultipartUploadResult"), "body: {}", body);
+    assert!(
+        body.contains("CompleteMultipartUploadResult"),
+        "body: {}",
+        body
+    );
 
     // GET the assembled object
     let resp = client
@@ -1700,7 +1715,10 @@ async fn multipart_abort_cleans_up() {
         .unwrap();
     // either 404 or empty parts list
     let body = resp.text().await.unwrap();
-    assert!(!body.contains("<PartNumber>1</PartNumber>"), "part should be gone");
+    assert!(
+        !body.contains("<PartNumber>1</PartNumber>"),
+        "part should be gone"
+    );
 }
 
 #[tokio::test]
@@ -1723,14 +1741,14 @@ async fn multipart_list_uploads() {
         .await
         .unwrap();
 
-    let resp = client
-        .get(url(&addr, "/tb?uploads"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb?uploads")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
-    assert!(body.contains("ListMultipartUploadsResult"), "body: {}", body);
+    assert!(
+        body.contains("ListMultipartUploadsResult"),
+        "body: {}",
+        body
+    );
     assert!(body.contains("file1"), "missing file1: {}", body);
     assert!(body.contains("file2"), "missing file2: {}", body);
 }
@@ -1749,7 +1767,12 @@ fn extract_xml_value(xml: &str, tag: &str) -> String {
 }
 
 /// Helper: create upload, return upload_id
-async fn create_upload(client: &reqwest::Client, addr: &SocketAddr, bucket: &str, key: &str) -> String {
+async fn create_upload(
+    client: &reqwest::Client,
+    addr: &SocketAddr,
+    bucket: &str,
+    key: &str,
+) -> String {
     let resp = client
         .post(url(addr, &format!("/{}/{}?uploads", bucket, key)))
         .send()
@@ -1774,7 +1797,10 @@ async fn upload_part(
         .put(url_with_query(
             addr,
             &format!("/{}/{}", bucket, key),
-            &[("uploadId", upload_id), ("partNumber", &part_number.to_string())],
+            &[
+                ("uploadId", upload_id),
+                ("partNumber", &part_number.to_string()),
+            ],
         ))
         .body(data.to_vec())
         .send()
@@ -1914,7 +1940,11 @@ async fn multipart_large_parts() {
     let body = resp.bytes().await.unwrap();
     assert_eq!(body.len(), 2 * 1024 * 1024);
     assert!(body[0..1024].iter().all(|&b| b == b'A'));
-    assert!(body[1024 * 1024..1024 * 1024 + 1024].iter().all(|&b| b == b'B'));
+    assert!(
+        body[1024 * 1024..1024 * 1024 + 1024]
+            .iter()
+            .all(|&b| b == b'B')
+    );
 }
 
 #[tokio::test]
@@ -1979,7 +2009,11 @@ async fn multipart_list_parts_shows_sizes() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("<Size>5</Size>"), "part 1 size: {}", body);
     assert!(body.contains("<Size>10000</Size>"), "part 2 size: {}", body);
-    assert!(body.contains("<UploadId>"), "should include upload ID: {}", body);
+    assert!(
+        body.contains("<UploadId>"),
+        "should include upload ID: {}",
+        body
+    );
     assert!(body.contains("<Bucket>tb</Bucket>"));
     assert!(body.contains("<Key>key</Key>"));
 }
@@ -2043,9 +2077,17 @@ async fn multipart_completed_object_survives_head_and_delete() {
     assert_eq!(resp.headers()["content-length"], "14");
 
     // object should appear in list
-    let resp = client.get(url(&addr, "/tb?list-type=2")).send().await.unwrap();
+    let resp = client
+        .get(url(&addr, "/tb?list-type=2"))
+        .send()
+        .await
+        .unwrap();
     let body = resp.text().await.unwrap();
-    assert!(body.contains("<Key>key</Key>"), "object should be listed: {}", body);
+    assert!(
+        body.contains("<Key>key</Key>"),
+        "object should be listed: {}",
+        body
+    );
 
     // delete should work
     let resp = client.delete(url(&addr, "/tb/key")).send().await.unwrap();
@@ -2067,12 +2109,24 @@ async fn multipart_upload_does_not_appear_as_object_until_complete() {
     upload_part(&client, &addr, "tb", "invisible", &uid, 1, b"data").await;
 
     // object should NOT appear in listing yet
-    let resp = client.get(url(&addr, "/tb?list-type=2")).send().await.unwrap();
+    let resp = client
+        .get(url(&addr, "/tb?list-type=2"))
+        .send()
+        .await
+        .unwrap();
     let body = resp.text().await.unwrap();
-    assert!(!body.contains("invisible"), "in-progress upload should not be listed: {}", body);
+    assert!(
+        !body.contains("invisible"),
+        "in-progress upload should not be listed: {}",
+        body
+    );
 
     // GET should 404
-    let resp = client.get(url(&addr, "/tb/invisible")).send().await.unwrap();
+    let resp = client
+        .get(url(&addr, "/tb/invisible"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -2089,7 +2143,10 @@ async fn multipart_list_uploads_after_complete_is_empty() {
     // should show in list
     let resp = client.get(url(&addr, "/tb?uploads")).send().await.unwrap();
     let body = resp.text().await.unwrap();
-    assert!(body.contains(&uid), "upload should be listed before complete");
+    assert!(
+        body.contains(&uid),
+        "upload should be listed before complete"
+    );
 
     // complete
     let complete_xml = format!(
@@ -2106,7 +2163,11 @@ async fn multipart_list_uploads_after_complete_is_empty() {
     // should NOT show in list after complete
     let resp = client.get(url(&addr, "/tb?uploads")).send().await.unwrap();
     let body = resp.text().await.unwrap();
-    assert!(!body.contains(&uid), "upload should be gone after complete: {}", body);
+    assert!(
+        !body.contains(&uid),
+        "upload should be gone after complete: {}",
+        body
+    );
 }
 
 #[tokio::test]
@@ -2127,7 +2188,11 @@ async fn multipart_list_uploads_after_abort_is_empty() {
 
     let resp = client.get(url(&addr, "/tb?uploads")).send().await.unwrap();
     let body = resp.text().await.unwrap();
-    assert!(!body.contains(&uid), "upload should be gone after abort: {}", body);
+    assert!(
+        !body.contains(&uid),
+        "upload should be gone after abort: {}",
+        body
+    );
 }
 
 #[tokio::test]
@@ -2155,7 +2220,11 @@ async fn multipart_complete_etag_is_multipart_format() {
     let etag = extract_xml_value(&body, "ETag");
 
     // multipart etag format: "md5-N" where N is part count
-    assert!(etag.contains("-2"), "multipart etag should end with -2: {}", etag);
+    assert!(
+        etag.contains("-2"),
+        "multipart etag should end with -2: {}",
+        etag
+    );
 }
 
 #[tokio::test]
@@ -2260,7 +2329,11 @@ async fn bucket_lifecycle_put_get_delete() {
         .unwrap();
     assert_eq!(resp.status(), 404);
     let body = resp.text().await.unwrap();
-    assert!(body.contains("NoSuchLifecycleConfiguration"), "body: {}", body);
+    assert!(
+        body.contains("NoSuchLifecycleConfiguration"),
+        "body: {}",
+        body
+    );
 }
 
 #[tokio::test]
@@ -2536,11 +2609,7 @@ async fn bucket_policy_put_get_delete() {
     assert_eq!(resp.status(), 204);
 
     // GET policy
-    let resp = client
-        .get(url(&addr, "/tb?policy"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb?policy")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.headers()["content-type"], "application/json");
     let body = resp.text().await.unwrap();
@@ -2556,11 +2625,7 @@ async fn bucket_policy_put_get_delete() {
     assert_eq!(resp.status(), 204);
 
     // GET after delete returns 404
-    let resp = client
-        .get(url(&addr, "/tb?policy"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb?policy")).send().await.unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -2571,11 +2636,7 @@ async fn bucket_policy_get_when_none_returns_404() {
     let client = reqwest::Client::new();
     client.put(url(&addr, "/tb")).send().await.unwrap();
 
-    let resp = client
-        .get(url(&addr, "/tb?policy"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/tb?policy")).send().await.unwrap();
     assert_eq!(resp.status(), 404);
     let body = resp.text().await.unwrap();
     assert!(body.contains("NoSuchBucketPolicy"), "body: {}", body);
@@ -2782,7 +2843,11 @@ async fn per_object_ec_mixed_ec_in_same_bucket() {
     assert_eq!(resp.bytes().await.unwrap().as_ref(), b"default ec");
 
     // list should show all three
-    let resp = client.get(url(&addr, "/mixed?list-type=2")).send().await.unwrap();
+    let resp = client
+        .get(url(&addr, "/mixed?list-type=2"))
+        .send()
+        .await
+        .unwrap();
     let body = resp.text().await.unwrap();
     assert!(body.contains("high-parity"));
     assert!(body.contains("high-throughput"));
@@ -2840,11 +2905,7 @@ async fn per_object_ec_delete_mixed_ec_objects() {
         .unwrap();
     assert_eq!(resp.status(), 404);
 
-    let resp = client
-        .get(url(&addr, "/delmix/big"))
-        .send()
-        .await
-        .unwrap();
+    let resp = client.get(url(&addr, "/delmix/big")).send().await.unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -2917,5 +2978,8 @@ async fn per_object_ec_default_uses_pool_subset() {
             disks_with_obj += 1;
         }
     }
-    assert_eq!(disks_with_obj, 4, "default EC 2+2 should use exactly 4 of 6 disks");
+    assert_eq!(
+        disks_with_obj, 4,
+        "default EC 2+2 should use exactly 4 of 6 disks"
+    );
 }

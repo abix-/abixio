@@ -41,6 +41,14 @@ pub struct ErasureMeta {
     pub parity: usize,
     pub index: usize,             // which shard this disk holds
     pub distribution: Vec<usize>, // permutation mapping shard -> disk
+    #[serde(default)]
+    pub epoch_id: u64,
+    #[serde(default)]
+    pub set_id: String,
+    #[serde(default)]
+    pub node_ids: Vec<String>,
+    #[serde(default)]
+    pub disk_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -115,6 +123,10 @@ impl ObjectMeta {
             && self.erasure.data == other.erasure.data
             && self.erasure.parity == other.erasure.parity
             && self.erasure.distribution == other.erasure.distribution
+            && self.erasure.epoch_id == other.erasure.epoch_id
+            && self.erasure.set_id == other.erasure.set_id
+            && self.erasure.node_ids == other.erasure.node_ids
+            && self.erasure.disk_ids == other.erasure.disk_ids
             && self.user_metadata == other.user_metadata
             && self.tags == other.tags
     }
@@ -154,6 +166,20 @@ mod tests {
                 parity: 2,
                 index,
                 distribution: vec![2, 0, 3, 1],
+                epoch_id: 1,
+                set_id: "set-a".to_string(),
+                node_ids: vec![
+                    "node-1".to_string(),
+                    "node-2".to_string(),
+                    "node-3".to_string(),
+                    "node-4".to_string(),
+                ],
+                disk_ids: vec![
+                    "disk-a".to_string(),
+                    "disk-b".to_string(),
+                    "disk-c".to_string(),
+                    "disk-d".to_string(),
+                ],
             },
             checksum: "abc123".to_string(),
             user_metadata: HashMap::new(),

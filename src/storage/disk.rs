@@ -1,10 +1,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::{Backend, BackendInfo, StorageError};
 use super::metadata::{
     EcConfig, ObjectMeta, ObjectMetaFile, VersioningConfig, read_meta_file, write_meta_file,
 };
+use super::{Backend, BackendInfo, StorageError};
 
 pub struct LocalDisk {
     root: PathBuf,
@@ -97,17 +97,13 @@ impl Backend for LocalDisk {
         Ok(())
     }
 
-    fn read_shard(
-        &self,
-        bucket: &str,
-        key: &str,
-    ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
+    fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
         let obj_dir = self.root.join(bucket).join(key);
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
-        let mf = read_meta_file(&obj_dir.join(META_FILE))
-            .map_err(|_| StorageError::ObjectNotFound)?;
+        let mf =
+            read_meta_file(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
 
         // find latest non-delete-marker version
         let version = mf
@@ -207,8 +203,8 @@ impl Backend for LocalDisk {
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
-        let mf = read_meta_file(&obj_dir.join(META_FILE))
-            .map_err(|_| StorageError::ObjectNotFound)?;
+        let mf =
+            read_meta_file(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
         mf.versions
             .iter()
             .find(|v| !v.is_delete_marker)
@@ -222,8 +218,8 @@ impl Backend for LocalDisk {
             return Err(StorageError::ObjectNotFound);
         }
         // replace the matching version entry (by index) in meta.json
-        let mut mf = read_meta_file(&obj_dir.join(META_FILE))
-            .map_err(|_| StorageError::ObjectNotFound)?;
+        let mut mf =
+            read_meta_file(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
         if let Some(v) = mf
             .versions
             .iter_mut()
@@ -272,8 +268,8 @@ impl Backend for LocalDisk {
         version_id: &str,
     ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
         let obj_dir = self.root.join(bucket).join(key);
-        let mf = read_meta_file(&obj_dir.join(META_FILE))
-            .map_err(|_| StorageError::ObjectNotFound)?;
+        let mf =
+            read_meta_file(&obj_dir.join(META_FILE)).map_err(|_| StorageError::ObjectNotFound)?;
 
         let version = mf
             .versions
@@ -312,11 +308,7 @@ impl Backend for LocalDisk {
         Ok(())
     }
 
-    fn read_meta_versions(
-        &self,
-        bucket: &str,
-        key: &str,
-    ) -> Result<Vec<ObjectMeta>, StorageError> {
+    fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError> {
         let obj_dir = self.root.join(bucket).join(key);
         match read_meta_file(&obj_dir.join(META_FILE)) {
             Ok(mf) => Ok(mf.versions),
@@ -448,6 +440,20 @@ mod tests {
                 parity: 2,
                 index,
                 distribution: vec![0, 1, 2, 3],
+                epoch_id: 1,
+                set_id: "set-a".to_string(),
+                node_ids: vec![
+                    "node-1".to_string(),
+                    "node-2".to_string(),
+                    "node-3".to_string(),
+                    "node-4".to_string(),
+                ],
+                disk_ids: vec![
+                    "disk-a".to_string(),
+                    "disk-b".to_string(),
+                    "disk-c".to_string(),
+                    "disk-d".to_string(),
+                ],
             },
             checksum: "deadbeef".to_string(),
             user_metadata: std::collections::HashMap::new(),

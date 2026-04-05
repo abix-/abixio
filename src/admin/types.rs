@@ -1,5 +1,7 @@
 use serde::Serialize;
 
+use crate::cluster::{ClusterEpoch, ClusterNodeStatus, ClusterSummary, ClusterTopology};
+
 #[derive(Debug, Serialize)]
 pub struct StatusResponse {
     pub server: &'static str,
@@ -13,6 +15,7 @@ pub struct StatusResponse {
     pub scan_interval: String,
     pub heal_interval: String,
     pub mrf_workers: usize,
+    pub cluster: ClusterSummary,
 }
 
 #[derive(Debug, Serialize)]
@@ -66,13 +69,19 @@ pub struct ObjectInspectResponse {
 pub struct ErasureInfo {
     pub data: usize,
     pub parity: usize,
+    pub epoch_id: u64,
+    pub set_id: String,
     pub distribution: Vec<usize>,
+    pub node_ids: Vec<String>,
+    pub disk_ids: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
 pub struct ShardInfo {
     pub index: usize,
     pub disk: usize,
+    pub node_id: String,
+    pub disk_id: String,
     pub status: &'static str,
     pub checksum: Option<String>,
 }
@@ -84,4 +93,19 @@ pub struct HealResponse {
     pub shards_fixed: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClusterNodesResponse {
+    pub nodes: Vec<ClusterNodeStatus>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClusterEpochsResponse {
+    pub epochs: Vec<ClusterEpoch>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ClusterTopologyResponse {
+    pub topology: ClusterTopology,
 }

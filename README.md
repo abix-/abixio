@@ -1,6 +1,7 @@
 # AbixIO
 
-S3-compatible object store with erasure coding. Single Rust binary.
+S3-compatible object store with erasure coding. Single Rust binary with
+cluster-control groundwork for multi-node deployments.
 
 ## What it does
 
@@ -18,6 +19,7 @@ lose nothing. Any S3 client works out of the box.
 - Multipart upload (files of any size)
 - Bucket policies and lifecycle configuration
 - Admin API for disk health, healing status, shard inspection, bucket EC config
+- Cluster control metadata, quorum-aware readiness, and hard fencing
 
 ## Quick start
 
@@ -103,6 +105,7 @@ S3 Select, cloud storage backends.
 | Doc | Subject |
 |---|---|
 | [architecture.md](docs/architecture.md) | Design principles, project structure, MinIO comparison |
+| [cluster.md](docs/cluster.md) | Cluster control design, quorum model, fencing, current limitations |
 | [storage-layout.md](docs/storage-layout.md) | Disk layout, meta.json format, erasure distribution |
 | [versioning.md](docs/versioning.md) | S3 object versioning lifecycle |
 | [tagging.md](docs/tagging.md) | Object and bucket tagging |

@@ -40,6 +40,12 @@ pub const ERR_INTERNAL: S3Error = S3Error {
     http_status: 500,
 };
 
+pub const ERR_SERVICE_UNAVAILABLE: S3Error = S3Error {
+    code: "ServiceUnavailable",
+    message: "Cluster is not ready to serve requests",
+    http_status: 503,
+};
+
 pub const ERR_METHOD_NOT_ALLOWED: S3Error = S3Error {
     code: "MethodNotAllowed",
     message: "The specified method is not allowed",

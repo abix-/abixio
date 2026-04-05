@@ -3,9 +3,9 @@ use std::time::Duration;
 
 use reed_solomon_erasure::galois_8::ReedSolomon;
 
+use crate::storage::Backend;
 use crate::storage::StorageError;
 use crate::storage::bitrot::sha256_hex;
-use crate::storage::Backend;
 use crate::storage::metadata::ObjectMeta;
 
 use super::mrf::{MrfEntry, MrfQueue};

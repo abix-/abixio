@@ -6,13 +6,14 @@ use hyper::{Response, StatusCode};
 
 use super::HealStats;
 use super::types::*;
+use crate::cluster::ClusterManager;
 use crate::config::Config;
 use crate::heal::mrf::MrfQueue;
 use crate::heal::worker::{HealResult, heal_object};
 use crate::query::parse_query;
-use crate::storage::bitrot::sha256_hex;
 use crate::storage::Backend;
 use crate::storage::Store;
+use crate::storage::bitrot::sha256_hex;
 use crate::storage::erasure_set::ErasureSet;
 
 type BoxBody = Full<Bytes>;
@@ -41,6 +42,7 @@ pub struct AdminHandler {
     mrf: Arc<MrfQueue>,
     stats: Arc<HealStats>,
     config: AdminConfig,
+    cluster: Arc<ClusterManager>,
 }
 
 /// Subset of server config needed by admin endpoints.
@@ -53,6 +55,10 @@ pub struct AdminConfig {
     pub scan_interval: String,
     pub heal_interval: String,
     pub mrf_workers: usize,
+    pub node_id: String,
+    pub advertise_s3: String,
+    pub advertise_cluster: String,
+    pub peer_count: usize,
 }
 
 impl AdminConfig {
@@ -66,6 +72,14 @@ impl AdminConfig {
             scan_interval: cfg.scan_interval.clone(),
             heal_interval: cfg.heal_interval.clone(),
             mrf_workers: cfg.mrf_workers,
+            node_id: cfg.node_id.clone(),
+            advertise_s3: cfg.advertise_s3.clone(),
+            advertise_cluster: cfg.advertise_cluster.clone(),
+            peer_count: cfg
+                .peers
+                .iter()
+                .filter(|peer| !peer.trim().is_empty())
+                .count(),
         }
     }
 }
@@ -77,6 +91,7 @@ impl AdminHandler {
         mrf: Arc<MrfQueue>,
         stats: Arc<HealStats>,
         config: AdminConfig,
+        cluster: Arc<ClusterManager>,
     ) -> Self {
         Self {
             store,
@@ -84,6 +99,7 @@ impl AdminHandler {
             mrf,
             stats,
             config,
+            cluster,
         }
     }
 
@@ -94,6 +110,10 @@ impl AdminHandler {
             ("heal", &hyper::Method::GET) => self.heal_status(),
             ("heal", &hyper::Method::POST) => self.heal_object_handler(query),
             ("object", &hyper::Method::GET) => self.inspect_object(query),
+            ("cluster/status", &hyper::Method::GET) => self.cluster_status(),
+            ("cluster/nodes", &hyper::Method::GET) => self.cluster_nodes(),
+            ("cluster/epochs", &hyper::Method::GET) => self.cluster_epochs(),
+            ("cluster/topology", &hyper::Method::GET) => self.cluster_topology(),
             _ if path.starts_with("bucket/") && path.ends_with("/ec") => {
                 let bucket = &path["bucket/".len()..path.len() - "/ec".len()];
                 match *method {
@@ -119,6 +139,29 @@ impl AdminHandler {
             scan_interval: self.config.scan_interval.clone(),
             heal_interval: self.config.heal_interval.clone(),
             mrf_workers: self.config.mrf_workers,
+            cluster: self.cluster.summary(),
+        })
+    }
+
+    fn cluster_status(&self) -> Response<BoxBody> {
+        json_response(&self.cluster.status_response())
+    }
+
+    fn cluster_nodes(&self) -> Response<BoxBody> {
+        json_response(&ClusterNodesResponse {
+            nodes: self.cluster.nodes(),
+        })
+    }
+
+    fn cluster_epochs(&self) -> Response<BoxBody> {
+        json_response(&ClusterEpochsResponse {
+            epochs: self.cluster.epochs(),
+        })
+    }
+
+    fn cluster_topology(&self) -> Response<BoxBody> {
+        json_response(&ClusterTopologyResponse {
+            topology: self.cluster.topology(),
         })
     }
 
@@ -235,6 +278,18 @@ impl AdminHandler {
             shards.push(ShardInfo {
                 index: shard_idx,
                 disk: disk_idx,
+                node_id: meta
+                    .erasure
+                    .node_ids
+                    .get(shard_idx)
+                    .cloned()
+                    .unwrap_or_else(|| "local".to_string()),
+                disk_id: meta
+                    .erasure
+                    .disk_ids
+                    .get(shard_idx)
+                    .cloned()
+                    .unwrap_or_else(|| format!("disk-{}", disk_idx)),
                 status,
                 checksum,
             });
@@ -250,7 +305,11 @@ impl AdminHandler {
             erasure: ErasureInfo {
                 data: meta.erasure.data,
                 parity: meta.erasure.parity,
+                epoch_id: meta.erasure.epoch_id,
+                set_id: meta.erasure.set_id.clone(),
                 distribution: meta.erasure.distribution.clone(),
+                node_ids: meta.erasure.node_ids.clone(),
+                disk_ids: meta.erasure.disk_ids.clone(),
             },
             shards,
         })
@@ -269,6 +328,9 @@ impl AdminHandler {
     }
 
     fn set_bucket_ec(&self, bucket: &str, query: &str) -> Response<BoxBody> {
+        if !self.cluster.allows_mutation() {
+            return error_json(StatusCode::SERVICE_UNAVAILABLE, "cluster is fenced");
+        }
         let params = parse_query(query);
         let data: usize = match params.get("data").and_then(|v| v.parse().ok()) {
             Some(d) => d,
@@ -286,6 +348,9 @@ impl AdminHandler {
     }
 
     fn heal_object_handler(&self, query: &str) -> Response<BoxBody> {
+        if !self.cluster.allows_mutation() {
+            return error_json(StatusCode::SERVICE_UNAVAILABLE, "cluster is fenced");
+        }
         let params = parse_query(query);
         let bucket = match params.get("bucket") {
             Some(b) => b.clone(),

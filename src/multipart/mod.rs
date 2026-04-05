@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::cluster::placement::{PlacementDisk, PlacementPlanner};
 use crate::storage::Backend;
 use crate::storage::StorageError;
 use crate::storage::bitrot::{md5_hex, sha256_hex};
@@ -11,6 +12,20 @@ use crate::storage::metadata::{ErasureMeta, ObjectInfo, PutOptions};
 
 const MULTIPART_DIR: &str = ".abixio.sys/multipart";
 const UPLOAD_FILE: &str = "upload.json";
+
+fn local_planner(disks: &[Box<dyn Backend>]) -> PlacementPlanner {
+    PlacementPlanner::new(
+        1,
+        "multipart-local",
+        (0..disks.len())
+            .map(|backend_index| PlacementDisk {
+                backend_index,
+                node_id: "local".to_string(),
+                disk_id: format!("disk-{}", backend_index),
+            })
+            .collect(),
+    )
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadMeta {
@@ -126,6 +141,16 @@ pub fn put_part(
                     parity: parity_n,
                     index: shard_idx,
                     distribution: distribution.clone(),
+                    epoch_id: 1,
+                    set_id: "multipart-local".to_string(),
+                    node_ids: distribution
+                        .iter()
+                        .map(|_| "local".to_string())
+                        .collect(),
+                    disk_ids: distribution
+                        .iter()
+                        .map(|disk_idx| format!("disk-{}", disk_idx))
+                        .collect(),
                 },
                 checksum: sha256_hex(shard_data),
             };
@@ -171,7 +196,10 @@ pub fn list_parts(
                     if let Ok(data) = fs::read(entry.path()) {
                         if let Ok(pm) = serde_json::from_slice::<PartFileMeta>(&data) {
                             // dedup by part number
-                            if !parts.iter().any(|p: &PartMeta| p.part_number == pm.part_number) {
+                            if !parts
+                                .iter()
+                                .any(|p: &PartMeta| p.part_number == pm.part_number)
+                            {
                                 parts.push(PartMeta {
                                     part_number: pm.part_number,
                                     size: pm.size,
@@ -271,7 +299,11 @@ pub fn complete_upload(
     for (_, etag) in requested_parts {
         etag_concat.push_str(etag.trim_matches('"'));
     }
-    let final_etag = format!("{}-{}", md5_hex(etag_concat.as_bytes()), requested_parts.len());
+    let final_etag = format!(
+        "{}-{}",
+        md5_hex(etag_concat.as_bytes()),
+        requested_parts.len()
+    );
 
     // write final object using normal put_object path
     let opts = PutOptions {
@@ -283,7 +315,15 @@ pub fn complete_upload(
     // use the Store's put_object -- but we need to go through the ErasureSet.
     // instead, call the erasure encode directly, matching how put_object works.
     let info = crate::storage::erasure_encode::encode_and_write_with_mrf(
-        disks, data_n, parity_n, bucket, key, &full_data, opts, None,
+        disks,
+        &local_planner(disks),
+        data_n,
+        parity_n,
+        bucket,
+        key,
+        &full_data,
+        opts,
+        None,
     )?;
 
     // override the etag with the multipart etag
@@ -339,7 +379,11 @@ pub fn list_uploads(
 // -- helpers --
 
 fn upload_dir(disk: &Box<dyn Backend>, bucket: &str, key: &str, upload_id: &str) -> PathBuf {
-    disk_root(disk).join(MULTIPART_DIR).join(bucket).join(key).join(upload_id)
+    disk_root(disk)
+        .join(MULTIPART_DIR)
+        .join(bucket)
+        .join(key)
+        .join(upload_id)
 }
 
 fn multipart_bucket_dir(disk: &Box<dyn Backend>, bucket: &str) -> PathBuf {

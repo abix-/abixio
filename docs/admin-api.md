@@ -2,7 +2,7 @@
 
 AbixIO exposes a JSON admin API under the `/_admin/` path prefix. These
 endpoints are not part of the S3 spec -- they provide server health,
-disk status, object inspection, and heal controls.
+disk status, object inspection, heal controls, and cluster control visibility.
 
 All responses are `Content-Type: application/json`. Errors return a JSON
 body with an `error` field.
@@ -18,6 +18,10 @@ body with an `error` field.
 | `/_admin/object?bucket=X&key=Y` | GET | Shard-level object inspection |
 | `/_admin/bucket/{name}/ec` | GET | Get bucket EC config (or server default) |
 | `/_admin/bucket/{name}/ec?data=N&parity=N` | PUT | Set bucket EC default |
+| `/_admin/cluster/status` | GET | Cluster summary and current topology |
+| `/_admin/cluster/nodes` | GET | Current node view |
+| `/_admin/cluster/epochs` | GET | Current and historical cluster epochs |
+| `/_admin/cluster/topology` | GET | Current topology view |
 
 ## GET /_admin/status
 
@@ -39,7 +43,19 @@ curl http://localhost:10000/_admin/status
   "auth_enabled": true,
   "scan_interval": "10m",
   "heal_interval": "24h",
-  "mrf_workers": 2
+  "mrf_workers": 2,
+  "cluster": {
+    "enabled": true,
+    "cluster_id": "abixio-0123456789abcdef",
+    "node_id": "node1",
+    "state": "ready",
+    "epoch_id": 1,
+    "leader_id": "node1",
+    "peer_count": 2,
+    "voter_count": 3,
+    "reachable_voters": 3,
+    "quorum": 2
+  }
 }
 ```
 
@@ -56,6 +72,25 @@ curl http://localhost:10000/_admin/status
 | `scan_interval` | string | Scanner loop interval (e.g. `"10m"`) |
 | `heal_interval` | string | Per-object recheck cooldown (e.g. `"24h"`) |
 | `mrf_workers` | usize | Number of MRF heal workers |
+| `cluster` | object | Cluster readiness and quorum summary |
+
+### Cluster status in `/_admin/status`
+
+The `cluster` object contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `enabled` | bool | True when the node is running with configured peers |
+| `cluster_id` | string | Stable cluster identity derived from local config |
+| `node_id` | string | Local node identifier |
+| `state` | string | `joining`, `syncing_epoch`, `fenced`, or `ready` |
+| `epoch_id` | u64 | Current epoch ID |
+| `leader_id` | string | Current leader ID in the local view |
+| `peer_count` | usize | Number of configured peers |
+| `voter_count` | usize | Number of quorum voters in the local view |
+| `reachable_voters` | usize | Number of voters currently reachable |
+| `quorum` | usize | Required voter count for readiness |
+| `fenced_reason` | string? | Present when the node is fenced |
 
 ## GET /_admin/disks
 
@@ -174,6 +209,7 @@ curl -X POST "http://localhost:10000/_admin/heal?bucket=mybucket&key=photo.jpg"
 |---|---|---|
 | Missing `bucket` param | 400 | `{"error": "missing bucket parameter"}` |
 | Missing `key` param | 400 | `{"error": "missing key parameter"}` |
+| Cluster fenced | 503 | `{"error": "cluster is fenced"}` |
 | Internal failure | 500 | `{"error": "<detail>"}` |
 
 ## GET /_admin/object?bucket=X&key=Y
@@ -257,6 +293,106 @@ on each disk. Does not affect existing objects.
 ```bash
 curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=3&parity=3"
 ```
+
+### Error cases
+
+| Case | HTTP | Response |
+|---|---|---|
+| Missing `data` or `parity` | 400 | `{"error": "<detail>"}` |
+| Invalid EC params | 400 | `{"error": "<detail>"}` |
+| Cluster fenced | 503 | `{"error": "cluster is fenced"}` |
+
+## GET /_admin/cluster/status
+
+Returns the current cluster summary and topology view.
+
+```bash
+curl http://localhost:10000/_admin/cluster/status
+```
+
+```json
+{
+  "summary": {
+    "enabled": true,
+    "cluster_id": "abixio-0123456789abcdef",
+    "node_id": "node1",
+    "state": "ready",
+    "epoch_id": 1,
+    "leader_id": "node1",
+    "peer_count": 2,
+    "voter_count": 3,
+    "reachable_voters": 3,
+    "quorum": 2
+  },
+  "topology": {
+    "cluster_id": "abixio-0123456789abcdef",
+    "epoch": {
+      "epoch_id": 1,
+      "leader_id": "node1",
+      "committed_at_unix_secs": 1700000000,
+      "voter_count": 3,
+      "reachable_voters": 3
+    },
+    "nodes": [
+      {
+        "node_id": "node1",
+        "advertise_s3": "http://node1.lan:9000",
+        "advertise_cluster": "http://node1.lan:9000",
+        "state": "ready",
+        "voter": true,
+        "reachable": true,
+        "total_disks": 4,
+        "last_heartbeat_unix_secs": 1700000000
+      }
+    ],
+    "disks": [
+      {
+        "disk_id": "disk-0123456789abcdef",
+        "node_id": "node1",
+        "path": "/srv/abixio/d1"
+      }
+    ]
+  }
+}
+```
+
+## GET /_admin/cluster/nodes
+
+Returns the current node view only.
+
+```bash
+curl http://localhost:10000/_admin/cluster/nodes
+```
+
+## GET /_admin/cluster/epochs
+
+Returns epoch history tracked by the local node.
+
+```bash
+curl http://localhost:10000/_admin/cluster/epochs
+```
+
+## GET /_admin/cluster/topology
+
+Returns the current topology view only.
+
+```bash
+curl http://localhost:10000/_admin/cluster/topology
+```
+
+## Fenced Behavior
+
+When a node is not safe to serve cluster traffic it enters `fenced`.
+
+While fenced:
+
+- S3 requests are rejected with `503 ServiceUnavailable`
+- manual heal is rejected with `503`
+- bucket EC mutation is rejected with `503`
+- cluster status endpoints remain available for diagnosis
+
+This is intentional. AbixIO prefers stopping service over serving from stale or
+unsafe cluster state.
 
 ```json
 {

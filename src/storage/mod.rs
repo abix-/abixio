@@ -25,11 +25,7 @@ pub trait Backend: Send + Sync {
         meta: &ObjectMeta,
     ) -> Result<(), StorageError>;
 
-    fn read_shard(
-        &self,
-        bucket: &str,
-        key: &str,
-    ) -> Result<(Vec<u8>, ObjectMeta), StorageError>;
+    fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError>;
 
     fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
 
@@ -146,7 +142,8 @@ pub trait Store: Send + Sync {
     fn delete_object_tags(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
 
     // versioning
-    fn get_versioning_config(&self, bucket: &str) -> Result<Option<VersioningConfig>, StorageError>;
+    fn get_versioning_config(&self, bucket: &str)
+    -> Result<Option<VersioningConfig>, StorageError>;
     fn set_versioning_config(
         &self,
         bucket: &str,
@@ -184,16 +181,9 @@ pub trait Store: Send + Sync {
 
     // -- per-bucket EC config --
 
-    fn get_ec_config(
-        &self,
-        bucket: &str,
-    ) -> Result<Option<metadata::EcConfig>, StorageError>;
+    fn get_ec_config(&self, bucket: &str) -> Result<Option<metadata::EcConfig>, StorageError>;
 
-    fn set_ec_config(
-        &self,
-        bucket: &str,
-        config: &metadata::EcConfig,
-    ) -> Result<(), StorageError>;
+    fn set_ec_config(&self, bucket: &str, config: &metadata::EcConfig) -> Result<(), StorageError>;
 
     fn disk_count(&self) -> usize;
     fn default_data(&self) -> usize;

@@ -10,6 +10,30 @@ pub struct Config {
     #[arg(long, default_value = ":10000")]
     pub listen: String,
 
+    /// Stable node identifier for clustered deployments
+    #[arg(long, default_value = "local")]
+    pub node_id: String,
+
+    /// Cluster coordination bind or advertise address
+    #[arg(long, default_value = ":10000")]
+    pub cluster_bind: String,
+
+    /// Advertised S3 endpoint for this node
+    #[arg(long, default_value = "http://127.0.0.1:10000")]
+    pub advertise_s3: String,
+
+    /// Advertised cluster control endpoint for this node
+    #[arg(long, default_value = "http://127.0.0.1:10000")]
+    pub advertise_cluster: String,
+
+    /// Comma-separated peer host list for cluster quorum
+    #[arg(long, value_delimiter = ',', default_value = "")]
+    pub peers: Vec<String>,
+
+    /// Shared secret for cluster peer probes
+    #[arg(long, default_value = "")]
+    pub cluster_secret: String,
+
     /// Comma-separated disk paths
     #[arg(long, value_delimiter = ',')]
     pub disks: Vec<PathBuf>,
@@ -132,6 +156,12 @@ mod tests {
     fn config_with(disks: Vec<PathBuf>, data: usize, parity: usize) -> Config {
         Config {
             listen: ":9000".to_string(),
+            node_id: "local".to_string(),
+            cluster_bind: ":9000".to_string(),
+            advertise_s3: "http://127.0.0.1:9000".to_string(),
+            advertise_cluster: "http://127.0.0.1:9000".to_string(),
+            peers: Vec::new(),
+            cluster_secret: String::new(),
             disks,
             data,
             parity,

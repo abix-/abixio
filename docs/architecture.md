@@ -1,6 +1,7 @@
 # Architecture
 
-AbixIO design principles, project structure, and comparison with MinIO.
+AbixIO design principles, project structure, single-node storage model, and
+cluster-control direction.
 
 ## Design principles
 
@@ -39,12 +40,33 @@ AbixIO design principles, project structure, and comparison with MinIO.
    hash-based permutation. Pool can have more disks than any single object's
    data+parity, spreading I/O across the full pool.
 
+10. **Cluster control fences unsafe nodes.** Multi-node control-plane behavior
+    must fail closed. A node that cannot confirm safe cluster state stops
+    serving instead of risking stale writes or split-brain.
+
+## Cluster Direction
+
+AbixIO is no longer purely single-node in direction. The repo now contains an
+initial cluster-control layer:
+
+- cluster identity and peer configuration
+- persisted cluster metadata in `.abixio.sys/cluster/state.json`
+- cluster admin endpoints
+- peer monitoring and quorum tracking
+- hard fencing when quorum is lost
+
+This is not yet a full distributed object-store data plane. Distributed shard
+RPC, consensus-backed topology changes, heterogeneous set planning, and
+rebalance are still future work.
+
+See [cluster.md](cluster.md) for the full design and current behavior.
+
 ## Comparison with MinIO
 
 | Aspect | MinIO | AbixIO |
 |---|---|---|
 | Language | Go | Rust |
-| Scope | distributed multi-node | single process, disk pool |
+| Scope | distributed multi-node | single process today, cluster-control groundwork in progress |
 | Erasure coding | cluster-level EC ratio | per-object EC (data/parity per object) |
 | EC config | fixed per server pool | per-object header > bucket config > server default |
 | Min disks | 4 (enforced) | 1 (with 0 parity) |
@@ -62,6 +84,8 @@ AbixIO design principles, project structure, and comparison with MinIO.
 src/
   main.rs                 # CLI entry, parse args, start server
   lib.rs                  # module re-exports
+  cluster/
+    mod.rs                # persisted cluster state, peer monitoring, fencing, cluster types
   config.rs               # Config struct (clap derive) + validation
   query.rs                # URL query string parsing
   storage/
@@ -96,6 +120,7 @@ tests/
   e2e.py                  # end-to-end Python test (starts server, exercises S3 + admin)
 docs/
   architecture.md         # this file
+  cluster.md              # cluster control design, fencing, current scope
   storage-layout.md       # disk layout, meta.json format
   per-object-ec.md        # per-object erasure coding, bucket EC config, disk pools
   admin-api.md            # admin API endpoints (status, disks, heal, inspect, bucket EC)
