@@ -73,7 +73,11 @@ Every node gets the same `--nodes` list -- the full cluster membership. Each
 node figures out which one it is automatically.
 
 ```bash
+# multi-node cluster
 abixio --volumes /data{1...2} --nodes http://node{1...3}:10000
+
+# multiple nodes on the same server (different ports)
+abixio --volumes /data{1...2} --nodes http://localhost:{10001...10003}
 ```
 
 What happens at startup:
