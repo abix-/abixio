@@ -14,9 +14,9 @@ Early. Foundation works. Vision is what to watch.
 
 ## Status
 
-**Early development. Not production-ready.** S3-compatible object storage server in Rust. 316 tests. 41 of 72 S3 operations implemented. No releases or production deployments yet.
+**Early development. Home lab and enthusiast use only.** Do not store business data on this. S3-compatible object storage server in Rust. 316 tests. 41 of 72 S3 operations. No releases or production deployments.
 
-If you need production S3-compatible storage today, look at [RustFS](https://github.com/rustfs/rustfs) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
+For production use, look at [RustFS](https://github.com/rustfs/rustfs) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
 
 ## Quick Start
 
