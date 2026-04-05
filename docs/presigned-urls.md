@@ -59,6 +59,11 @@ When a request arrives, the auth handler checks in order:
 - `src/s3/handlers.rs`: `check_auth()` tries presigned before header auth
 - Reuses all existing SigV4 crypto: `derive_signing_key`, `canonical_uri`, `sha256_hex`, `hmac_sha256_hex`
 
+At the HTTP layer, any presigned validation failure is currently returned as
+`AccessDenied`. The verifier keeps a more specific internal error string
+(`expired`, `signature mismatch`, `access key mismatch`, and so on), but that
+detail is not exposed in the S3 response body.
+
 ## Client-side generation
 
 Presigned URLs are generated entirely on the client side using `aws-sdk-s3`

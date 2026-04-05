@@ -20,7 +20,7 @@ body with an `error` field.
 | `/_admin/bucket/{name}/ec?data=N&parity=N` | PUT | Set bucket EC default |
 | `/_admin/cluster/status` | GET | Cluster summary and current topology |
 | `/_admin/cluster/nodes` | GET | Current node view |
-| `/_admin/cluster/epochs` | GET | Current and historical cluster epochs |
+| `/_admin/cluster/epochs` | GET | Epoch snapshots tracked by the local node |
 | `/_admin/cluster/topology` | GET | Current topology view |
 
 ## GET /_admin/status
@@ -46,7 +46,8 @@ curl http://localhost:10000/_admin/status
   "mrf_workers": 2,
   "cluster": {
     "enabled": true,
-    "cluster_id": "abixio-0123456789abcdef",
+    "cluster_id": "cluster-a",
+    "topology_hash": "9fbe0c6f2a4f...",
     "node_id": "node1",
     "state": "ready",
     "epoch_id": 1,
@@ -80,12 +81,13 @@ The `cluster` object contains:
 
 | Field | Type | Description |
 |---|---|---|
-| `enabled` | bool | True when the node is running with configured peers |
-| `cluster_id` | string | Stable cluster identity derived from local config |
+| `enabled` | bool | True when clustered mode is active |
+| `cluster_id` | string | Stable cluster identity from local config or static topology |
 | `node_id` | string | Local node identifier |
+| `topology_hash` | string? | Present when a static topology manifest is loaded |
 | `state` | string | `joining`, `syncing_epoch`, `fenced`, or `ready` |
 | `epoch_id` | u64 | Current epoch ID |
-| `leader_id` | string | Current leader ID in the local view |
+| `leader_id` | string | Current leader ID in the local view; this is not a consensus proof |
 | `peer_count` | usize | Number of configured peers |
 | `voter_count` | usize | Number of quorum voters in the local view |
 | `reachable_voters` | usize | Number of voters currently reachable |
@@ -215,7 +217,7 @@ curl -X POST "http://localhost:10000/_admin/heal?bucket=mybucket&key=photo.jpg"
 ## GET /_admin/object?bucket=X&key=Y
 
 Inspect an object's shard status across all disks. Shows per-shard health,
-checksums, and erasure distribution.
+checksums, erasure distribution, and placement identity.
 
 ```bash
 curl "http://localhost:10000/_admin/object?bucket=mybucket&key=photo.jpg"
@@ -232,23 +234,30 @@ curl "http://localhost:10000/_admin/object?bucket=mybucket&key=photo.jpg"
   "erasure": {
     "data": 2,
     "parity": 2,
-    "distribution": [2, 0, 3, 1]
+    "epoch_id": 7,
+    "set_id": "set-a",
+    "distribution": [2, 0, 3, 1],
+    "node_ids": ["node-1", "node-2", "node-3", "node-4"],
+    "disk_ids": ["disk-1a", "disk-2a", "disk-3a", "disk-4a"]
   },
   "shards": [
-    { "index": 0, "disk": 2, "status": "ok", "checksum": "abc123..." },
-    { "index": 1, "disk": 0, "status": "ok", "checksum": "def456..." },
-    { "index": 2, "disk": 3, "status": "missing", "checksum": null },
-    { "index": 3, "disk": 1, "status": "ok", "checksum": "ghi789..." }
+    { "index": 0, "disk": 2, "node_id": "node-3", "disk_id": "disk-3a", "status": "ok", "checksum": "abc123..." },
+    { "index": 1, "disk": 0, "node_id": "node-1", "disk_id": "disk-1a", "status": "ok", "checksum": "def456..." },
+    { "index": 2, "disk": 3, "node_id": "node-4", "disk_id": "disk-4a", "status": "missing", "checksum": null },
+    { "index": 3, "disk": 1, "node_id": "node-2", "disk_id": "disk-2a", "status": "ok", "checksum": "ghi789..." }
   ]
 }
 ```
+
+`epoch_id`, `set_id`, `node_ids`, and `disk_ids` make exact placement
+externally visible to operators and tests.
 
 ### Shard status values
 
 | Status | Meaning |
 |---|---|
-| `ok` | Metadata matches consensus and SHA-256 checksum verified |
-| `corrupt` | Metadata or checksum mismatch (bitrot or stale data) |
+| `ok` | Metadata matches the selected reference metadata and SHA-256 checksum verified |
+| `corrupt` | Metadata or checksum mismatch (bitrot or divergent shard state) |
 | `missing` | Shard not found on expected disk |
 
 ### Error cases
@@ -314,8 +323,9 @@ curl http://localhost:10000/_admin/cluster/status
 {
   "summary": {
     "enabled": true,
-    "cluster_id": "abixio-0123456789abcdef",
+    "cluster_id": "cluster-a",
     "node_id": "node1",
+    "topology_hash": "9fbe0c6f2a4f...",
     "state": "ready",
     "epoch_id": 1,
     "leader_id": "node1",
@@ -325,7 +335,7 @@ curl http://localhost:10000/_admin/cluster/status
     "quorum": 2
   },
   "topology": {
-    "cluster_id": "abixio-0123456789abcdef",
+    "cluster_id": "cluster-a",
     "epoch": {
       "epoch_id": 1,
       "leader_id": "node1",
@@ -366,7 +376,12 @@ curl http://localhost:10000/_admin/cluster/nodes
 
 ## GET /_admin/cluster/epochs
 
-Returns epoch history tracked by the local node.
+Returns epoch snapshots tracked by the local node.
+
+Current implementation note:
+
+- this is not a consensus-backed history log
+- in normal operation today it typically contains the current epoch snapshot
 
 ```bash
 curl http://localhost:10000/_admin/cluster/epochs
@@ -394,20 +409,15 @@ While fenced:
 This is intentional. AbixIO prefers stopping service over serving from stale or
 unsafe cluster state.
 
-```json
-{
-  "data": 3,
-  "parity": 3
-}
-```
+## Static Topology Notes
 
-### Error cases
+When `--cluster-topology` is used:
 
-| Case | HTTP | Response |
-|---|---|---|
-| Missing `data` param | 400 | `{"error": "missing data parameter"}` |
-| Missing `parity` param | 400 | `{"error": "missing parity parameter"}` |
-| Invalid config | 400 | `{"error": "<detail>"}` |
+- the manifest is authoritative for `cluster_id`, `epoch_id`, node list, disk list, and peer endpoints
+- `topology_hash` appears in cluster summary responses
+- `/_admin/cluster/topology` reflects the manifest-backed topology plus current local reachability information
+
+See [static-topology.md](static-topology.md) for the manifest schema.
 
 See [per-object-ec.md](per-object-ec.md) for the full EC precedence chain
 (per-object header > bucket config > server default).
@@ -417,5 +427,5 @@ See [per-object-ec.md](per-object-ec.md) for the full EC precedence chain
 - `src/admin/handlers.rs` -- `AdminHandler` with dispatch and all endpoint methods
 - `src/admin/types.rs` -- JSON response structs (serde `Serialize`)
 - `src/admin/mod.rs` -- `HealStats` shared state (atomic counters + uptime)
-- `tests/admin_integration.rs` -- 19 integration tests
+- `tests/admin_integration.rs` -- admin integration tests
 - `tests/e2e.py` -- end-to-end Python test covering admin endpoints

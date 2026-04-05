@@ -34,6 +34,10 @@ pub struct Config {
     #[arg(long, default_value = "")]
     pub cluster_secret: String,
 
+    /// Path to a static cluster topology manifest
+    #[arg(long)]
+    pub cluster_topology: Option<PathBuf>,
+
     /// Comma-separated disk paths
     #[arg(long, value_delimiter = ',')]
     pub disks: Vec<PathBuf>,
@@ -85,6 +89,14 @@ impl Config {
             if !path.is_dir() {
                 return Err(format!("disk path does not exist: {}", path.display()));
             }
+        }
+        if let Some(path) = &self.cluster_topology
+            && !path.is_file()
+        {
+            return Err(format!(
+                "cluster topology file does not exist: {}",
+                path.display()
+            ));
         }
         // validate duration strings
         parse_duration(&self.scan_interval)
@@ -162,6 +174,7 @@ mod tests {
             advertise_cluster: "http://127.0.0.1:9000".to_string(),
             peers: Vec::new(),
             cluster_secret: String::new(),
+            cluster_topology: None,
             disks,
             data,
             parity,
@@ -230,6 +243,14 @@ mod tests {
     #[test]
     fn invalid_disk_path_missing() {
         let cfg = config_with(vec![PathBuf::from("/tmp/nonexistent_abixio_test")], 1, 0);
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn invalid_cluster_topology_missing() {
+        let (_base, paths) = make_dirs(1);
+        let mut cfg = config_with(paths, 1, 0);
+        cfg.cluster_topology = Some(PathBuf::from("/tmp/missing-topology.json"));
         assert!(cfg.validate().is_err());
     }
 

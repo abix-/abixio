@@ -39,9 +39,15 @@ Matches MinIO's approach: `fmt.Sprintf("%X", t.UnixNano())`.
 | `InternalError` | 500 | Write/read quorum failure, bitrot, IO errors |
 | `MethodNotAllowed` | 405 | Unsupported HTTP method |
 | `InvalidRange` | 416 | Range header not satisfiable |
+| `ServiceUnavailable` | 503 | Node is fenced or cluster is not ready to serve |
 | `AccessDenied` | 403 | Auth failure or expired presigned URL |
 | `PreconditionFailed` | 412 | If-Match or If-Unmodified-Since failed |
 | `InvalidRequest` | 400 | Invalid per-object EC params (data=0 or data+parity > disk count) |
+| `NoSuchBucketPolicy` | 404 | Bucket policy is missing |
+| `PolicyTooLarge` | 400 | Bucket policy exceeds the maximum document size |
+| `NoSuchLifecycleConfiguration` | 404 | Lifecycle configuration is missing |
+| `NoSuchCORSConfiguration` | 404 | CORS configuration is missing |
+| `NotImplemented` | 501 | Stubbed feature path such as CORS or notification PUT |
 
 ## Error mapping
 
@@ -56,4 +62,12 @@ Storage errors map to S3 error codes via `map_error()` in `src/s3/errors.rs`:
 | `WriteQuorum` | InternalError |
 | `ReadQuorum` | InternalError |
 | `Bitrot` | InternalError |
+| `InvalidConfig(_)` | InternalError |
 | `Io` | InternalError |
+
+Important distinction:
+
+- `InvalidRequest` is used directly by request handlers for bad client input,
+  such as invalid per-object EC headers
+- `map_error()` currently does **not** convert `StorageError::InvalidConfig(_)`
+  into `InvalidRequest`; it maps it to `InternalError`

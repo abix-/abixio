@@ -40,6 +40,8 @@ disk 2.
 - Best-effort: if the queue is full, the entry is dropped (the scanner
   will catch it later)
 - Triggered within milliseconds of the partial failure
+- Current implementation runs a single drain worker even though the CLI still
+  exposes `--mrf-workers`
 
 ### Path 2: Integrity Scanner, Proactive
 
@@ -66,7 +68,7 @@ Scanner wakes up
 - Cooldown per object: won't re-check within `--heal-interval` (default 24h)
 - Catches anything MRF missed (queue overflow, objects degraded by external
   causes like manual file deletion or bitrot)
-- Runs on a single thread, yields between objects
+- Runs as one blocking scan cycle per interval in the current implementation
 
 ## The heal_object() Function
 
@@ -88,6 +90,9 @@ Some disks may return errors (missing files, IO errors). The object's EC params
 Group the metadata by `quorum_eq()`. Two metadata records are
 quorum-compatible if they match on all fields except the per-shard `index`
 and `checksum` (which are different for every shard by design).
+
+When placement-aware metadata is present, `quorum_eq()` also requires
+`epoch_id`, `set_id`, `node_ids`, and `disk_ids` to match.
 
 Pick the group with the most members. This must have at least `data_n`
 members to be valid.
@@ -166,7 +171,7 @@ while an object stored with EC 4+2 in the same bucket only survives 2.
 ```
 --scan-interval 10m     # how often the scanner runs (default: 10m)
 --heal-interval 24h     # per-object recheck cooldown (default: 24h)
---mrf-workers 2         # number of MRF heal workers (default: 2)
+--mrf-workers 2         # exposed in admin/status, but current runtime uses one drain worker
 ```
 
 ## On-Disk Layout During Healing
@@ -189,7 +194,10 @@ After healing:
 ## Graceful Shutdown
 
 When the server receives ctrl-c:
-1. Stop accepting new HTTP requests
-2. Signal scanner and MRF worker to stop
-3. Workers finish their current heal operation and exit
-4. Process exits cleanly
+1. Signal scanner and MRF worker to stop
+2. The process exits from the main loop
+
+Current limitation:
+
+- shutdown signalling exists for background heal tasks, but the server does not
+  yet implement a fully coordinated graceful HTTP drain-and-wait shutdown path

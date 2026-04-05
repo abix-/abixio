@@ -1,7 +1,7 @@
 # AbixIO
 
-S3-compatible object store with erasure coding. Single Rust binary with
-cluster-control groundwork for multi-node deployments.
+S3-compatible object store with erasure coding. Single Rust binary with a
+minimal static-topology cluster model for multi-node deployments.
 
 ## What it does
 
@@ -17,9 +17,9 @@ lose nothing. Any S3 client works out of the box.
 - Object versioning (enable/suspend per bucket)
 - Object and bucket tagging
 - Multipart upload (files of any size)
-- Bucket policies and lifecycle configuration
+- Bucket policy and lifecycle configuration storage
 - Admin API for disk health, healing status, shard inspection, bucket EC config
-- Cluster control metadata, quorum-aware readiness, and hard fencing
+- Static topology metadata, quorum-aware readiness, and hard fencing
 
 ## Quick start
 
@@ -40,6 +40,67 @@ curl http://localhost:9000/mybucket/hello.txt
 ```
 
 Works with AWS CLI, rclone, MinIO client, boto3, or any S3-compatible tool.
+
+## Static-topology cluster mode
+
+AbixIO's current clustered deployment model is intentionally minimal:
+
+- one server binary per node
+- one shared topology manifest distributed to every node
+- deterministic placement metadata stored with each object
+- strict fencing if a node cannot confirm safe cluster state
+- restart-based reconfiguration instead of live membership changes
+
+This keeps the control plane small. It does not yet provide Raft, live node
+joins, or production internode shard RPC.
+
+Example topology manifest:
+
+```json
+{
+  "cluster_id": "cluster-a",
+  "epoch_id": 1,
+  "set_id": "set-a",
+  "nodes": [
+    {
+      "node_id": "node-1",
+      "advertise_s3": "http://node-1.lan:9000",
+      "advertise_cluster": "http://node-1.lan:9000",
+      "disks": [
+        { "disk_id": "disk-1a", "path": "/srv/abixio/node-1/d1" },
+        { "disk_id": "disk-1b", "path": "/srv/abixio/node-1/d2" }
+      ]
+    },
+    {
+      "node_id": "node-2",
+      "advertise_s3": "http://node-2.lan:9000",
+      "advertise_cluster": "http://node-2.lan:9000",
+      "disks": [
+        { "disk_id": "disk-2a", "path": "/srv/abixio/node-2/d1" },
+        { "disk_id": "disk-2b", "path": "/srv/abixio/node-2/d2" }
+      ]
+    }
+  ]
+}
+```
+
+Start a node with the shared manifest:
+
+```bash
+./target/release/abixio \
+  --listen 0.0.0.0:9000 \
+  --node-id node-1 \
+  --cluster-topology /etc/abixio/cluster.json \
+  --disks /srv/abixio/node-1/d1,/srv/abixio/node-1/d2 \
+  --data 2 --parity 2
+```
+
+When `--cluster-topology` is set:
+
+- `cluster_id`, `epoch_id`, peer list, and advertised endpoints come from the manifest
+- local `--node-id` must exist in the manifest
+- local `--disks` must exactly match the manifest entries for that node
+- nodes fence if they lose safe cluster contact
 
 ## Configuration
 
@@ -80,7 +141,7 @@ Precedence: per-object header > bucket config > server default (`--data`/`--pari
 
 ## S3 API coverage
 
-41 of 72 S3 API operations (57%). 215 tests.
+41 of 72 S3 API operations (57%).
 See [docs/s3-compliance.md](docs/s3-compliance.md) for the full audit.
 
 **Fully implemented (26):** ListBuckets, CreateBucket, HeadBucket, DeleteBucket,
@@ -106,6 +167,7 @@ S3 Select, cloud storage backends.
 |---|---|
 | [architecture.md](docs/architecture.md) | Design principles, project structure, MinIO comparison |
 | [cluster.md](docs/cluster.md) | Cluster control design, quorum model, fencing, current limitations |
+| [static-topology.md](docs/static-topology.md) | Static topology manifest schema, startup rules, and restart-based reconfiguration |
 | [storage-layout.md](docs/storage-layout.md) | Disk layout, meta.json format, erasure distribution |
 | [versioning.md](docs/versioning.md) | S3 object versioning lifecycle |
 | [tagging.md](docs/tagging.md) | Object and bucket tagging |

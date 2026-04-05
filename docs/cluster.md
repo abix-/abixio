@@ -1,21 +1,22 @@
 # Cluster Design
 
 AbixIO now has an initial cluster-control layer for multi-node deployments.
-This document explains what exists today, what behavior is enforced, and what
-is still planned.
+This document explains the current static-topology model, what behavior is
+enforced, and what is still planned.
 
 This is intentionally a control-plane-first design. The current implementation
-adds cluster identity, persisted cluster metadata, peer monitoring, admin
-visibility, hard fencing, and deterministic node-aware placement metadata. It
-does **not** yet add internode shard RPC or consensus-backed topology
-reconfiguration.
+adds cluster identity, persisted cluster metadata, static topology validation,
+peer monitoring, admin visibility, hard fencing, and deterministic node-aware
+placement metadata. It does **not** yet add internode shard RPC or
+consensus-backed topology reconfiguration.
 
 ## Goals
 
 The cluster layer is designed around these rules:
 
-1. **Nodes start from a host list, not a full static disk map.**
-   Each node knows its own local disks and the peer endpoints it should talk to.
+1. **Static topology is authoritative when configured.**
+   Clustered deployments are expected to start from a shared topology manifest
+   that defines node identities, disk identities, and peer endpoints.
 
 2. **Cluster state is explicit.**
    Nodes persist cluster metadata under the internal AbixIO metadata area rather
@@ -32,13 +33,15 @@ The cluster layer is designed around these rules:
 
 The current implementation provides:
 
-- cluster identity and peer configuration via CLI flags
+- cluster identity and peer configuration via CLI flags or a shared static
+  topology manifest
 - persisted cluster state on local disks
 - admin endpoints for cluster summary, nodes, epochs, and topology
 - peer probing and basic quorum tracking
 - hard fencing when the node is not in a `ready` cluster state
 - S3 request rejection while fenced
 - mutating admin request rejection while fenced
+- topology-hash visibility for manifest drift detection
 - deterministic placement planning metadata with stable `epoch_id`, `set_id`,
   `node_ids`, and `disk_ids` stored in object shard metadata
 - 4-node, 2-disk distributed placement tests that validate exact object maps,
@@ -49,7 +52,7 @@ The current implementation does **not** provide:
 - Raft or another real distributed consensus log
 - production internode shard writes or distributed reads over RPC
 - remote disk backends over internode RPC
-- committed topology epochs negotiated across the cluster
+- live committed topology epochs negotiated across the cluster
 - heterogeneous set-class planning
 - rebalance or topology migration
 
@@ -64,29 +67,36 @@ The cluster control layer adds these server options:
 | Flag | Meaning |
 |---|---|
 | `--node-id` | Stable node identity used in cluster metadata |
-| `--cluster-bind` | Cluster bind or advertised coordination address |
+| `--cluster-bind` | Parsed for future use; not currently used by the cluster manager |
 | `--advertise-s3` | Public S3 endpoint for this node |
 | `--advertise-cluster` | Public cluster-control endpoint for this node |
 | `--peers` | Comma-separated peer host list |
 | `--cluster-secret` | Shared secret for cluster peer probes |
+| `--cluster-topology` | Path to a shared static cluster topology manifest |
 
 Example:
 
 ```bash
 ./target/release/abixio \
   --listen 0.0.0.0:9000 \
-  --cluster-bind 0.0.0.0:9000 \
-  --advertise-s3 http://node1.lan:9000 \
-  --advertise-cluster http://node1.lan:9000 \
   --node-id node1 \
-  --peers http://node2.lan:9000,http://node3.lan:9000 \
-  --cluster-secret supersecret \
+  --cluster-topology /etc/abixio/cluster.json \
   --disks /srv/abixio/d1,/srv/abixio/d2,/srv/abixio/d3,/srv/abixio/d4 \
   --data 2 --parity 2
 ```
 
-For a standalone node, omit `--peers`. In that mode the node immediately
-transitions to `ready` and does not require quorum.
+For a standalone node, omit `--peers` and `--cluster-topology`. In that mode
+the node immediately transitions to `ready` and does not require quorum.
+
+When `--cluster-topology` is set:
+
+- `cluster_id`, `epoch_id`, peer list, `advertise_s3`, and
+  `advertise_cluster` come from the manifest
+- `--node-id` must exist in the manifest
+- `--disks` must exactly match the manifest disks for that node
+
+See [static-topology.md](static-topology.md) for the manifest schema and
+restart-based reconfiguration model.
 
 ## Persisted State
 
@@ -105,7 +115,8 @@ The persisted state includes:
 - current epoch metadata
 - node view
 - disk view
-- epoch history
+- current epoch snapshot
+- loaded topology hash when a manifest is configured
 
 Object shard metadata now also persists placement identity:
 
@@ -145,7 +156,8 @@ or split-brain behavior.
 
 ## Quorum Model Today
 
-Today the cluster manager uses a simple peer-probe model:
+Today the cluster manager uses a simple peer-probe model on top of the static
+manifest:
 
 1. Load local persisted cluster state.
 2. Probe configured peers over `/_admin/cluster/status`.
@@ -157,6 +169,10 @@ Today the cluster manager uses a simple peer-probe model:
 This is a deliberate interim model. It gives AbixIO real operational behavior
 around cluster readiness and safety, but it is not yet a durable distributed
 decision protocol.
+
+The manifest supplies cluster identity and expected topology. The probe model
+only answers whether the node currently considers that topology safe enough to
+serve.
 
 ## Admin API
 
@@ -171,6 +187,9 @@ The cluster layer adds these admin endpoints:
 
 `/_admin/status` also now includes a `cluster` section so existing tooling can
 see whether the node is `ready` or `fenced`.
+
+When a static topology manifest is configured, the cluster summary also exposes
+`topology_hash` so operators can verify that every node loaded the same file.
 
 `/_admin/object` now reports placement identity per shard:
 
@@ -191,7 +210,7 @@ plane. It is not a full cluster PKI or mTLS design.
 The current planner assumes a homogeneous set and uses a deterministic
 node-first spread rule:
 
-1. Hash the object identity together with the committed epoch and set ID.
+1. Hash the object identity together with the active epoch and set ID.
 2. Order nodes deterministically from that hash.
 3. Place at most one shard on a node before using a second disk on any node.
 4. Within each node, order its disks deterministically and consume them in
@@ -223,6 +242,19 @@ The multi-node integration harness uses shared local disk roots plus per-node
 availability gates to simulate four independent nodes on one machine. That is a
 test harness, not production RPC.
 
+## Static Topology vs Future Design
+
+Today the recommended minimal operating model is:
+
+- shared static topology file
+- explicit node and disk identities
+- deterministic placement metadata
+- strict fencing on unsafe state
+- restart-only topology changes
+
+This is the simplest path to a MinIO-like deployment model without adding Raft
+or a dynamic control plane before the data plane exists.
+
 ## Relationship To The Future Design
 
 The intended long-term distributed design is still:
@@ -235,21 +267,25 @@ The intended long-term distributed design is still:
 
 To reach that design, AbixIO still needs:
 
-1. A real consensus-backed control-plane log
+1. A real consensus-backed control-plane log or another authoritative external
+   coordinator
 2. Internode RPC for storage and metadata operations
 3. Authoritative node and disk registration
 4. Topology planning for heterogeneous nodes
 5. Placement metadata stored with objects
 6. Reconfiguration and rebalance workflows
 
-The current cluster layer should be treated as the safety scaffold that those
-features will build on.
+The current cluster layer should be treated as the minimal safe operating model
+and the scaffold those features would build on.
 
 ## Operational Notes
 
 - Standalone mode remains supported and automatically reports `ready`.
-- Multi-peer mode should be treated as experimental control-plane behavior until
-  consensus and remote storage RPC are implemented.
+- Static-topology multi-peer mode is the preferred clustered configuration.
+- Peer-list-only clustered mode still exists, but it is a transitional path and
+  less explicit than the manifest-backed model.
+- Multi-peer service is still experimental as a full distributed storage data
+  plane until remote shard RPC is implemented.
 - A fenced node is working as designed. It is refusing service to avoid
   inconsistent behavior.
 - Cluster status can be checked without S3 requests through the admin endpoints.
@@ -258,5 +294,6 @@ features will build on.
 
 - [architecture.md](architecture.md) for the overall storage model
 - [admin-api.md](admin-api.md) for the admin endpoints
+- [static-topology.md](static-topology.md) for the manifest schema
 - [per-object-ec.md](per-object-ec.md) for current erasure-coding behavior
 - [storage-layout.md](storage-layout.md) for on-disk object metadata layout

@@ -13,7 +13,7 @@ How abixio handles S3 conditional request headers on GET and HEAD operations.
 
 ## Evaluation order
 
-Matches the S3 spec and MinIO's implementation:
+Current implementation order in `check_preconditions()`:
 
 1. **If-None-Match** -- checked first. If the object's ETag matches the value
    (with or without surrounding quotes), return 304. Takes precedence over
@@ -26,7 +26,7 @@ Matches the S3 spec and MinIO's implementation:
    The wildcard `*` matches any ETag.
 
 4. **If-Unmodified-Since** -- if the object's last-modified time is after the
-   given date, return 412. Only checked when If-Match is not present.
+   given date, return 412.
 
 ## Date format
 
@@ -42,7 +42,7 @@ This is the same format returned in the `Last-Modified` response header.
 ETags are compared with quote stripping. All of these match:
 - `"abc123"` matches `abc123`
 - `"abc123"` matches `"abc123"`
-- `*` matches any ETag (If-Match only)
+- `*` matches any ETag for both `If-Match` and `If-None-Match`
 
 ## Applies to
 

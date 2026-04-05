@@ -65,9 +65,11 @@ Each server:
 - sees node-owned disks through controlled backends that can be turned off for
   all servers at once
 
-When a test stops a node, all disks owned by that node begin failing for every
-server. This gives deterministic node-loss behavior without requiring a full
-production RPC layer inside the test process.
+When a test stops a node, the harness marks that node unavailable, fences its
+cluster manager, aborts its HTTP task, and makes all disks owned by that node
+begin failing for every server through the controlled backends. This gives
+deterministic node-loss behavior without requiring a full production RPC layer
+inside the test process.
 
 ## What This Is Not
 
@@ -76,6 +78,7 @@ This harness is not proof of production internode networking.
 It does not yet validate:
 
 - remote shard RPC
+- real cross-process shard transport between independent storage nodes
 - dynamic topology rebalance
 - consensus-driven topology commits
 - heterogeneous set-class planning

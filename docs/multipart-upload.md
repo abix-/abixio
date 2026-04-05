@@ -34,7 +34,7 @@ Response:
 
 Client sends `PUT /{bucket}/{key}?partNumber=1&uploadId=X` with part data in the
 body. Each part is individually erasure-encoded and its shards are distributed
-across all disks, matching how regular objects are stored.
+across the multipart worker's current local disk view.
 
 Per-part metadata (`part.N.meta`) records size, ETag (MD5), erasure info, and
 shard checksum on each disk.
@@ -57,6 +57,13 @@ Client sends `POST /{bucket}/{key}?uploadId=X` with XML body listing parts:
 Server reads each part's shards from all disks, erasure-decodes to reconstruct
 the original part data, concatenates all parts in order, then writes the final
 object using the normal PUT path (erasure-encode + meta.json).
+
+Current implementation note:
+
+- multipart uses its own local planner (`multipart-local`) rather than the
+  `ErasureSet` placement topology used by normal object writes
+- this means multipart does not yet preserve cluster placement metadata in the
+  same way as the newer placement-aware object path
 
 Final ETag follows S3 multipart format: `MD5(concat(part_etags))-N` where N
 is the number of parts.
@@ -117,8 +124,9 @@ Upload state is stored under `.abixio.sys/multipart/` on each erasure disk:
             part.2.meta
 ```
 
-Each part's shard data is distributed across disks using the same hash-based
-erasure distribution as regular objects.
+Each part's shard data is distributed across disks using a deterministic local
+multipart planner. This is similar in spirit to regular object erasure coding,
+but it is currently separate from the newer placement-aware object path.
 
 ## Lifecycle
 
@@ -160,4 +168,4 @@ Note: abixio does not currently enforce these limits. Any part size works.
 - `src/multipart/mod.rs` -- all multipart state management and erasure encode/decode
 - `src/s3/handlers.rs` -- 6 handler methods + dispatch routing
 - `src/s3/response.rs` -- XML types for all multipart responses
-- `tests/s3_integration.rs` -- 16 integration tests covering full lifecycle
+- `tests/s3_integration.rs` -- multipart integration coverage; use current `cargo test` output for exact counts

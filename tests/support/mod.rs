@@ -7,6 +7,7 @@ use abixio::admin::HealStats;
 use abixio::admin::handlers::{AdminConfig, AdminHandler};
 use abixio::cluster::{ClusterConfig, ClusterDiskStatus, ClusterManager, ClusterNodeStatus, ServiceState};
 use abixio::cluster::placement::PlacementDisk;
+use abixio::cluster::topology::{StaticTopology, TopologyDisk, TopologyNode};
 use abixio::heal::mrf::MrfQueue;
 use abixio::s3::auth::AuthConfig;
 use abixio::s3::handlers::S3Handler;
@@ -271,8 +272,39 @@ impl ClusterHarness {
             }
         }
 
+        let topology = StaticTopology {
+            cluster_id: "cluster-harness".to_string(),
+            epoch_id: 7,
+            set_id: "cluster-set-4x2".to_string(),
+            nodes: (0..4)
+                .map(|node_index| TopologyNode {
+                    node_id: format!("node-{}", node_index + 1),
+                    advertise_s3: "http://127.0.0.1:0".to_string(),
+                    advertise_cluster: "http://127.0.0.1:0".to_string(),
+                    disks: (0..2)
+                        .map(|disk_index| {
+                            let backend_index = node_index * 2 + disk_index;
+                            TopologyDisk {
+                                disk_id: format!(
+                                    "node-{}-disk-{}",
+                                    node_index + 1,
+                                    disk_index + 1
+                                ),
+                                path: disk_paths[backend_index].clone(),
+                            }
+                        })
+                        .collect(),
+                })
+                .collect(),
+        };
+
         let mut nodes = Vec::new();
         for node_id in &node_ids {
+            let node_index = node_id
+                .trim_start_matches("node-")
+                .parse::<usize>()
+                .unwrap()
+                - 1;
             let store = Arc::new(Self::build_store(
                 &disk_paths,
                 &placement_disks,
@@ -285,11 +317,11 @@ impl ClusterHarness {
                     advertise_cluster: "http://127.0.0.1:0".to_string(),
                     peers: Vec::new(),
                     cluster_secret: String::new(),
-                    disk_paths: {
-                        let path = tmp.path().join(node_id);
-                        std::fs::create_dir_all(&path).unwrap();
-                        vec![path]
-                    },
+                    disk_paths: vec![
+                        disk_paths[node_index * 2].clone(),
+                        disk_paths[node_index * 2 + 1].clone(),
+                    ],
+                    topology: Some(topology.clone()),
                 })
                 .unwrap(),
             );

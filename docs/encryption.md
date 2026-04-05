@@ -1,6 +1,7 @@
 # Encryption — Decision Pending
 
-No decision made yet. Documenting options and threat analysis for future reference.
+No encryption feature is currently implemented in abixio. This document tracks
+options and threat analysis for future work only.
 
 ## Threat Model
 
@@ -29,7 +30,8 @@ No decision made yet. Documenting options and threat analysis for future referen
 - Master key from `ABIXIO_MASTER_KEY` env var
 - **Protects:** disk theft, shell access that can read files but not process memory
 - **Fails:** root reads `/proc/<pid>/environ` or process memory
-- **Complexity:** ~200-300 lines, stdlib only (`crypto/aes`, `crypto/cipher`, `crypto/rand`)
+- **Complexity:** modest Rust implementation using standard AEAD crates plus
+  metadata changes
 - **Performance:** negligible (~3-5 GB/s AES-GCM with AES-NI)
 
 ### Option C: Client-Side Encryption (CSE)
@@ -86,3 +88,12 @@ TBD. Likely some combination of:
 - TPM or YubiKey for key storage on client (key never on disk)
 
 No AbixIO code changes needed for any of these — encryption stays external.
+
+## Current Status
+
+- No SSE-S3 implementation
+- No SSE-KMS implementation
+- No SSE-C implementation
+- No at-rest shard encryption in abixio metadata or storage paths
+- Operators should use OS-level full-disk encryption or external client-side
+  encryption if encryption is required today

@@ -1,7 +1,7 @@
 # Versioning
 
-How abixio implements S3 object versioning. Follows the AWS S3 versioning
-spec and matches MinIO's behavior.
+How abixio implements S3 object versioning. The overall model follows AWS S3
+and MinIO, with a few implementation simplifications called out below.
 
 ## Bucket versioning states
 
@@ -11,7 +11,7 @@ Each bucket has one of three versioning states:
 |---|---|---|
 | **Disabled** (default) | PUT overwrites, DELETE removes. No version IDs. | No `.versioning.json` |
 | **Enabled** | PUT creates new UUID version. DELETE adds delete marker. Old versions preserved. | `{ "status": "Enabled" }` |
-| **Suspended** | PUT overwrites (like disabled). DELETE adds delete marker. Existing versions preserved. | `{ "status": "Suspended" }` |
+| **Suspended** | PUT overwrites the current null-version object and returns `x-amz-version-id: null`. DELETE adds delete marker. Existing versioned history is preserved. | `{ "status": "Suspended" }` |
 
 Config stored at `bucket/.versioning.json` on each disk.
 
@@ -35,6 +35,10 @@ Config stored at `bucket/.versioning.json` on each disk.
 3. Write meta.json with single version entry (version_id = "")
 ```
 Each PUT replaces the previous object entirely.
+
+When versioning is suspended, the response header still returns
+`x-amz-version-id: null` even though the stored object uses the unversioned
+layout on disk.
 
 ### Versioning enabled
 ```
@@ -62,7 +66,7 @@ version's shard path.
 ### Versioning disabled
 Object directory is removed entirely (all shards + meta.json).
 
-### Versioning enabled (no versionId)
+### Versioning enabled or suspended (no versionId)
 A delete marker is added to `meta.json`:
 ```json
 {
@@ -76,6 +80,12 @@ A delete marker is added to `meta.json`:
 No shard data is created. Subsequent GETs return 404 because the latest
 version is a delete marker.
 
+Current implementation note:
+
+- list versions correctly shows the delete marker
+- plain `GET /bucket/key` currently still resolves the latest non-delete-marker
+  version rather than returning a delete-marker-style 404
+
 ### DELETE with versionId
 The specific version entry is removed from `meta.json` and its shard data
 directory (`key/<uuid>/`) is deleted. This is a permanent delete.
@@ -86,6 +96,8 @@ directory (`key/<uuid>/`) is deleted. This is a permanent delete.
 |---|---|
 | `x-amz-version-id` | On PUT (versioned), GET, DELETE responses |
 | `x-amz-delete-marker: true` | On DELETE when a delete marker is created |
+
+In suspended mode, PUT returns `x-amz-version-id: null`.
 
 ## ListObjectVersions response
 

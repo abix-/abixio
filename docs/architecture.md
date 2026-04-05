@@ -14,9 +14,11 @@ cluster-control direction.
    that can read/write blobs by key can implement `Backend` and plug into the
    erasure set without changing the core logic.
 
-3. **Hash-based shard distribution.** Each object's key is hashed to produce a
-   permutation of backend indices. Different objects spread I/O across backends.
-   Distribution stored in `meta.json` for reconstruction.
+3. **Deterministic shard distribution.** Each object's key is mapped
+   deterministically onto shard locations. In the single-node path this is a
+   backend-index permutation; in the placement-aware path it includes stable
+   `epoch_id`, `set_id`, `node_ids`, and `disk_ids`. Distribution is stored in
+   `meta.json` for reconstruction.
 
 4. **Quorum rules.** Write quorum = data_n+1 (or data_n when parity==0).
    Read quorum = data_n. Delete quorum = data_n+1 (or data_n when parity==0).
@@ -46,18 +48,22 @@ cluster-control direction.
 
 ## Cluster Direction
 
-AbixIO is no longer purely single-node in direction. The repo now contains an
-initial cluster-control layer:
+AbixIO is no longer purely single-node in direction. The repo now contains a
+minimal static-topology cluster-control layer:
 
-- cluster identity and peer configuration
+- cluster identity and topology manifest validation
 - persisted cluster metadata in `.abixio.sys/cluster/state.json`
 - cluster admin endpoints
 - peer monitoring and quorum tracking
 - hard fencing when quorum is lost
 
 This is not yet a full distributed object-store data plane. Distributed shard
-RPC, consensus-backed topology changes, heterogeneous set planning, and
-rebalance are still future work.
+RPC, live topology changes, heterogeneous set planning, and rebalance are still
+future work.
+
+The current model is intentionally closer to a MinIO-style static deployment
+than to a self-forming distributed control plane: operators define topology
+upfront, nodes validate it at startup, and unsafe nodes fence themselves.
 
 See [cluster.md](cluster.md) for the full design and current behavior.
 
@@ -66,7 +72,7 @@ See [cluster.md](cluster.md) for the full design and current behavior.
 | Aspect | MinIO | AbixIO |
 |---|---|---|
 | Language | Go | Rust |
-| Scope | distributed multi-node | single process today, cluster-control groundwork in progress |
+| Scope | distributed multi-node | single process today, static-topology cluster groundwork in progress |
 | Erasure coding | cluster-level EC ratio | per-object EC (data/parity per object) |
 | EC config | fixed per server pool | per-object header > bucket config > server default |
 | Min disks | 4 (enforced) | 1 (with 0 parity) |
@@ -86,6 +92,8 @@ src/
   lib.rs                  # module re-exports
   cluster/
     mod.rs                # persisted cluster state, peer monitoring, fencing, cluster types
+    placement.rs          # deterministic node-first placement planner and invariants
+    topology.rs           # static topology manifest schema and validation
   config.rs               # Config struct (clap derive) + validation
   query.rs                # URL query string parsing
   storage/
@@ -115,12 +123,15 @@ src/
     scanner.rs            # Per-object scan cooldown tracking
     worker.rs             # heal_object(), MRF drain worker, scanner loop (per-object EC aware)
 tests/
-  s3_integration.rs       # 94 S3 API integration tests
-  admin_integration.rs    # 19 admin API integration tests
+  support/                # distributed test harness and controlled backends
+  s3_integration.rs       # S3 API integration tests
+  admin_integration.rs    # admin API integration tests
+  distributed_placement_integration.rs # 4-node placement and fencing tests
   e2e.py                  # end-to-end Python test (starts server, exercises S3 + admin)
 docs/
   architecture.md         # this file
   cluster.md              # cluster control design, fencing, current scope
+  static-topology.md      # topology manifest schema and restart-based cluster operation
   storage-layout.md       # disk layout, meta.json format
   per-object-ec.md        # per-object erasure coding, bucket EC config, disk pools
   admin-api.md            # admin API endpoints (status, disks, heal, inspect, bucket EC)

@@ -6,6 +6,7 @@ use clap::Parser;
 use abixio::admin::HealStats;
 use abixio::admin::handlers::{AdminConfig, AdminHandler};
 use abixio::cluster::{ClusterConfig, ClusterManager};
+use abixio::cluster::topology::StaticTopology;
 use abixio::config::Config;
 use abixio::heal::mrf::MrfQueue;
 use abixio::heal::scanner::ScanState;
@@ -26,6 +27,15 @@ async fn main() {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
+    let static_topology = cfg
+        .cluster_topology
+        .as_ref()
+        .map(|path| {
+            StaticTopology::load(path).unwrap_or_else(|err| {
+                eprintln!("error: {}", err);
+                std::process::exit(1);
+            })
+        });
 
     let backends: Vec<Box<dyn Backend>> = match cfg
         .disks
@@ -56,6 +66,25 @@ async fn main() {
     set.set_mrf(Arc::clone(&mrf));
 
     let set = Arc::new(set);
+    if let Some(topology) = &static_topology {
+        let placement_disks = topology.placement_disks();
+        if placement_disks.len() == set.disks().len() {
+            if let Err(err) = set.set_placement_topology(
+                topology.epoch_id,
+                topology.set_id.clone(),
+                placement_disks,
+            ) {
+                eprintln!("error: {}", err);
+                std::process::exit(1);
+            }
+        } else {
+            tracing::warn!(
+                "cluster topology defines {} disks but local store has {}; placement remains local until remote shard transport exists",
+                placement_disks.len(),
+                set.disks().len()
+            );
+        }
+    }
 
     // build disk list for heal workers (separate from ErasureSet's disks)
     let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
@@ -104,6 +133,7 @@ async fn main() {
             peers: cfg.peers.clone(),
             cluster_secret: cfg.cluster_secret.clone(),
             disk_paths: cfg.disks.clone(),
+            topology: static_topology,
         })
         .unwrap_or_else(|err| {
             eprintln!("error: {}", err);

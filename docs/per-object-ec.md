@@ -11,6 +11,16 @@ The encode path resolves EC params per-request using a precedence chain. The
 decode and heal paths read EC params from the stored metadata, so objects with
 different EC ratios coexist seamlessly.
 
+Placement-aware objects also record:
+
+- `epoch_id`
+- `set_id`
+- `node_ids`
+- `disk_ids`
+
+Those fields identify where each shard belongs, in addition to the EC ratio
+itself.
+
 ### Precedence chain
 
 | Priority | Source | How to set |
@@ -88,7 +98,13 @@ minimum configuration, but the pool can have more disks than `data + parity`.
 abixio --disks /d1,/d2,/d3,/d4,/d5,/d6 --data 2 --parity 2
 ```
 
-Each object selects a subset of disks from the pool:
+Each object selects a subset of disks from the pool.
+
+In the single-node path this is a deterministic backend subset. In the
+placement-aware path the same EC choice is combined with stable placement
+metadata.
+
+Single-node example:
 
 ```
 full_permutation = hash_order("bucket/key", 6)  # e.g. [3,1,0,5,2,4]
@@ -125,7 +141,7 @@ correctly:
 
 1. Read `meta.json` from any available disk
 2. Extract `erasure.data` and `erasure.parity`
-3. Use stored `distribution` to identify which disks hold shards
+3. Use stored `distribution` and, when present, stored placement identity to identify which shards belong where
 4. Reconstruct missing shards using the object's own EC params
 5. Write repaired shards back
 
@@ -137,7 +153,7 @@ correctly:
 | Changing EC | Requires new server pool | Set header on next PUT |
 | Mixed EC in same bucket | Not possible | Native |
 | EC stored in metadata | Yes (xl.meta) | Yes (meta.json) |
-| Disk selection | All disks in erasure set | Hash-selected subset of pool |
+| Disk selection | All disks in erasure set | Deterministic subset of pool, optionally with placement metadata |
 
 MinIO's approach requires planning EC ratios at deployment time. AbixIO lets
 you choose per object, per bucket, or per server -- and change your mind at
@@ -159,3 +175,7 @@ disk0/
 
 Each object's `meta.json` is the source of truth for its EC configuration.
 The bucket-level `.ec.json` is only used as a default for new writes.
+
+For placement-aware objects, `meta.json` also records `epoch_id`, `set_id`,
+`node_ids`, and `disk_ids` alongside `data`, `parity`, `index`, and
+`distribution`.

@@ -47,7 +47,11 @@ ordered newest-first.
         "data": 2,
         "parity": 2,
         "index": 0,
-        "distribution": [2, 0, 3, 1]
+        "distribution": [2, 0, 3, 1],
+        "epoch_id": 7,
+        "set_id": "cluster-set-4x2",
+        "node_ids": ["node-3", "node-1", "node-4", "node-2"],
+        "disk_ids": ["node-3-disk-1", "node-1-disk-1", "node-4-disk-1", "node-2-disk-1"]
       },
       "checksum": "abc123def456...",
       "user_metadata": { "x-amz-meta-author": "alice" },
@@ -72,6 +76,10 @@ ordered newest-first.
 | `erasure.parity` | Number of parity shards |
 | `erasure.index` | Which shard this disk holds (0-based) |
 | `erasure.distribution` | Permutation mapping shard index to disk index |
+| `erasure.epoch_id` | Placement epoch recorded with the object |
+| `erasure.set_id` | Placement set identity recorded with the object |
+| `erasure.node_ids` | Ordered node identity for each shard |
+| `erasure.disk_ids` | Ordered disk identity for each shard |
 | `checksum` | SHA-256 hex of THIS shard's data (for bitrot detection) |
 | `user_metadata` | Custom `x-amz-meta-*` headers from the PUT request |
 | `tags` | Object tags (key-value pairs) |
@@ -120,9 +128,13 @@ is updated with the new version entry prepended to the array.
 ## Erasure distribution
 
 The `distribution` array maps shard indices to disk indices. It is a
-deterministic permutation derived from hashing `bucket/key`. This means
-the same key always maps to the same disk layout, enabling reads without
-coordination.
+deterministic mapping recorded with the object. In the single-node path it is
+derived from a backend permutation. In the placement-aware path it is tied to
+the active placement decision and accompanied by `epoch_id`, `set_id`,
+`node_ids`, and `disk_ids`.
 
 Example with 4 disks: `distribution: [2, 0, 3, 1]` means shard 0 is on
 disk 2, shard 1 is on disk 0, shard 2 is on disk 3, shard 3 is on disk 1.
+
+For placement-aware objects, `node_ids` and `disk_ids` make that layout stable
+and externally inspectable across nodes.

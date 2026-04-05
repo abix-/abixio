@@ -8,7 +8,7 @@ How abixio stores and serves S3 bucket policies.
 |---|---|---|
 | `PUT /{bucket}?policy` | PUT | Store a bucket policy (JSON body, max 20KiB) |
 | `GET /{bucket}?policy` | GET | Return stored policy as JSON |
-| `DELETE /{bucket}?policy` | DELETE | Remove bucket policy, returns 204 |
+| `DELETE /{bucket}?policy` | DELETE | Remove bucket policy, returns 204 (currently idempotent) |
 
 ## Policy format
 
@@ -49,6 +49,12 @@ Standard AWS IAM bucket policy JSON:
 
 Policy stored as `.policy.json` in the bucket directory on the first disk.
 Same pattern as `.versioning.json` and `.tagging.json`.
+
+Current implementation note:
+
+- `PUT` and `GET` verify bucket existence
+- `DELETE` currently removes the file idempotently and returns `204` even if the
+  bucket does not exist
 
 ## Policy enforcement
 

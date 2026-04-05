@@ -33,7 +33,7 @@ Tags live in the `tags` field of each version entry in `meta.json`:
 ```
 
 When tags are updated via `PUT ?tagging`, the `tags` field on the latest
-version entry is modified in `meta.json` across all disks.
+non-delete-marker version entry is modified in `meta.json` across all disks.
 
 ### Request/response format
 
@@ -80,3 +80,9 @@ Bucket tags are stored as a simple JSON key-value map:
 ```json
 { "project": "alpha", "cost-center": "12345" }
 ```
+
+Current implementation note:
+
+- bucket tag writes verify bucket existence
+- bucket tag reads currently return an empty tag set if the tag file is missing
+  instead of returning a dedicated S3 tagging error
