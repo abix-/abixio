@@ -685,8 +685,7 @@ impl S3Handler {
                         etag: String::new(),
                         content_type: String::new(),
                         erasure: crate::storage::metadata::ErasureMeta {
-                            data: 0,
-                            parity: 0,
+                            ftt: 0,
                             index: 0,
                             distribution: Vec::new(),
                             epoch_id: 0,

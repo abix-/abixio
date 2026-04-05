@@ -54,7 +54,7 @@ pub fn heal_object(
     // derive EC params from stored metadata
     let first_meta = reads.iter().flatten().next().map(|(_, m)| m);
     let (data_n, parity_n) = match first_meta {
-        Some(m) => (m.erasure.data, m.erasure.parity),
+        Some(m) => (m.erasure.data(), m.erasure.parity()),
         None => return Err(StorageError::ObjectNotFound),
     };
     let total = data_n + parity_n;
@@ -309,7 +309,7 @@ fn object_needs_healing(
         None => return false, // object gone, nothing to heal
     };
 
-    let total = meta.erasure.data + meta.erasure.parity;
+    let total = meta.erasure.data() + meta.erasure.parity();
     let distribution = &meta.erasure.distribution;
     let mut good = 0;
 

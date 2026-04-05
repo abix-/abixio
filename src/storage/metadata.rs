@@ -38,8 +38,7 @@ pub struct ObjectMeta {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ErasureMeta {
-    pub data: usize,
-    pub parity: usize,
+    pub ftt: usize,
     pub index: usize,             // which shard this disk holds
     pub distribution: Vec<usize>, // permutation mapping shard -> disk
     #[serde(default)]
@@ -50,6 +49,18 @@ pub struct ErasureMeta {
     pub node_ids: Vec<String>,
     #[serde(default)]
     pub volume_ids: Vec<String>,
+}
+
+impl ErasureMeta {
+    /// Derive data shard count from distribution and FTT.
+    pub fn data(&self) -> usize {
+        self.distribution.len() - self.ftt
+    }
+
+    /// Derive parity shard count (same as FTT).
+    pub fn parity(&self) -> usize {
+        self.ftt
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -135,8 +146,7 @@ impl ObjectMeta {
             && self.etag == other.etag
             && self.content_type == other.content_type
             && self.created_at == other.created_at
-            && self.erasure.data == other.erasure.data
-            && self.erasure.parity == other.erasure.parity
+            && self.erasure.ftt == other.erasure.ftt
             && self.erasure.distribution == other.erasure.distribution
             && self.erasure.epoch_id == other.erasure.epoch_id
             && self.erasure.set_id == other.erasure.set_id
@@ -177,8 +187,7 @@ mod tests {
             content_type: "text/plain".to_string(),
             created_at: 1700000000,
             erasure: ErasureMeta {
-                data: 2,
-                parity: 2,
+                ftt: 2,
                 index,
                 distribution: vec![2, 0, 3, 1],
                 epoch_id: 1,

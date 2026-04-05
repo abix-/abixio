@@ -74,10 +74,10 @@ Scanner wakes up
 
 This is the core repair logic. Called by both MRF worker and scanner.
 
-The healer is **per-object EC aware**: it reads each object's `erasure.data`
-and `erasure.parity` from the stored metadata rather than using global config.
-A disk pool can contain objects with different EC ratios (e.g., one object at
-1+5 and another at 4+2), and each is healed using its own parameters.
+The healer is **per-object FTT aware**: it reads each object's `erasure.ftt`
+from the stored metadata rather than using global config. A volume pool can
+contain objects with different FTT (e.g., one at FTT=5 and another at FTT=2),
+and each is healed using its own parameters.
 
 ### Step 1: Read All Disks
 

@@ -268,8 +268,7 @@ disk by comparing `meta.json` volume_ids against `volume.json` volume_id.
 | `etag` | MD5 hex of the original object data |
 | `content_type` | MIME type set on upload |
 | `created_at` | Unix timestamp (seconds) of upload time |
-| `erasure.data` | Number of data shards |
-| `erasure.parity` | Number of parity shards |
+| `erasure.ftt` | Failures to tolerate (parity shard count) |
 | `erasure.index` | Which shard this disk holds (0-based) |
 | `erasure.distribution` | Permutation mapping shard index to disk index |
 | `erasure.epoch_id` | Placement epoch recorded with the object |

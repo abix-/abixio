@@ -422,8 +422,7 @@ mod tests {
             content_type: "text/plain".to_string(),
             created_at: 1700000000,
             erasure: ErasureMeta {
-                data: 2,
-                parity: 2,
+                ftt: 2,
                 index,
                 distribution: vec![0, 1, 2, 3],
                 epoch_id: 1,

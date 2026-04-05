@@ -142,8 +142,7 @@ pub fn put_part(
                 size: data.len() as u64,
                 etag: etag.clone(),
                 erasure: ErasureMeta {
-                    data: data_n,
-                    parity: parity_n,
+                    ftt: parity_n,
                     index: shard_idx,
                     distribution: distribution.clone(),
                     epoch_id: 1,

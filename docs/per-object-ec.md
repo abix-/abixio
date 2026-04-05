@@ -7,8 +7,8 @@ on the same disk pool.
 ## Failures to tolerate (FTT)
 
 The primary interface is FTT: a single number saying how many volume failures
-an object can survive. The system computes optimal data/parity shards from
-FTT and the available disk count.
+an object can survive. The system computes the shard layout from FTT and the
+available disk count.
 
 | Disks | FTT=0 | FTT=1 | FTT=2 | FTT=3 |
 |---|---|---|---|---|
@@ -23,7 +23,7 @@ node. In single-node mode, FTT means local disk failures.
 
 ## How it works
 
-AbixIO stores `erasure.data` and `erasure.parity` in every object's `meta.json`.
+AbixIO stores `erasure.ftt` and `erasure.distribution` in every object's `meta.json`.
 The encode path resolves EC params per-request using a precedence chain. The
 decode and heal paths read EC params from the stored metadata, so objects with
 different EC ratios coexist seamlessly.
@@ -129,7 +129,7 @@ and `volume_ids`.
 
 ## How reads work
 
-The decode path reads `erasure.data` and `erasure.parity` from the object's
+The decode path reads `erasure.ftt` and `erasure.distribution` from the object's
 `meta.json`. It does not consult bucket FTT. This means:
 
 - Objects written with FTT=5 (1+5) are always read with 1+5
@@ -143,7 +143,7 @@ contain objects with different EC ratios, and the healer handles each one
 correctly:
 
 1. Read `meta.json` from any available disk
-2. Extract `erasure.data` and `erasure.parity`
+2. Extract `erasure.ftt` and derive shard counts from `erasure.distribution`
 3. Use stored `distribution` and, when present, stored placement identity to identify which shards belong where
 4. Reconstruct missing shards using the object's own EC params
 5. Write repaired shards back

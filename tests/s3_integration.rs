@@ -3688,7 +3688,7 @@ async fn windows_forbidden_chars_rejected_at_storage_layer() {
             content_type: "application/octet-stream".to_string(),
             created_at: 0,
             erasure: abixio::storage::metadata::ErasureMeta {
-                data: 1, parity: 0, index: 0,
+                ftt: 0, index: 0,
                 distribution: vec![0],
                 epoch_id: 1,
                 set_id: String::new(),

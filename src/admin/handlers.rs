@@ -250,7 +250,7 @@ impl AdminHandler {
         };
 
         // derive EC params from object's stored metadata
-        let total = meta.erasure.data + meta.erasure.parity;
+        let total = meta.erasure.data() + meta.erasure.parity();
         let distribution = &meta.erasure.distribution;
         let mut shards = Vec::with_capacity(total);
 
@@ -304,8 +304,8 @@ impl AdminHandler {
             content_type: meta.content_type.clone(),
             created_at: meta.created_at,
             erasure: ErasureInfo {
-                data: meta.erasure.data,
-                parity: meta.erasure.parity,
+                data: meta.erasure.data(),
+                parity: meta.erasure.parity(),
                 epoch_id: meta.erasure.epoch_id,
                 set_id: meta.erasure.set_id.clone(),
                 distribution: meta.erasure.distribution.clone(),

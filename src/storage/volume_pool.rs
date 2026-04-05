@@ -137,7 +137,7 @@ impl VolumePool {
     fn read_ec_from_meta(&self, bucket: &str, key: &str) -> Option<(usize, usize)> {
         for disk in &self.disks {
             if let Ok(meta) = disk.stat_object(bucket, key) {
-                return Some((meta.erasure.data, meta.erasure.parity));
+                return Some((meta.erasure.data(), meta.erasure.parity()));
             }
         }
         None

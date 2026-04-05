@@ -170,8 +170,7 @@ fn encode_and_write_impl(
             content_type: content_type.clone(),
             created_at,
             erasure: ErasureMeta {
-                data: data_n,
-                parity: parity_n,
+                ftt: parity_n,
                 index: shard_idx,
                 distribution: distribution.clone(),
                 epoch_id: placement.epoch_id,
