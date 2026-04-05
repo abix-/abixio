@@ -94,18 +94,18 @@ closest architectural match.
 
 | Capability | MinIO | Garage | RustFS | SeaweedFS | Ceph RGW | Swift | OpenIO | Riak CS | AbixIO |
 |---|---|---|---|---|---|---|---|---|---|
-| Erasure coding | Strong: parity is described at the erasure-set / deployment level | No: Garage design docs explicitly reject erasure coding and limit Garage to duplication | Not established from the checked README/docs used here | Strong: documented around erasure-coded volumes and warm storage | Partial: comes from the underlying Ceph storage stack rather than RGW as its own storage model | Not central to the public S3-compatibility story checked here | Not clearly established from checked docs used here | Not central to checked docs used here | Strong |
+| Erasure coding | Strong: parity is described at the erasure-set / deployment level | No: Garage design docs explicitly reject erasure coding and limit Garage to duplication | Strong: source clearly includes an erasure-coded storage engine, erasure-set metrics, and erasure healing | Strong: documented around erasure-coded volumes and warm storage | Partial: comes from the underlying Ceph storage stack rather than RGW as its own storage model | Not central to the public S3-compatibility story checked here | Not clearly established from checked docs used here | Not central to checked docs used here | Strong |
 | **Per-object EC / parity selection** | No: checked MinIO EC docs describe erasure-set parity, not object-level parity selection | No: Garage explicitly avoids erasure coding | Not found in checked docs/source | No: checked SeaweedFS docs describe EC at volume / warm-storage level | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | **Strong** |
 | Self-describing volume identity on disk | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | Strong |
-| Arbitrary pluggable volume backends | Partial: official docs expose object tiering to remote MinIO, Azure, GCS, and S3, but not arbitrary interchangeable volume backends | No: checked Garage docs position it as duplicated storage nodes, not pluggable backend volumes | Not found in checked docs/source | Partial: Cloud Drive, remote object-store gateway, and cloud tiering are documented, but not as arbitrary interchangeable volume backends | No: gateway surface over Ceph, not arbitrary volume plugins | No: native object-store system with optional S3 compatibility layer | Not found in checked docs/source | No: checked docs present an S3 API layer, not pluggable volume backends | Partial today through `Backend`; broader third-party backends are planned |
+| Arbitrary pluggable volume backends | Partial: official docs expose object tiering to remote MinIO, Azure, GCS, and S3, but not arbitrary interchangeable volume backends | No: checked Garage docs position it as duplicated storage nodes, not pluggable backend volumes | Partial: source includes warm-tier backends for S3, MinIO, Azure, GCS, R2, Aliyun, Tencent, and Huawei Cloud, but not as arbitrary interchangeable primary volume backends | Partial: Cloud Drive, remote object-store gateway, and cloud tiering are documented, but not as arbitrary interchangeable volume backends | No: gateway surface over Ceph, not arbitrary volume plugins | No: native object-store system with optional S3 compatibility layer | Not found in checked docs/source | No: checked docs present an S3 API layer, not pluggable volume backends | Partial today through `Backend`; broader third-party backends are planned |
 
 ## Admin And Operations Matrix
 
 | Capability | MinIO | Garage | RustFS | SeaweedFS | Ceph RGW | Swift | OpenIO | Riak CS | AbixIO |
 |---|---|---|---|---|---|---|---|---|---|
-| Admin tooling | Strong | Strong | Strong | Strong | Strong | Strong | Partial | Partial | Partial |
-| Shard-level inspection | Partial: official docs expose `mc admin object info` for object shard summaries on disk | Not found in checked docs/source | Not found in checked docs/source | Partial: maintenance and EC tooling exist, but not as the same shard-inspection model | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | Strong |
-| Healing / repair workflows | Strong | Strong | Partial | Strong | Strong | Strong | Partial | Partial | Strong |
+| Admin tooling | Strong | Strong | Strong: README, console routes, admin handlers, Helm, and deployment assets all point to a substantial admin surface | Strong | Strong | Strong | Partial | Partial | Partial |
+| Shard-level inspection | Partial: official docs expose `mc admin object info` for object shard summaries on disk | Not found in checked docs/source | Partial: admin and metadata surfaces expose erasure-set and object erasure information, but I did not verify an exact AbixIO-style shard-inspection workflow | Partial: maintenance and EC tooling exist, but not as the same shard-inspection model | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | Not found in checked docs/source | Strong |
+| Healing / repair workflows | Strong | Strong | Strong: source includes heal manager, erasure-set healer, resume logic, scanner, and bitrot handling | Strong | Strong | Strong | Partial | Partial | Strong |
 
 ## Scope Matrix
 
@@ -113,7 +113,7 @@ closest architectural match.
 |---|---|---|---|---|---|---|---|---|---|
 | Narrow S3 server focus | Strong | Strong | Strong | No | Partial | No | Partial | Strong | Strong |
 | Broader storage platform beyond S3 | Partial | Partial | Partial | **Strong** | **Strong** via the wider Ceph platform | Partial: broader OpenStack object-storage ecosystem, but not an S3-first product | Partial | Partial | No |
-| Cloud tiering / cloud-integrated storage story | Strong: object tiering is documented | Not found in checked docs/source | Not found in checked docs/source | Strong: cloud tiering, Cloud Drive, and remote object-store gateway are documented | Partial: replication / multisite / wider Ceph ecosystem, but not the same tiering story | Not central to checked docs used here | Not found in checked docs/source | Not found in checked docs/source | Planned direction only |
+| Cloud tiering / cloud-integrated storage story | Strong: object tiering is documented | Not found in checked docs/source | Partial: source includes warm-tier backends for multiple cloud/object targets, but I did not verify polished public docs for the full story | Strong: cloud tiering, Cloud Drive, and remote object-store gateway are documented | Partial: replication / multisite / wider Ceph ecosystem, but not the same tiering story | Not central to checked docs used here | Not found in checked docs/source | Not found in checked docs/source | Planned direction only |
 
 ## Where AbixIO Is Different
 
@@ -181,6 +181,8 @@ Specific upstream claims this page is anchored to:
     MinIO and Ceph
   - README exposes a large built-in feature/status matrix and strong direct
     performance positioning
+  - source clearly includes ECStore, erasure-set healing, bitrot protection,
+    console/admin surfaces, and warm-tier backends for several cloud targets
 
 - **SeaweedFS**
   - README positions SeaweedFS as a broader storage system with object storage,
