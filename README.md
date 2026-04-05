@@ -1,32 +1,43 @@
 # AbixIO
 
-**Status: alpha. Server functional with background healing, admin API, pluggable storage backends, 117 tests passing.**
+S3-compatible object store with erasure coding. Single Rust binary.
 
-S3-compatible object store with erasure coding and pluggable storage backends. Single Rust binary.
+## What it does
 
-## Problem
+Spreads your data across disks using Reed-Solomon erasure coding. Lose a disk,
+lose nothing. Any S3 client works out of the box.
 
-Hard drives die. All of them, eventually. Your data should not die with them.
+- 1 disk minimum, scale up by adding disks
+- Configurable data/parity split
+- Pluggable storage backends via `Backend` trait
+- Per-shard SHA256 bitrot detection
+- Background healing (MRF queue + integrity scanner)
+- AWS Signature V4 authentication + presigned URL support
+- Object versioning (enable/suspend per bucket)
+- Object and bucket tagging
+- Admin API for disk health, healing status, shard inspection
 
-AbixIO spreads your data across disks using erasure coding and exposes it via the S3 API. Lose a disk, lose nothing. Any S3 client works out of the box.
+## Quick start
 
-## How it works
+```bash
+cargo build --release
 
-- Data is split into shards using Reed-Solomon erasure coding
-- Shards are distributed across storage backends with hash-based permutation
-- Each "disk" is a pluggable storage backend. Local directory today, cloud storage tomorrow
-- Metadata is replicated to every backend (not erasure-coded)
-- Per-shard SHA256 checksums detect bitrot automatically
-- Failed/corrupt shards are automatically reconstructed from remaining good shards
-- Background healing via MRF queue (reactive) and integrity scanner (proactive)
+mkdir -p /tmp/abixio/{d1,d2,d3,d4}
 
-## Configuration
-
-```
-abixio --listen 0.0.0.0:10000 \
-  --disks /mnt/d1,/mnt/d2,/mnt/d3,/mnt/d4 \
+./target/release/abixio --listen 0.0.0.0:9000 \
+  --disks /tmp/abixio/d1,/tmp/abixio/d2,/tmp/abixio/d3,/tmp/abixio/d4 \
   --data 2 --parity 2 --no-auth
 ```
+
+```bash
+curl -X PUT http://localhost:9000/mybucket
+curl -X PUT -d "hello world" http://localhost:9000/mybucket/hello.txt
+curl http://localhost:9000/mybucket/hello.txt
+```
+
+Works with AWS CLI, rclone, MinIO client, boto3, or any S3-compatible tool.
+
+## Configuration
 
 | Config | Behavior |
 |---|---|
@@ -35,89 +46,33 @@ abixio --listen 0.0.0.0:10000 \
 | 4 disks, 2 data, 2 parity | Erasure coding. Survives 2 failures. |
 | 6 disks, 2 data, 4 parity | Heavy parity. Survives 4 failures. |
 
-Rules:
-- `data >= 1`, `parity >= 0`
-- Number of disks must equal `data + parity`
-- A disk is a storage backend: local directory, NFS mount, USB drive, or (future) cloud storage
+## S3 API coverage
 
-## Usage
+20 of ~100 S3 API operations implemented. The implemented endpoints are
+well-tested (155 tests) but the overall API surface coverage is low.
+See [docs/s3-compliance.md](docs/s3-compliance.md) for the full audit.
 
-```bash
-# create bucket
-curl -X PUT http://localhost:10000/mybucket
+**Implemented:** ListBuckets, CreateBucket, HeadBucket, DeleteBucket,
+ListObjectsV2, PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects,
+CopyObject, Get/Put/DeleteObjectTagging, Get/Put/DeleteBucketTagging,
+PutBucketVersioning, GetBucketVersioning, ListObjectVersions.
 
-# upload
-curl -X PUT -d "hello world" http://localhost:10000/mybucket/hello.txt
+**Not implemented:** Multipart upload, bucket policies, lifecycle rules,
+encryption config, replication, cloud storage backends.
 
-# download
-curl http://localhost:10000/mybucket/hello.txt
+## Documentation
 
-# list buckets
-curl http://localhost:10000/
-
-# list objects
-curl "http://localhost:10000/mybucket?list-type=2"
-
-# delete
-curl -X DELETE http://localhost:10000/mybucket/hello.txt
-```
-
-Works with any S3 client: AWS CLI, rclone, s3cmd, boto3, etc.
-
-## Admin API
-
-Management endpoints at `/_admin/*` (JSON responses). Used by [abixio-ui](https://github.com/abix-/abixio-ui) for server management. Same Sig V4 auth as S3 (or open with `--no-auth`).
-
-```bash
-# server status
-curl http://localhost:10000/_admin/status
-
-# disk health (per-disk space, status, object counts)
-curl http://localhost:10000/_admin/disks
-
-# healing status (MRF queue, scanner stats)
-curl http://localhost:10000/_admin/heal
-
-# inspect object shards (per-disk shard status)
-curl "http://localhost:10000/_admin/object?bucket=mybucket&key=hello.txt"
-
-# trigger manual heal
-curl -X POST "http://localhost:10000/_admin/heal?bucket=mybucket&key=hello.txt"
-```
-
-## Build
-
-```bash
-cargo build --release
-# produces target/release/abixio (~2.3 MB)
-```
-
-## What works / what doesn't
-
-**Working (11 of ~100 S3 API operations):**
-- Object CRUD: PUT, GET, HEAD, DELETE single objects
-- Batch delete: POST /{bucket}?delete (DeleteObjects, up to 1000 keys/call)
-- Server-side copy: PUT with x-amz-copy-source header (CopyObject)
-- Bucket lifecycle: create, delete (empty only), head, list
-- Object listing: ListObjectsV2 with prefix, delimiter, pagination
-- Range requests: GET with Range header returns 206 Partial Content
-- Custom metadata: x-amz-meta-* headers stored on PUT, returned on HEAD/GET
-- Last-Modified in RFC 7231 HTTP-date format (matches MinIO/AWS behavior)
-- Real bucket creation dates from filesystem (not hardcoded)
-- Erasure coding across 1-N backends with configurable data/parity shards
-- Pluggable storage backends via `Backend` trait (local disk today, cloud later)
-- Bitrot detection via per-shard SHA256 checksums
-- Background healing: MRF auto-enqueue on partial writes + periodic integrity scanner
-- AWS Signature V4 authentication (or --no-auth for local use)
-- Admin API: server status, backend health, healing status, object inspection, manual heal
-
-**Not done:**
-- Object tagging, versioning, bucket policies, lifecycle rules
-- Multipart upload (required for files >5GB)
-- Bucket replication
-- Cloud storage backends (Backend trait is ready, implementations are not)
-
-See [docs/s3-compliance.md](docs/s3-compliance.md) for full S3 API compliance audit (5/10 overall).
+| Doc | Subject |
+|---|---|
+| [architecture.md](docs/architecture.md) | Design principles, project structure, MinIO comparison |
+| [storage-layout.md](docs/storage-layout.md) | Disk layout, meta.json format, erasure distribution |
+| [versioning.md](docs/versioning.md) | S3 object versioning lifecycle |
+| [tagging.md](docs/tagging.md) | Object and bucket tagging |
+| [presigned-urls.md](docs/presigned-urls.md) | Presigned URL authentication |
+| [conditional-requests.md](docs/conditional-requests.md) | If-Match, If-None-Match, etc. |
+| [error-responses.md](docs/error-responses.md) | Error XML format, codes, request ID |
+| [healing.md](docs/healing.md) | Erasure healing, MRF queue, scanner |
+| [s3-compliance.md](docs/s3-compliance.md) | S3 API compliance audit |
 
 ## License
 
