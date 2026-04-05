@@ -25,7 +25,7 @@ pub fn hash_order(key: &str, n: usize) -> Vec<usize> {
 }
 
 /// Split data into `count` equal-sized shards, padding the last shard with zeros.
-fn split_data(data: &[u8], count: usize) -> Vec<Vec<u8>> {
+pub fn split_data(data: &[u8], count: usize) -> Vec<Vec<u8>> {
     let shard_size = data.len().div_ceil(count);
     let shard_size = shard_size.max(1); // minimum 1 byte per shard
     let mut shards = Vec::with_capacity(count);

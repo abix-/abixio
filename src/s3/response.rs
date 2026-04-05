@@ -223,6 +223,97 @@ pub struct DeleteMarkerXml {
     pub last_modified: String,
 }
 
+// -- Multipart upload --
+
+#[derive(Debug, Serialize)]
+#[serde(rename = "InitiateMultipartUploadResult")]
+pub struct InitiateMultipartUploadResultXml {
+    #[serde(rename = "@xmlns")]
+    pub xmlns: String,
+    #[serde(rename = "Bucket")]
+    pub bucket: String,
+    #[serde(rename = "Key")]
+    pub key: String,
+    #[serde(rename = "UploadId")]
+    pub upload_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename = "CompleteMultipartUploadResult")]
+pub struct CompleteMultipartUploadResultXml {
+    #[serde(rename = "@xmlns")]
+    pub xmlns: String,
+    #[serde(rename = "Bucket")]
+    pub bucket: String,
+    #[serde(rename = "Key")]
+    pub key: String,
+    #[serde(rename = "ETag")]
+    pub etag: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename = "ListPartsResult")]
+pub struct ListPartsResultXml {
+    #[serde(rename = "@xmlns")]
+    pub xmlns: String,
+    #[serde(rename = "Bucket")]
+    pub bucket: String,
+    #[serde(rename = "Key")]
+    pub key: String,
+    #[serde(rename = "UploadId")]
+    pub upload_id: String,
+    #[serde(rename = "Part")]
+    pub parts: Vec<PartXml>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PartXml {
+    #[serde(rename = "PartNumber")]
+    pub part_number: i32,
+    #[serde(rename = "ETag")]
+    pub etag: String,
+    #[serde(rename = "Size")]
+    pub size: u64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename = "ListMultipartUploadsResult")]
+pub struct ListMultipartUploadsResultXml {
+    #[serde(rename = "@xmlns")]
+    pub xmlns: String,
+    #[serde(rename = "Bucket")]
+    pub bucket: String,
+    #[serde(rename = "Upload", skip_serializing_if = "Vec::is_empty")]
+    pub uploads: Vec<UploadXml>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UploadXml {
+    #[serde(rename = "Key")]
+    pub key: String,
+    #[serde(rename = "UploadId")]
+    pub upload_id: String,
+    #[serde(rename = "Initiated")]
+    pub initiated: String,
+}
+
+// -- CompleteMultipartUpload request --
+
+#[derive(Debug, Deserialize)]
+#[serde(rename = "CompleteMultipartUpload")]
+pub struct CompleteMultipartUploadRequestXml {
+    #[serde(rename = "Part")]
+    pub parts: Vec<CompletePartXml>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CompletePartXml {
+    #[serde(rename = "PartNumber")]
+    pub part_number: i32,
+    #[serde(rename = "ETag")]
+    pub etag: String,
+}
+
 pub const S3_XMLNS: &str = "http://s3.amazonaws.com/doc/2006-03-01/";
 
 pub fn default_owner() -> Owner {

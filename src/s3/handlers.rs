@@ -118,6 +118,9 @@ impl S3Handler {
         let is_tagging = query.contains("tagging");
         let is_versioning = query.contains("versioning");
         let is_versions = query.contains("versions");
+        let is_uploads = query.contains("uploads");
+        let has_upload_id = query.contains("uploadId");
+        let has_part_number = query.contains("partNumber");
 
         let mut resp = match (bucket, key, &method) {
             ("", _, &Method::GET) => self.list_buckets().await,
@@ -130,6 +133,9 @@ impl S3Handler {
             (b, "", &Method::GET) if is_versions => {
                 self.list_object_versions_handler(b, &req).await
             }
+
+            // list multipart uploads
+            (b, "", &Method::GET) if is_uploads => self.list_multipart_uploads(b).await,
 
             // bucket tagging (must precede bucket catch-alls)
             (b, "", &Method::GET) if is_tagging => self.get_bucket_tagging(b).await,
@@ -148,6 +154,21 @@ impl S3Handler {
             (b, k, &Method::GET) if is_tagging => self.get_object_tagging(b, k).await,
             (b, k, &Method::PUT) if is_tagging => self.put_object_tagging(b, k, req).await,
             (b, k, &Method::DELETE) if is_tagging => self.delete_object_tagging(b, k).await,
+
+            // multipart upload operations (must precede object catch-alls)
+            (b, k, &Method::POST) if is_uploads => self.create_multipart_upload(b, k, &req).await,
+            (b, k, &Method::PUT) if has_upload_id && has_part_number => {
+                self.upload_part(b, k, &query, req).await
+            }
+            (b, k, &Method::POST) if has_upload_id => {
+                self.complete_multipart_upload(b, k, &query, req).await
+            }
+            (b, k, &Method::DELETE) if has_upload_id => {
+                self.abort_multipart_upload(b, k, &query).await
+            }
+            (b, k, &Method::GET) if has_upload_id => {
+                self.list_parts_handler(b, k, &query).await
+            }
 
             (b, k, &Method::PUT) => self.put_object(b, k, req).await,
             (b, k, &Method::GET) => self.get_object(b, k, &req).await,
@@ -912,6 +933,232 @@ impl S3Handler {
                     is_truncated: false,
                     versions,
                     delete_markers,
+                };
+                match xml_to_string(&result) {
+                    Ok(xml) => ok_body(xml.into_bytes()),
+                    Err(_) => error_response(&super::errors::ERR_INTERNAL),
+                }
+            }
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    // -- multipart upload --
+
+    async fn create_multipart_upload(
+        &self,
+        bucket: &str,
+        key: &str,
+        req: &Request<Incoming>,
+    ) -> Response<BoxBody> {
+        let content_type = req
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("application/octet-stream")
+            .to_string();
+
+        let mut user_metadata = HashMap::new();
+        for (name, value) in req.headers() {
+            let name_lower = name.as_str().to_lowercase();
+            if name_lower.starts_with("x-amz-meta-") {
+                if let Ok(v) = value.to_str() {
+                    user_metadata.insert(name_lower, v.to_string());
+                }
+            }
+        }
+
+        match crate::multipart::create_upload(
+            self.store.disks(),
+            bucket,
+            key,
+            &content_type,
+            user_metadata,
+        ) {
+            Ok(upload_id) => {
+                let result = InitiateMultipartUploadResultXml {
+                    xmlns: S3_XMLNS.to_string(),
+                    bucket: bucket.to_string(),
+                    key: key.to_string(),
+                    upload_id,
+                };
+                match xml_to_string(&result) {
+                    Ok(xml) => ok_body(xml.into_bytes()),
+                    Err(_) => error_response(&super::errors::ERR_INTERNAL),
+                }
+            }
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    async fn upload_part(
+        &self,
+        bucket: &str,
+        key: &str,
+        query: &str,
+        req: Request<Incoming>,
+    ) -> Response<BoxBody> {
+        let params = parse_query(query);
+        let upload_id = match params.get("uploadId") {
+            Some(id) => id.clone(),
+            None => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+        let part_number: i32 = match params.get("partNumber").and_then(|v| v.parse().ok()) {
+            Some(n) => n,
+            None => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+
+        let body = match req.collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+
+        match crate::multipart::put_part(
+            self.store.disks(),
+            self.store.data_n(),
+            self.store.parity_n(),
+            bucket,
+            key,
+            &upload_id,
+            part_number,
+            &body,
+        ) {
+            Ok(part) => Response::builder()
+                .status(StatusCode::OK)
+                .header("ETag", format!("\"{}\"", part.etag))
+                .body(Full::new(Bytes::new()))
+                .unwrap(),
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    async fn complete_multipart_upload(
+        &self,
+        bucket: &str,
+        key: &str,
+        query: &str,
+        req: Request<Incoming>,
+    ) -> Response<BoxBody> {
+        let params = parse_query(query);
+        let upload_id = match params.get("uploadId") {
+            Some(id) => id.clone(),
+            None => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+
+        let body = match req.collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+        let body_str = match std::str::from_utf8(&body) {
+            Ok(s) => s,
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+
+        let complete_req: CompleteMultipartUploadRequestXml = match xml_from_str(body_str) {
+            Ok(r) => r,
+            Err(_) => return error_response(&ERR_MALFORMED_XML),
+        };
+
+        let parts: Vec<(i32, String)> = complete_req
+            .parts
+            .iter()
+            .map(|p| (p.part_number, p.etag.clone()))
+            .collect();
+
+        match crate::multipart::complete_upload(
+            self.store.disks(),
+            self.store.data_n(),
+            self.store.parity_n(),
+            bucket,
+            key,
+            &upload_id,
+            &parts,
+        ) {
+            Ok(info) => {
+                let result = CompleteMultipartUploadResultXml {
+                    xmlns: S3_XMLNS.to_string(),
+                    bucket: bucket.to_string(),
+                    key: key.to_string(),
+                    etag: format!("\"{}\"", info.etag),
+                };
+                match xml_to_string(&result) {
+                    Ok(xml) => ok_body(xml.into_bytes()),
+                    Err(_) => error_response(&super::errors::ERR_INTERNAL),
+                }
+            }
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    async fn abort_multipart_upload(
+        &self,
+        bucket: &str,
+        key: &str,
+        query: &str,
+    ) -> Response<BoxBody> {
+        let params = parse_query(query);
+        let upload_id = match params.get("uploadId") {
+            Some(id) => id.clone(),
+            None => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+
+        match crate::multipart::abort_upload(self.store.disks(), bucket, key, &upload_id) {
+            Ok(()) => empty_response(StatusCode::NO_CONTENT),
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    async fn list_parts_handler(
+        &self,
+        bucket: &str,
+        key: &str,
+        query: &str,
+    ) -> Response<BoxBody> {
+        let params = parse_query(query);
+        let upload_id = match params.get("uploadId") {
+            Some(id) => id.clone(),
+            None => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+
+        match crate::multipart::list_parts(self.store.disks(), bucket, key, &upload_id) {
+            Ok((_upload, parts)) => {
+                let result = ListPartsResultXml {
+                    xmlns: S3_XMLNS.to_string(),
+                    bucket: bucket.to_string(),
+                    key: key.to_string(),
+                    upload_id: upload_id.clone(),
+                    parts: parts
+                        .iter()
+                        .map(|p| PartXml {
+                            part_number: p.part_number,
+                            etag: format!("\"{}\"", p.etag),
+                            size: p.size,
+                        })
+                        .collect(),
+                };
+                match xml_to_string(&result) {
+                    Ok(xml) => ok_body(xml.into_bytes()),
+                    Err(_) => error_response(&super::errors::ERR_INTERNAL),
+                }
+            }
+            Err(e) => error_response(&map_error(&e)),
+        }
+    }
+
+    async fn list_multipart_uploads(&self, bucket: &str) -> Response<BoxBody> {
+        match crate::multipart::list_uploads(self.store.disks(), bucket) {
+            Ok(uploads) => {
+                let result = ListMultipartUploadsResultXml {
+                    xmlns: S3_XMLNS.to_string(),
+                    bucket: bucket.to_string(),
+                    uploads: uploads
+                        .iter()
+                        .map(|u| UploadXml {
+                            key: u.key.clone(),
+                            upload_id: u.upload_id.clone(),
+                            initiated: format_timestamp(u.created_at),
+                        })
+                        .collect(),
                 };
                 match xml_to_string(&result) {
                     Ok(xml) => ok_body(xml.into_bytes()),

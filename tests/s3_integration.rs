@@ -1472,3 +1472,234 @@ async fn unsupported_method_returns_405() {
         .unwrap();
     assert_eq!(resp.status(), 405);
 }
+
+// --- Multipart upload ---
+
+#[tokio::test]
+async fn multipart_create_upload_returns_upload_id() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .post(url(&addr, "/tb/bigfile?uploads"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("InitiateMultipartUploadResult"), "body: {}", body);
+    assert!(body.contains("<UploadId>"), "missing UploadId: {}", body);
+    assert!(body.contains("<Bucket>tb</Bucket>"));
+    assert!(body.contains("<Key>bigfile</Key>"));
+}
+
+#[tokio::test]
+async fn multipart_full_lifecycle() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    // create upload
+    let resp = client
+        .post(url(&addr, "/tb/assembled?uploads"))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    let upload_id = extract_xml_value(&body, "UploadId");
+
+    // upload 3 parts
+    let part1 = "aaaa";
+    let part2 = "bbbb";
+    let part3 = "cccc";
+
+    let resp = client
+        .put(url_with_query(
+            &addr,
+            "/tb/assembled",
+            &[("uploadId", &upload_id), ("partNumber", "1")],
+        ))
+        .body(part1)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let etag1 = resp.headers()["etag"].to_str().unwrap().to_string();
+
+    let resp = client
+        .put(url_with_query(
+            &addr,
+            "/tb/assembled",
+            &[("uploadId", &upload_id), ("partNumber", "2")],
+        ))
+        .body(part2)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let etag2 = resp.headers()["etag"].to_str().unwrap().to_string();
+
+    let resp = client
+        .put(url_with_query(
+            &addr,
+            "/tb/assembled",
+            &[("uploadId", &upload_id), ("partNumber", "3")],
+        ))
+        .body(part3)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let etag3 = resp.headers()["etag"].to_str().unwrap().to_string();
+
+    // list parts
+    let resp = client
+        .get(url_with_query(
+            &addr,
+            "/tb/assembled",
+            &[("uploadId", &upload_id)],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("ListPartsResult"), "body: {}", body);
+    assert!(body.contains("<PartNumber>1</PartNumber>"));
+    assert!(body.contains("<PartNumber>2</PartNumber>"));
+    assert!(body.contains("<PartNumber>3</PartNumber>"));
+
+    // complete upload
+    let complete_xml = format!(
+        r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>3</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
+        etag1, etag2, etag3
+    );
+    let resp = client
+        .post(url_with_query(
+            &addr,
+            "/tb/assembled",
+            &[("uploadId", &upload_id)],
+        ))
+        .body(complete_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("CompleteMultipartUploadResult"), "body: {}", body);
+
+    // GET the assembled object
+    let resp = client
+        .get(url(&addr, "/tb/assembled"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert_eq!(body, "aaaabbbbcccc");
+}
+
+#[tokio::test]
+async fn multipart_abort_cleans_up() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    // create and upload a part
+    let resp = client
+        .post(url(&addr, "/tb/aborted?uploads"))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    let upload_id = extract_xml_value(&body, "UploadId");
+
+    client
+        .put(url_with_query(
+            &addr,
+            "/tb/aborted",
+            &[("uploadId", &upload_id), ("partNumber", "1")],
+        ))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    // abort
+    let resp = client
+        .delete(url_with_query(
+            &addr,
+            "/tb/aborted",
+            &[("uploadId", &upload_id)],
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    // list parts should fail (upload gone)
+    let resp = client
+        .get(url_with_query(
+            &addr,
+            "/tb/aborted",
+            &[("uploadId", &upload_id)],
+        ))
+        .send()
+        .await
+        .unwrap();
+    // either 404 or empty parts list
+    let body = resp.text().await.unwrap();
+    assert!(!body.contains("<PartNumber>1</PartNumber>"), "part should be gone");
+}
+
+#[tokio::test]
+async fn multipart_list_uploads() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    // create two uploads
+    client
+        .post(url(&addr, "/tb/file1?uploads"))
+        .send()
+        .await
+        .unwrap();
+    client
+        .post(url(&addr, "/tb/file2?uploads"))
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .get(url(&addr, "/tb?uploads"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("ListMultipartUploadsResult"), "body: {}", body);
+    assert!(body.contains("file1"), "missing file1: {}", body);
+    assert!(body.contains("file2"), "missing file2: {}", body);
+}
+
+/// Extract a value between <Tag>value</Tag> from XML
+fn extract_xml_value(xml: &str, tag: &str) -> String {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    if let Some(start) = xml.find(&open) {
+        let start = start + open.len();
+        if let Some(end) = xml[start..].find(&close) {
+            return xml[start..start + end].to_string();
+        }
+    }
+    panic!("tag <{}> not found in: {}", tag, xml);
+}
