@@ -1,65 +1,69 @@
-# AbixIO
-
-S3-compatible object store with erasure coding. Single Rust binary, node-based
-clustering, self-describing volumes.
-
-## What it does
-
-Spreads your data across volumes using Reed-Solomon erasure coding. Lose a
-volume, lose nothing. Any S3 client works out of the box.
-
-- 1 volume minimum, scale up by adding volumes
-- Per-object erasure coding (data/parity per object, bucket, or server default)
-- Pluggable storage backends via `Backend` trait (local volumes + internode RPC)
-- Self-describing volumes -- identity stored on the volumes themselves
-- Node-based cluster formation -- no topology file, no master server
-- Per-shard SHA256 bitrot detection
-- Background healing (MRF queue + integrity scanner)
-- AWS Signature V4 authentication + presigned URL support
-- Object versioning (enable/suspend per bucket)
-- Object and bucket tagging
-- Multipart upload (files of any size)
-- Bucket policy and lifecycle configuration storage
-- Admin API for volume health, healing status, shard inspection, bucket EC config
-- Quorum-aware readiness and hard fencing
+# AbixIO Server
 
 ## Status
 
 **Early development. Not production-ready.**
 
-This project is 2 days old (first commit 2026-04-04). It is ~11k lines of Rust
-across 71 commits, written almost entirely by AI with human direction. The core
-storage engine works against real S3 clients, but the project has no releases,
-no packaging, no user base, and no field hours.
+This repository is the AbixIO server: an S3-compatible object storage server written in Rust with erasure coding, multi-volume storage, and node-based clustering.
 
-95 automated tests (unit + integration). The S3 API covers 41 of 72 operations
-(57% of the spec).
+Current reality as of 2026-04-05:
+- First commit: 2026-04-04
+- No releases, packaging, or production deployments
+- 95 automated tests (unit + integration)
+- 41 of 72 S3 API operations implemented (57%)
+- Core storage engine works with real S3 clients, but several important gaps remain
 
 What works today:
 - Erasure-coded object storage across local and remote volumes
 - Internode shard RPC over HTTP with JWT authentication
 - Multi-node cluster formation and identity exchange
-- Quorum-aware fencing (unsafe nodes stop serving)
+- Quorum-aware fencing when nodes become unsafe
 - Deterministic placement metadata in object shards
-- Background healing (MRF queue + integrity scanner)
-- Object versioning, tagging, multipart upload, presigned URLs
+- Background healing with MRF queue and integrity scanner
+- Object versioning, tagging, multipart upload, and presigned URLs
 - Bucket policy and lifecycle configuration storage
 
-What is honest:
-- No production deployment has ever run this code
-- No benchmarks, no load testing, no failure injection testing
-- Object tagging returns errors in the latest build (found by abixio-ui integration tests)
+What is still missing or broken:
+- No production field time, benchmarks, load testing, or failure-injection testing
+- Object tagging returns errors in the latest build
 - Chunked transfer encoding is not properly stripped in relay paths
 - Bucket delete fails when versioned objects exist
 - No encryption at rest
 - No live topology changes or rebalance
-- No consensus-backed control plane (Raft or equivalent)
-- Cluster mode is tested in integration tests but not battle-tested at scale
+- No consensus-backed control plane such as Raft
+- Cluster mode is covered by integration tests but not battle-tested at scale
 
-If you need a production S3-compatible object store today, use
-[MinIO](https://github.com/minio/minio) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
+If you need a production S3-compatible object store today, use [MinIO](https://github.com/minio/minio) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
 
-## Quick start
+## What AbixIO Server Is
+
+AbixIO Server is a single Rust binary that exposes an S3-compatible API and stores objects across one or more volumes using Reed-Solomon erasure coding.
+
+Key properties:
+- Server, not client: this repo is the storage server itself
+- Any S3 client can talk to it: AWS CLI, rclone, boto3, MinIO client, custom tools
+- Self-describing volumes store their own identity metadata
+- Cluster membership is node-based and discovered from shared startup configuration
+- Per-object SHA256 checksums detect shard corruption
+- Healing runs in the background when damaged or missing shards are found
+
+## Features
+
+- 1 volume minimum, scale up by adding volumes
+- Per-object erasure coding with object, bucket, or server defaults
+- Pluggable storage backends via the `Backend` trait
+- Self-describing volumes with identity stored on disk
+- Node-based cluster formation with no master server
+- Background healing and integrity scanning
+- AWS Signature V4 authentication and presigned URL support
+- Object versioning
+- Object and bucket tagging
+- Multipart upload for large objects
+- Bucket policy and lifecycle configuration storage
+- Admin API for volume health, healing status, shard inspection, and bucket EC config
+- Quorum-aware readiness and hard fencing
+
+## Quick Start
 
 ```bash
 cargo build --release
@@ -71,8 +75,7 @@ mkdir -p /tmp/abixio/{d1,d2,d3,d4}
   --no-auth
 ```
 
-With 4 volumes, the server auto-computes `3+1` EC (1-failure tolerance).
-Override per bucket or per object.
+With 4 volumes, the server auto-computes `3+1` erasure coding, which tolerates 1 volume failure.
 
 ```bash
 curl -X PUT http://localhost:10000/mybucket
@@ -80,33 +83,30 @@ curl -X PUT -d "hello world" http://localhost:10000/mybucket/hello.txt
 curl http://localhost:10000/mybucket/hello.txt
 ```
 
-Works with AWS CLI, rclone, MinIO client, boto3, or any S3-compatible tool.
+Any S3-compatible client can use the server once it is running.
 
-## Cluster mode
+## Cluster Mode
 
-Every node gets the same `--nodes` list -- the full cluster membership. Each
-node figures out which one it is automatically.
+Each node receives the same `--nodes` list containing the full cluster membership. A node determines its own identity automatically at startup.
 
 ```bash
 # multi-node cluster
 abixio --volumes /data{1...2} --nodes http://node{1...3}:10000
 
-# multiple nodes on the same server (different ports)
+# multiple nodes on one machine
 abixio --volumes /data{1...2} --nodes http://localhost:{10001...10003}
 ```
 
-What happens at startup:
+Startup flow:
+1. Read `.abixio.sys/volume.json` from attached volumes
+2. On first boot, generate `node_id` and `volume_id` values and write them to disk
+3. Exchange identity with peers through `/_admin/cluster/join`
+4. Wait for cluster membership confirmation
+5. Begin serving traffic
 
-1. Each node reads `.abixio.sys/volume.json` from its volumes
-2. If first boot, generates node_id and volume_id UUIDs, writes volume.json
-3. Exchanges identity with other nodes via `/_admin/cluster/join`
-4. Blocks until all nodes respond, then finalizes volume.json with full membership
-5. Serves traffic
+On later boots, the node reloads identity from disk and checks quorum. If quorum is lost, the node fences itself.
 
-On subsequent boots, identity is read from volume.json. Nodes are probed for
-quorum confirmation. If quorum is lost, the node fences itself.
-
-### CLI flags
+## CLI Flags
 
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
@@ -115,68 +115,64 @@ quorum confirmation. If quorum is lost, the node fences itself.
 | `--nodes` | no | empty | All node endpoints (comma-separated, supports `{N...M}`) |
 | `--no-auth` | no | false | Disable all authentication |
 
-EC defaults are auto-computed from volume count: 1 volume = `1+0` (no
-redundancy), 2+ volumes = `(N-1)+1` (1-failure tolerance). Override per
-bucket via admin API or per object via S3 headers.
+## Erasure Coding Defaults
 
-## Configuration
-
-EC defaults are auto-computed from the volume count to achieve 1-failure
-tolerance. Override per bucket or per object.
+Server defaults are derived from volume count to target 1-failure tolerance.
 
 | Volumes | Auto EC | Behavior |
 |---|---|---|
-| 1 | `1+0` | Plain S3 storage. No redundancy. |
+| 1 | `1+0` | Plain object storage. No redundancy. |
 | 2 | `1+1` | Mirror. Survives 1 failure. |
 | 4 | `3+1` | Erasure coding. Survives 1 failure. |
 | 6 | `5+1` | Erasure coding. Survives 1 failure. |
 
-For different ratios, set per-bucket EC via the admin API:
+You can override this per bucket through the admin API:
 
 ```bash
-# 6 volumes, want 2+2 instead of auto 5+1
 curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=2&parity=2"
 ```
 
-### Per-object erasure coding
-
-Each object can have its own data/parity ratio. Set via S3 custom metadata headers:
+Or per object through S3 metadata headers:
 
 ```bash
-# critical file: 1 data + 5 parity (survives 5 volume failures)
 curl -X PUT -d "important" \
-  -H "x-amz-meta-ec-data: 1" -H "x-amz-meta-ec-parity: 5" \
+  -H "x-amz-meta-ec-data: 1" \
+  -H "x-amz-meta-ec-parity: 5" \
   http://localhost:10000/mybucket/critical.txt
-
-# large file: 4 data + 2 parity (throughput-optimized)
-curl -X PUT -d @bigfile.bin \
-  -H "x-amz-meta-ec-data: 4" -H "x-amz-meta-ec-parity: 2" \
-  http://localhost:10000/mybucket/bigfile.bin
 ```
 
-Precedence: per-object header > bucket config > auto-computed server default.
+Precedence is: per-object header, then bucket config, then server default.
 
-## S3 API coverage
+## S3 API Coverage
 
-41 of 72 S3 API operations (57%).
-See [docs/s3-compliance.md](docs/s3-compliance.md) for the full audit.
+41 of 72 S3 API operations are implemented (57%). Full details: [docs/s3-compliance.md](docs/s3-compliance.md)
 
-**Fully implemented (26):** ListBuckets, CreateBucket, HeadBucket, DeleteBucket,
-ListObjectsV2, PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects,
-CopyObject, Get/Put/DeleteObjectTagging, Get/Put/DeleteBucketTagging,
-PutBucketVersioning, GetBucketVersioning, ListObjectVersions,
-CreateMultipartUpload, UploadPart, CompleteMultipartUpload,
-AbortMultipartUpload, ListParts, ListMultipartUploads.
+Implemented well enough to use:
+- ListBuckets, CreateBucket, HeadBucket, DeleteBucket
+- ListObjectsV2
+- PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects, CopyObject
+- Get/Put/DeleteObjectTagging
+- Get/Put/DeleteBucketTagging
+- PutBucketVersioning, GetBucketVersioning, ListObjectVersions
+- CreateMultipartUpload, UploadPart, CompleteMultipartUpload
+- AbortMultipartUpload, ListParts, ListMultipartUploads
 
-**Stored but not enforced (6):** Get/Put/DeleteBucketPolicy,
-Get/Put/DeleteBucketLifecycle.
+Stored but not enforced:
+- Get/Put/DeleteBucketPolicy
+- Get/Put/DeleteBucketLifecycle
 
-**Stubs matching MinIO (9):** Get/Put/DeleteBucketCors (501 NotImplemented),
-Get/PutBucketACL, Get/PutObjectACL (hardcoded FULL_CONTROL),
-Get/PutBucketNotification (empty config / 501).
+Stubbed for compatibility:
+- Get/Put/DeleteBucketCors
+- Get/PutBucketACL
+- Get/PutObjectACL
+- Get/PutBucketNotification
 
-**Not implemented:** Encryption config, replication, object lock/retention,
-S3 Select, cloud storage backends.
+Not implemented:
+- Encryption config
+- Replication
+- Object lock and retention
+- S3 Select
+- Cloud storage backends
 
 ## Documentation
 
@@ -188,17 +184,17 @@ S3 Select, cloud storage backends.
 | [versioning.md](docs/versioning.md) | S3 object versioning lifecycle |
 | [tagging.md](docs/tagging.md) | Object and bucket tagging |
 | [presigned-urls.md](docs/presigned-urls.md) | Presigned URL authentication |
-| [conditional-requests.md](docs/conditional-requests.md) | If-Match, If-None-Match, etc. |
+| [conditional-requests.md](docs/conditional-requests.md) | If-Match, If-None-Match, and related behavior |
 | [error-responses.md](docs/error-responses.md) | Error XML format, codes, request ID |
 | [multipart-upload.md](docs/multipart-upload.md) | Multipart upload lifecycle and disk layout |
 | [bucket-policy.md](docs/bucket-policy.md) | Bucket policy storage and validation |
 | [per-object-ec.md](docs/per-object-ec.md) | Per-object erasure coding, bucket EC config, volume pools |
 | [healing.md](docs/healing.md) | Erasure healing, MRF queue, scanner |
-| [s3-compliance.md](docs/s3-compliance.md) | Full S3 API compliance audit (all 72 operations) |
+| [s3-compliance.md](docs/s3-compliance.md) | Full S3 API compliance audit |
 
-## Related
+## Related Project
 
-- **[abixio-ui](https://github.com/abix-/abixio-ui)** -- native desktop S3 manager and AbixIO admin UI. Browse, upload, manage objects. Auto-detects AbixIO servers for volume health, healing, and shard inspection.
+- **[abixio-ui](https://github.com/abix-/abixio-ui)**: desktop S3 manager and AbixIO admin UI for connecting to an AbixIO server
 
 ## License
 
