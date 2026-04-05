@@ -10,57 +10,65 @@ It focused on the exact claims that were circulating:
 
 This is a source-backed review, not a repost of social media claims.
 
+## Current Status
+
+The biggest AbixIO issue identified during this review was real: path traversal risk in local storage, multipart paths, and internode query handling.
+
+That issue has now been fixed in AbixIO by commit `9e25e79` (`Harden storage path handling`).
+
+The fix added:
+
+- shared validation and safe path construction in `src/storage/pathing.rs`
+- explicit invalid-input errors in `src/storage/mod.rs`
+- defensive validation in local storage, multipart handling, internode storage routes, admin handlers, and remote volume access
+- regression coverage in `tests/admin_integration.rs` and `tests/s3_integration.rs`
+
+Safe nested keys such as `a/b/c` still work. Hostile values such as `../`, encoded traversal, invalid `versionId`, and invalid `uploadId` are now rejected with explicit `400`-class errors instead of reaching filesystem path joins.
+
 ## Findings
 
-### 1. AbixIO has real traversal bugs right now
+### 1. AbixIO had a real traversal bug, and it is now remediated
 
-Severity: Critical
+Severity at discovery: Critical
 
-This is the immediate problem, regardless of what RustFS did.
+The original issue was that AbixIO joined attacker-controlled bucket, key, version, and multipart values into local filesystem paths without a shared sanitizer or final root-containment check.
 
-AbixIO currently joins attacker-controlled bucket, key, and version values directly into local filesystem paths without rejecting `..`, absolute paths, or hostile segments.
+That was confirmed in the original review across local volume access, multipart storage, and decoded storage-server query handling.
 
-Confirmed examples:
+Status now:
 
-- `src/storage/local_volume.rs:76`
-- `src/storage/local_volume.rs:100`
-- `src/storage/local_volume.rs:126`
-- `src/storage/local_volume.rs:162`
-- `src/storage/local_volume.rs:233`
-- `src/storage/local_volume.rs:264`
-- `src/storage/local_volume.rs:285`
-- `src/storage/local_volume.rs:333`
-- `src/storage/local_volume.rs:346`
-- `src/multipart/mod.rs:381`
+- fixed in `src/storage/pathing.rs`
+- fixed in `src/storage/local_volume.rs`
+- fixed in `src/multipart/mod.rs`
+- fixed in `src/storage/storage_server.rs`
+- fixed in `src/storage/erasure_set.rs`
+- fixed in `src/storage/remote_volume.rs`
+- fixed in `src/admin/handlers.rs`
+- fixed in `src/heal/worker.rs`
 
-AbixIO also percent-decodes query values before using them:
+What changed:
 
-- `src/query.rs:3`
+- bucket names are validated before filesystem use
+- object keys and prefixes are validated by logical path segment
+- `versionId` and `uploadId` are treated as structured identifiers
+- local filesystem access now goes through validated path builders and root-contained joins
+- invalid inputs surface as explicit client errors instead of accidental `404` or `500` paths
 
-And the storage server accepts decoded `bucket`, `key`, and `version_id` directly from query params:
+Regression tests now cover hostile:
 
-- `src/storage/storage_server.rs:107`
-- `src/storage/storage_server.rs:129`
-- `src/storage/storage_server.rs:149`
-- `src/storage/storage_server.rs:296`
-- `src/storage/storage_server.rs:319`
-- `src/storage/storage_server.rs:340`
+- `../`
+- `%2e%2e`
+- invalid bucket names
+- invalid `versionId`
+- invalid `uploadId`
 
-There is even an existing test that confirms encoded bucket/key values are accepted:
-
-- `tests/admin_integration.rs:661`
-
-Nested object keys are also intentionally supported today:
-
-- `src/storage/local_volume.rs:517`
-
-That means AbixIO needs a real object-name sanitization layer, not a blanket "no slashes" rule.
+This was the right first emergency fix.
 
 ### 2. RustFS does not appear to have the same raw path-join bug anymore
 
 Severity: Important positive finding
 
-RustFS has two defense layers that AbixIO currently lacks:
+RustFS has two defense layers that were stronger than pre-fix AbixIO:
 
 Object and prefix validation rejects bad path components:
 
@@ -77,11 +85,11 @@ Local disk access is forced through a containment check under the disk root:
 - `crates/ecstore/src/disk/local.rs:440`
 - `crates/ecstore/src/disk/local.rs:1239`
 
-The important distinction is that RustFS does not just "clean" paths. It also rejects bad object names before they hit storage code, and the local disk layer checks that normalized paths still stay under the configured root.
+The important distinction is that RustFS does not just "clean" paths. It rejects bad object names before they hit storage code, and the local disk layer checks that normalized paths still stay under the configured root.
 
-That is materially stronger than AbixIO's current approach.
+AbixIO now follows the same general model.
 
-### 3. RustFS version ID handling is stronger than AbixIO's
+### 3. RustFS version ID handling was stronger than pre-fix AbixIO
 
 Severity: Important positive finding
 
@@ -91,17 +99,13 @@ RustFS validates `versionId` as UUID-shaped input before using it:
 - `rustfs/src/storage/options.rs:123`
 - `rustfs/src/storage/options.rs:198`
 
-AbixIO currently accepts and forwards raw `versionId` / `version_id` values:
+That was a meaningful gap in AbixIO during the original review.
 
-- `src/s3/handlers.rs:545`
-- `src/s3/handlers.rs:650`
-- `src/storage/storage_server.rs:298`
-- `src/storage/storage_server.rs:321`
-- `src/storage/storage_server.rs:342`
+Status now:
 
-That leaves AbixIO exposed to version-path traversal in addition to normal object-path traversal.
+- AbixIO also validates `versionId` before storage-path use as part of the `9e25e79` hardening pass.
 
-### 4. RustFS multipart upload IDs are validated, but the implementation shape is still worth watching
+### 4. RustFS multipart upload IDs are validated, and AbixIO now does the same
 
 Severity: Medium
 
@@ -118,7 +122,11 @@ Multipart handling then routes through metadata-derived paths rather than direct
 - `crates/ecstore/src/set_disk/metadata.rs:37`
 - `crates/ecstore/src/set_disk/multipart.rs:95`
 
-This is not as clean as "UUID only", but it is still much stronger than AbixIO's current raw `upload_dir(root, bucket, key, upload_id)` pattern.
+AbixIO previously used a raw `upload_dir(root, bucket, key, upload_id)` pattern.
+
+Status now:
+
+- AbixIO validates multipart upload IDs and hostile upload-path input is covered by regression tests.
 
 ### 5. RustFS still ships with real insecure default credentials
 
@@ -165,7 +173,7 @@ If an operator stands up RustFS with stock defaults, the RPC shared secret is pr
 
 That does not recreate the path traversal issue, but it is still a serious deployment footgun.
 
-### 7. I did not confirm the "static key vibe coded into the product" claim as a current hardcoded secret in the request path
+### 7. I did not confirm the "static key vibe coded into the product" claim as a separate hidden request-path backdoor
 
 Severity: Clarification
 
@@ -175,49 +183,36 @@ What I did confirm is:
 - fixed default RPC-secret fallback exists
 - many deployment examples still embed those values
 
-That is already bad enough. I did not find a separate "hidden magic key" in current request-signing logic beyond those defaults.
+That is already bad enough. I did not find a separate hidden magic key in current request-signing logic beyond those defaults.
 
-## What RustFS Is Doing Better Than AbixIO
+## What RustFS Was Doing Better Than Pre-Fix AbixIO
 
 - Rejecting object names and prefixes that contain `.` or `..` path components.
 - Validating multipart upload IDs before using them.
 - Validating version IDs instead of treating them as arbitrary path strings.
 - Forcing local object paths through a root-containment check.
 
-AbixIO should copy that model immediately:
+AbixIO has now copied the important parts of that model.
 
-1. Validate object keys by path component, not by naive substring checks.
-2. Reject `.` and `..` path segments after percent-decoding.
-3. Reject absolute paths and Windows drive-qualified paths.
-4. Treat `version_id` and `upload_id` as structured identifiers, not free-form path text.
-5. Enforce a final containment check after path normalization.
+## What AbixIO Still Needs To Review
+
+The traversal fix closed the most urgent gap, but this review still leaves active follow-up work:
+
+1. Review auth bootstrap and reject unsafe default or empty credentials at startup.
+2. Audit all future backend implementations against the same validation/pathing rules.
+3. Keep coverage for Windows path forms, percent-decoded traversal, and internode query handling.
+4. Re-run this review whenever new volume backends or admin inspection features land.
 
 ## What AbixIO Is Still Doing Better Conceptually
 
 - Per-object erasure selection is still a real product differentiator.
 - Heterogeneous volume/backend design is still directionally different from RustFS.
-- A thick native UI that exposes shard layout, repair state, and storage mechanics remains a real differentiator if implemented well.
-
-None of that matters if the storage layer is path-traversable.
-
-## Immediate AbixIO Remediation
-
-Priority order:
-
-1. Add a single shared sanitizer for bucket, key, version ID, and upload ID inputs.
-2. Make all filesystem access go through a `safe_join(root, rel)` helper with containment enforcement.
-3. Stop accepting empty auth defaults in `src/main.rs:55`.
-4. Add regression tests for:
-   - `../`
-   - `%2e%2e`
-   - absolute paths
-   - Windows drive letters
-   - malicious `versionId`
-   - malicious `uploadId`
-5. Re-check `RemoteVolume` and storage-server routes after the sanitizer lands.
+- Single-node through multi-node deployment under one model is still a differentiator.
+- A thick native console that exposes shard layout, repair state, and storage mechanics remains a real differentiator if implemented well.
 
 ## Validation Notes
 
-- This review is source-based and limited to the current checked RustFS tree at `C:\code\rustfs`.
+- This review is source-based and limited to the checked RustFS tree at `C:\code\rustfs`.
 - I did not rely on social posts as evidence.
 - I attempted targeted RustFS tests, but full targeted `cargo test` invocations timed out locally during build, so the findings above are based on code inspection rather than completed test runs.
+- The AbixIO remediation status in this document reflects the shipped hardening commit `9e25e79`.
