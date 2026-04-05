@@ -1,5 +1,8 @@
 pub mod bitrot;
+pub mod internode_auth;
 pub mod local_volume;
+pub mod remote_volume;
+pub mod storage_server;
 pub mod erasure_decode;
 pub mod erasure_encode;
 pub mod erasure_set;
@@ -89,7 +92,7 @@ pub trait Backend: Send + Sync {
 }
 
 /// Metadata about a storage backend, used for admin reporting.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BackendInfo {
     pub label: String,
     pub backend_type: String,

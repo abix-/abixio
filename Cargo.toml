@@ -8,7 +8,7 @@ reed-solomon-erasure = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 http-body-util = "0.1"
@@ -26,6 +26,7 @@ thiserror = "2"
 subtle = "2"
 form_urlencoded = "1"
 hostname = "0.4.2"
+jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
