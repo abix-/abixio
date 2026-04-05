@@ -259,7 +259,7 @@ impl ClusterHarness {
             }
         }
 
-        let topology = StaticTopology {
+        let _topology = StaticTopology {
             cluster_id: "cluster-harness".to_string(),
             epoch_id: 7,
             set_id: "cluster-set-4x2".to_string(),
@@ -308,7 +308,6 @@ impl ClusterHarness {
                         disk_paths[node_index * 2].clone(),
                         disk_paths[node_index * 2 + 1].clone(),
                     ],
-                    topology: Some(topology.clone()),
                 })
                 .unwrap(),
             );

@@ -10,45 +10,25 @@ pub struct Config {
     #[arg(long, default_value = ":10000")]
     pub listen: String,
 
-    /// Stable node identifier for clustered deployments
-    #[arg(long, default_value = "local")]
-    pub node_id: String,
+    /// Comma-separated disk/volume paths
+    #[arg(long, value_delimiter = ',')]
+    pub disks: Vec<PathBuf>,
 
-    /// Cluster coordination bind or advertise address
-    #[arg(long, default_value = ":10000")]
-    pub cluster_bind: String,
+    /// Number of data shards
+    #[arg(long, default_value_t = 1)]
+    pub data: usize,
 
-    /// Advertised S3 endpoint for this node
-    #[arg(long, default_value = "http://127.0.0.1:10000")]
-    pub advertise_s3: String,
+    /// Number of parity shards
+    #[arg(long, default_value_t = 0)]
+    pub parity: usize,
 
-    /// Advertised cluster control endpoint for this node
-    #[arg(long, default_value = "http://127.0.0.1:10000")]
-    pub advertise_cluster: String,
-
-    /// Comma-separated peer host list for cluster quorum
+    /// Comma-separated peer endpoints for cluster mode
     #[arg(long, value_delimiter = ',', default_value = "")]
     pub peers: Vec<String>,
 
     /// Shared secret for cluster peer probes
     #[arg(long, default_value = "")]
     pub cluster_secret: String,
-
-    /// Path to a static cluster topology manifest
-    #[arg(long)]
-    pub cluster_topology: Option<PathBuf>,
-
-    /// Comma-separated disk paths
-    #[arg(long, value_delimiter = ',')]
-    pub disks: Vec<PathBuf>,
-
-    /// Number of data shards
-    #[arg(long)]
-    pub data: usize,
-
-    /// Number of parity shards
-    #[arg(long, default_value_t = 0)]
-    pub parity: usize,
 
     /// Disable authentication
     #[arg(long)]
@@ -89,14 +69,6 @@ impl Config {
             if !path.is_dir() {
                 return Err(format!("disk path does not exist: {}", path.display()));
             }
-        }
-        if let Some(path) = &self.cluster_topology
-            && !path.is_file()
-        {
-            return Err(format!(
-                "cluster topology file does not exist: {}",
-                path.display()
-            ));
         }
         // validate duration strings
         parse_duration(&self.scan_interval)
@@ -167,14 +139,9 @@ mod tests {
 
     fn config_with(disks: Vec<PathBuf>, data: usize, parity: usize) -> Config {
         Config {
-            listen: ":9000".to_string(),
-            node_id: "local".to_string(),
-            cluster_bind: ":9000".to_string(),
-            advertise_s3: "http://127.0.0.1:9000".to_string(),
-            advertise_cluster: "http://127.0.0.1:9000".to_string(),
+            listen: ":10000".to_string(),
             peers: Vec::new(),
             cluster_secret: String::new(),
-            cluster_topology: None,
             disks,
             data,
             parity,
@@ -247,18 +214,10 @@ mod tests {
     }
 
     #[test]
-    fn invalid_cluster_topology_missing() {
-        let (_base, paths) = make_dirs(1);
-        let mut cfg = config_with(paths, 1, 0);
-        cfg.cluster_topology = Some(PathBuf::from("/tmp/missing-topology.json"));
-        assert!(cfg.validate().is_err());
-    }
-
-    #[test]
     fn defaults() {
         let (_base, paths) = make_dirs(2);
         let cfg = config_with(paths, 1, 1);
-        assert_eq!(cfg.listen, ":9000");
+        assert_eq!(cfg.listen, ":10000");
         assert_eq!(cfg.scan_interval_duration(), Duration::from_secs(600));
         assert_eq!(cfg.heal_interval_duration(), Duration::from_secs(86400));
         assert_eq!(cfg.mrf_workers, 2);

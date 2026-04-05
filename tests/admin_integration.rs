@@ -62,7 +62,6 @@ async fn start_server_with_cluster(
             peers: Vec::new(),
             cluster_secret: String::new(),
             disk_paths: paths.to_vec(),
-            topology: None,
         })
         .unwrap(),
     );
@@ -155,7 +154,6 @@ async fn start_server_pool(
             peers: Vec::new(),
             cluster_secret: String::new(),
             disk_paths: paths.to_vec(),
-            topology: None,
         })
         .unwrap(),
     );

@@ -62,7 +62,10 @@ pub struct AdminConfig {
 }
 
 impl AdminConfig {
-    pub fn from_config(cfg: &Config) -> Self {
+    pub fn from_identity(
+        identity: &crate::cluster::identity::ResolvedIdentity,
+        cfg: &Config,
+    ) -> Self {
         Self {
             listen: cfg.listen.clone(),
             data_shards: cfg.data,
@@ -72,14 +75,10 @@ impl AdminConfig {
             scan_interval: cfg.scan_interval.clone(),
             heal_interval: cfg.heal_interval.clone(),
             mrf_workers: cfg.mrf_workers,
-            node_id: cfg.node_id.clone(),
-            advertise_s3: cfg.advertise_s3.clone(),
-            advertise_cluster: cfg.advertise_cluster.clone(),
-            peer_count: cfg
-                .peers
-                .iter()
-                .filter(|peer| !peer.trim().is_empty())
-                .count(),
+            node_id: identity.node_id.clone(),
+            advertise_s3: identity.advertise.clone(),
+            advertise_cluster: identity.advertise.clone(),
+            peer_count: identity.peers.len(),
         }
     }
 }

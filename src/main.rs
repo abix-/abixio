@@ -5,8 +5,8 @@ use clap::Parser;
 
 use abixio::admin::HealStats;
 use abixio::admin::handlers::{AdminConfig, AdminHandler};
+use abixio::cluster::identity::resolve_identity;
 use abixio::cluster::{ClusterConfig, ClusterManager};
-use abixio::cluster::topology::StaticTopology;
 use abixio::config::Config;
 use abixio::heal::mrf::MrfQueue;
 use abixio::heal::scanner::ScanState;
@@ -27,15 +27,26 @@ async fn main() {
         eprintln!("error: {}", e);
         std::process::exit(1);
     }
-    let static_topology = cfg
-        .cluster_topology
-        .as_ref()
-        .map(|path| {
-            StaticTopology::load(path).unwrap_or_else(|err| {
-                eprintln!("error: {}", err);
-                std::process::exit(1);
-            })
-        });
+
+    // resolve node identity from volume.json or peer exchange
+    let identity = resolve_identity(
+        &cfg.disks,
+        &cfg.listen,
+        &cfg.peers,
+        &cfg.cluster_secret,
+    )
+    .await
+    .unwrap_or_else(|err| {
+        eprintln!("error: {}", err);
+        std::process::exit(1);
+    });
+
+    tracing::info!(
+        node_id = %identity.node_id,
+        deployment_id = %identity.deployment_id,
+        volumes = identity.all_members.len(),
+        "identity resolved"
+    );
 
     let backends: Vec<Box<dyn Backend>> = match cfg
         .disks
@@ -64,27 +75,7 @@ async fn main() {
 
     // wire MRF into erasure set for auto-enqueue on partial writes
     set.set_mrf(Arc::clone(&mrf));
-
     let set = Arc::new(set);
-    if let Some(topology) = &static_topology {
-        let placement_volumes = topology.placement_volumes();
-        if placement_volumes.len() == set.disks().len() {
-            if let Err(err) = set.set_placement_topology(
-                topology.epoch_id,
-                topology.set_id.clone(),
-                placement_volumes,
-            ) {
-                eprintln!("error: {}", err);
-                std::process::exit(1);
-            }
-        } else {
-            tracing::warn!(
-                "cluster topology defines {} disks but local store has {}; placement remains local until remote shard transport exists",
-                placement_volumes.len(),
-                set.disks().len()
-            );
-        }
-    }
 
     // build disk list for heal workers (separate from ErasureSet's disks)
     let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(
@@ -127,13 +118,12 @@ async fn main() {
     let heal_stats = Arc::new(HealStats::new());
     let cluster = Arc::new(
         ClusterManager::new(ClusterConfig {
-            node_id: cfg.node_id.clone(),
-            advertise_s3: cfg.advertise_s3.clone(),
-            advertise_cluster: cfg.advertise_cluster.clone(),
-            peers: cfg.peers.clone(),
+            node_id: identity.node_id.clone(),
+            advertise_s3: identity.advertise.clone(),
+            advertise_cluster: identity.advertise.clone(),
+            peers: identity.peers.clone(),
             cluster_secret: cfg.cluster_secret.clone(),
             disk_paths: cfg.disks.clone(),
-            topology: static_topology,
         })
         .unwrap_or_else(|err| {
             eprintln!("error: {}", err);
@@ -142,7 +132,7 @@ async fn main() {
     );
     cluster.clone().spawn_peer_monitor(shutdown_rx.clone());
 
-    let admin_config = AdminConfig::from_config(&cfg);
+    let admin_config = AdminConfig::from_identity(&identity, &cfg);
     let admin = Arc::new(AdminHandler::new(
         Arc::clone(&set),
         Arc::clone(&heal_disks),
@@ -173,7 +163,6 @@ async fn main() {
 }
 
 fn parse_listen_addr(s: &str) -> SocketAddr {
-    // handle ":9000" -> "0.0.0.0:9000"
     let s = if s.starts_with(':') {
         format!("0.0.0.0{}", s)
     } else {

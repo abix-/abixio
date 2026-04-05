@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tokio::sync::watch;
 
+pub mod identity;
 pub mod placement;
 pub mod topology;
 
-use topology::StaticTopology;
 
 const CLUSTER_STATE_FILE: &str = ".abixio.sys/cluster.json";
 const CLUSTER_PROBE_HEADER: &str = "x-abixio-cluster-secret";
@@ -26,7 +26,6 @@ pub struct ClusterConfig {
     pub peers: Vec<String>,
     pub cluster_secret: String,
     pub disk_paths: Vec<PathBuf>,
-    pub topology: Option<StaticTopology>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -119,33 +118,15 @@ struct PeerProbeResponse {
 
 impl ClusterManager {
     pub fn new(config: ClusterConfig) -> Result<Self> {
-        let topology = config.topology.clone();
-        if let Some(topology) = &topology {
-            topology.validate()?;
-            topology.validate_local_node(&config.node_id, &config.disk_paths)?;
-        }
-        let mut config = ClusterConfig {
+        let config = ClusterConfig {
             node_id: normalize_id(&config.node_id),
             advertise_s3: normalize_endpoint(&config.advertise_s3),
             advertise_cluster: normalize_endpoint(&config.advertise_cluster),
             peers: normalize_peers(&config.peers),
             cluster_secret: config.cluster_secret,
             disk_paths: config.disk_paths,
-            topology,
         };
-        if let Some(topology) = &config.topology {
-            let local_node = topology
-                .node(&config.node_id)
-                .with_context(|| format!("node_id {} missing from topology", config.node_id))?;
-            config.advertise_s3 = normalize_endpoint(&local_node.advertise_s3);
-            config.advertise_cluster = normalize_endpoint(&local_node.advertise_cluster);
-            config.peers = normalize_peers(&topology.peers_for(&config.node_id));
-        }
-        let cluster_id = config
-            .topology
-            .as_ref()
-            .map(|topology| topology.cluster_id.clone())
-            .unwrap_or_else(|| cluster_id_for(&config.node_id, &config.peers));
+        let cluster_id = cluster_id_for(&config.node_id, &config.peers);
         let persisted = load_persisted_state(&config.disk_paths)?
             .filter(|state| state.summary.cluster_id == cluster_id)
             .unwrap_or_else(|| initial_state(&config, &cluster_id));
@@ -172,11 +153,7 @@ impl ClusterManager {
     }
 
     pub fn cluster_enabled(&self) -> bool {
-        self.config
-            .topology
-            .as_ref()
-            .map(|topology| topology.nodes.len() > 1)
-            .unwrap_or_else(|| !self.config.peers.is_empty())
+        !self.config.peers.is_empty()
     }
 
     pub fn cluster_secret(&self) -> &str {
@@ -192,11 +169,7 @@ impl ClusterManager {
     }
 
     fn current_epoch_id(&self) -> u64 {
-        self.config
-            .topology
-            .as_ref()
-            .map(|topology| topology.epoch_id)
-            .unwrap_or(1)
+        1
     }
 
     pub fn blocks_data_plane(&self) -> bool {
@@ -461,27 +434,6 @@ impl ClusterManager {
         local_state: ServiceState,
         peer_summaries: Option<Vec<(String, ClusterSummary)>>,
     ) -> Vec<ClusterNodeStatus> {
-        if let Some(topology) = &self.config.topology {
-            let mut nodes = topology.node_statuses(local_state, &self.config.node_id);
-            let peers = peer_summaries.unwrap_or_default();
-            for node in &mut nodes {
-                if node.node_id == self.config.node_id {
-                    node.reachable = true;
-                    node.state = local_state;
-                    node.last_heartbeat_unix_secs = unix_secs();
-                    continue;
-                }
-                if let Some((_, summary)) = peers
-                    .iter()
-                    .find(|(_, summary)| summary.node_id == node.node_id)
-                {
-                    node.reachable = true;
-                    node.state = summary.state;
-                    node.last_heartbeat_unix_secs = unix_secs();
-                }
-            }
-            return nodes;
-        }
         let mut nodes = vec![ClusterNodeStatus {
             node_id: self.config.node_id.clone(),
             advertise_s3: self.config.advertise_s3.clone(),
@@ -522,35 +474,21 @@ impl ClusterManager {
     fn refresh_local_identity(&self) {
         let mut guard = self.state.write().unwrap();
         guard.summary.node_id = self.config.node_id.clone();
-        guard.summary.cluster_id = self
-            .config
-            .topology
-            .as_ref()
-            .map(|topology| topology.cluster_id.clone())
-            .unwrap_or_else(|| cluster_id_for(&self.config.node_id, &self.config.peers));
+        guard.summary.cluster_id =
+            cluster_id_for(&self.config.node_id, &self.config.peers);
         guard.summary.peer_count = self.config.peers.len();
-        guard.summary.topology_hash = self
-            .config
-            .topology
-            .as_ref()
-            .and_then(|topology| topology.topology_hash().ok());
+        guard.summary.topology_hash = None;
         guard.topology.cluster_id = guard.summary.cluster_id.clone();
         guard.topology.volumes = self
             .config
-            .topology
-            .as_ref()
-            .map(StaticTopology::volume_statuses)
-            .unwrap_or_else(|| {
-                self.config
-                    .disk_paths
-                    .iter()
-                    .map(|path| ClusterVolumeStatus {
-                        volume_id: volume_id_for(&self.config.node_id, path),
-                        node_id: self.config.node_id.clone(),
-                        path: path.display().to_string(),
-                    })
-                    .collect()
-            });
+            .disk_paths
+            .iter()
+            .map(|path| ClusterVolumeStatus {
+                volume_id: volume_id_for(&self.config.node_id, path),
+                node_id: self.config.node_id.clone(),
+                path: path.display().to_string(),
+            })
+            .collect();
     }
 
     fn persist_state(&self) -> Result<()> {
@@ -586,26 +524,17 @@ fn load_persisted_state(disks: &[PathBuf]) -> Result<Option<PersistedClusterStat
 
 fn initial_state(config: &ClusterConfig, cluster_id: &str) -> PersistedClusterState {
     let committed_at = unix_secs();
-    let topology_hash = config
-        .topology
-        .as_ref()
-        .and_then(|topology| topology.topology_hash().ok());
-    let epoch_id = config
-        .topology
-        .as_ref()
-        .map(|topology| topology.epoch_id)
-        .unwrap_or(1);
     let summary = ClusterSummary {
         enabled: !config.peers.is_empty(),
         cluster_id: cluster_id.to_string(),
         node_id: config.node_id.clone(),
-        topology_hash,
+        topology_hash: None,
         state: if config.peers.is_empty() {
             ServiceState::Ready
         } else {
             ServiceState::SyncingEpoch
         },
-        epoch_id,
+        epoch_id: 1,
         leader_id: config.node_id.clone(),
         peer_count: config.peers.len(),
         voter_count: config.peers.len() + 1,
@@ -614,7 +543,7 @@ fn initial_state(config: &ClusterConfig, cluster_id: &str) -> PersistedClusterSt
         fenced_reason: None,
     };
     let epoch = ClusterEpoch {
-        epoch_id,
+        epoch_id: 1,
         leader_id: config.node_id.clone(),
         committed_at_unix_secs: committed_at,
         voter_count: config.peers.len() + 1,
@@ -623,37 +552,25 @@ fn initial_state(config: &ClusterConfig, cluster_id: &str) -> PersistedClusterSt
     let topology = ClusterTopology {
         cluster_id: cluster_id.to_string(),
         epoch: epoch.clone(),
-        nodes: config
-            .topology
-            .as_ref()
-            .map(|topology| topology.node_statuses(summary.state, &config.node_id))
-            .unwrap_or_else(|| {
-                vec![ClusterNodeStatus {
-                    node_id: config.node_id.clone(),
-                    advertise_s3: config.advertise_s3.clone(),
-                    advertise_cluster: config.advertise_cluster.clone(),
-                    state: summary.state,
-                    voter: true,
-                    reachable: true,
-                    total_disks: config.disk_paths.len(),
-                    last_heartbeat_unix_secs: committed_at,
-                }]
-            }),
+        nodes: vec![ClusterNodeStatus {
+            node_id: config.node_id.clone(),
+            advertise_s3: config.advertise_s3.clone(),
+            advertise_cluster: config.advertise_cluster.clone(),
+            state: summary.state,
+            voter: true,
+            reachable: true,
+            total_disks: config.disk_paths.len(),
+            last_heartbeat_unix_secs: committed_at,
+        }],
         volumes: config
-            .topology
-            .as_ref()
-            .map(StaticTopology::volume_statuses)
-            .unwrap_or_else(|| {
-                config
-                    .disk_paths
-                    .iter()
-                    .map(|path| ClusterVolumeStatus {
-                        volume_id: volume_id_for(&config.node_id, path),
-                        node_id: config.node_id.clone(),
-                        path: path.display().to_string(),
-                    })
-                    .collect()
-            }),
+            .disk_paths
+            .iter()
+            .map(|path| ClusterVolumeStatus {
+                volume_id: volume_id_for(&config.node_id, path),
+                node_id: config.node_id.clone(),
+                path: path.display().to_string(),
+            })
+            .collect(),
     };
     PersistedClusterState {
         summary,
@@ -737,7 +654,6 @@ pub fn cluster_probe_header() -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::topology::{StaticTopology, TopologyVolume, TopologyNode};
     use http_body_util::Full;
     use hyper::body::{Bytes, Incoming};
     use hyper::server::conn::http1;
@@ -762,35 +678,6 @@ mod tests {
             peers: Vec::new(),
             cluster_secret: String::new(),
             disk_paths: vec![disk],
-            topology: None,
-        }
-    }
-
-    fn test_topology(disk: PathBuf) -> StaticTopology {
-        StaticTopology {
-            cluster_id: "cluster-static".to_string(),
-            epoch_id: 7,
-            set_id: "set-static".to_string(),
-            nodes: vec![
-                TopologyNode {
-                    node_id: "node-a".to_string(),
-                    advertise_s3: "http://127.0.0.1:9000".to_string(),
-                    advertise_cluster: "http://127.0.0.1:9000".to_string(),
-                    volumes: vec![TopologyVolume {
-                        volume_id: "vol-a".to_string(),
-                        path: disk,
-                    }],
-                },
-                TopologyNode {
-                    node_id: "node-b".to_string(),
-                    advertise_s3: "http://127.0.0.1:9001".to_string(),
-                    advertise_cluster: "http://127.0.0.1:9001".to_string(),
-                    volumes: vec![TopologyVolume {
-                        volume_id: "vol-b".to_string(),
-                        path: PathBuf::from("C:/cluster/node-b-disk"),
-                    }],
-                },
-            ],
         }
     }
 
@@ -912,20 +799,6 @@ mod tests {
         let summary = reloaded.summary();
         assert_eq!(summary.state, ServiceState::Fenced);
         assert_eq!(summary.fenced_reason.as_deref(), Some("persisted fence"));
-    }
-
-    #[test]
-    fn static_topology_sets_cluster_identity_and_epoch() {
-        let (_base, disk) = test_disk();
-        let mut cfg = test_config(disk.clone());
-        cfg.topology = Some(test_topology(disk));
-        let manager = ClusterManager::new(cfg).unwrap();
-        let summary = manager.summary();
-        assert_eq!(summary.cluster_id, "cluster-static");
-        assert_eq!(summary.epoch_id, 7);
-        assert!(summary.topology_hash.is_some());
-        assert_eq!(manager.nodes().len(), 2);
-        assert_eq!(manager.topology().volumes.len(), 2);
     }
 
     #[tokio::test]

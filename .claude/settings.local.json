@@ -21,7 +21,9 @@
       "Bash(wmic process:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(cargo add:*)",
+      "Bash(cargo check:*)"
     ]
   }
 }

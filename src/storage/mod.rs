@@ -4,6 +4,7 @@ pub mod erasure_decode;
 pub mod erasure_encode;
 pub mod erasure_set;
 pub mod metadata;
+pub mod volume;
 
 use std::io;
 
