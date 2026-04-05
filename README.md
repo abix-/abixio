@@ -2,21 +2,15 @@
 
 ## Why AbixIO
 
-Most S3-compatible object stores inherit the same model: a pool of identical nodes, uniform erasure sets, one parity ratio for the whole deployment or pool. That works. But it means your 10-byte config file and your 50GB video archive get the same fault tolerance, the same storage overhead, the same placement rules. Adding a node means adding one that looks like all the others. Adding a different kind of storage -- a cloud volume, a slower archive tier, a single spare disk -- means stepping outside the model the system was designed for.
+S3-compatible object stores all inherit the same MinIO model: identical nodes, uniform erasure sets, one parity ratio for the whole pool. AbixIO breaks that.
 
-AbixIO is building toward something different. The vision is closer to what VMware vSAN or Datrium did for block storage, applied to object storage with an S3 interface:
+**Per-object fault tolerance.** Your critical config file gets 1+5 erasure coding. Your bulk logs get 3+1. Same bucket, same disks. No other S3 store does this.
 
-- **Per-object fault tolerance.** Every object carries its own erasure coding ratio. A critical config file can survive 5 of 6 disk failures while a bulk log file uses minimal parity -- in the same bucket, on the same disks, without separate storage tiers or policies. No other S3-compatible object store ships this today.
+**Heterogeneous everything.** Mixed disk counts, mixed node sizes, mixed volume types. One flat pool. Think vSAN meets S3.
 
-- **Heterogeneous everything.** Nodes do not need identical disk counts. Volumes do not need to be the same size, speed, or type. The storage pool is a flat collection of volumes across all nodes. The long-term direction is volumes that can be local disks, remote nodes, cloud storage, or anything that implements the Backend trait.
+**One node to many.** Single disk, six disks, three nodes -- same storage model. Node count changes the resilience envelope, not the product.
 
-- **Any volume, any number of nodes.** One node with one disk is a real deployment, not a demo mode. One node with six disks gets real erasure coding. Three nodes with different disk layouts form a cluster. The storage model does not change between these -- only the resilience envelope.
-
-- **Storage-engine transparency.** The admin API and thick desktop console expose shard placement, per-object EC ratios, healing state, and volume health. The operator sees the actual storage engine, not a generic S3 dashboard that hides what the disks are doing.
-
-RustFS is a solid project but it is a MinIO clone at heart -- same pool model, same homogeneous erasure sets, same per-deployment parity. AbixIO is trying to evolve the model to the next layer of generic storage: per-object data protection, heterogeneous topology, and pluggable volume backends that can treat any storage as a first-class participant in the erasure pool.
-
-This is early. The foundation works. The vision is what is worth watching.
+Early. Foundation works. Vision is what to watch.
 
 ## Status
 
