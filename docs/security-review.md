@@ -200,7 +200,7 @@ Most follow-up items from the initial review are now closed:
 
 - Auth bootstrap: startup now rejects empty or missing credentials unless `--no-auth` is passed.
 - Internode query handling: `StorageServer` now validates all bucket, key, prefix, and version_id inputs at the API boundary before dispatching to volumes (defense-in-depth).
-- Percent-decoded traversal: explicit integration tests now cover `%2e%2e`-encoded traversal via query parameters (S3 list prefix, multipart uploadId, and admin key). URL path segments are not percent-decoded by the HTTP framework, so `%2e%2e` in paths is stored as a literal key name (harmless). The attack surface is query parameters where `form_urlencoded::parse` decodes `%2e%2e` to `..`, and those paths are now tested.
+- Percent-decoded traversal: explicit integration tests now cover `%2e%2e`-encoded traversal via query parameters (S3 list prefix, multipart uploadId, and admin key). URL path segments are not percent-decoded by hyper, so `%2e%2e` in paths is stored as a literal key name (harmless). The `x-amz-copy-source` header is decoded via `form_urlencoded::parse`, but the result goes through store validation. The attack surface is query parameters and decoded headers where `form_urlencoded::parse` decodes `%2e%2e` to `..`, and those paths are now tested.
 
 Remaining active follow-up work:
 

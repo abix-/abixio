@@ -323,6 +323,9 @@ impl AdminHandler {
     }
 
     fn get_bucket_ec(&self, bucket: &str) -> Response<BoxBody> {
+        if let Err(e) = pathing::validate_bucket_name(bucket) {
+            return error_json(StatusCode::BAD_REQUEST, &e.to_string());
+        }
         match self.store.get_ec_config(bucket) {
             Ok(Some(config)) => json_response(&config),
             Ok(None) => json_response(&serde_json::json!({
@@ -335,6 +338,9 @@ impl AdminHandler {
     }
 
     fn set_bucket_ec(&self, bucket: &str, query: &str) -> Response<BoxBody> {
+        if let Err(e) = pathing::validate_bucket_name(bucket) {
+            return error_json(StatusCode::BAD_REQUEST, &e.to_string());
+        }
         if !self.cluster.allows_mutation() {
             return error_json(StatusCode::SERVICE_UNAVAILABLE, "cluster is fenced");
         }
