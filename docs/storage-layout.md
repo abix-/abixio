@@ -106,17 +106,17 @@ All four are UUIDv4, generated at format time, immutable after that.
 
 1. `abixio -v /d1 -v /d2 -v /d3 -v /d4`
 2. No volume.json found -- generate node_id, volume_id UUIDs
-3. No `--peers` -- standalone mode, generate deployment_id and set_id
+3. No `--nodes` -- standalone mode, generate deployment_id and set_id
 4. Write complete volume.json to every volume
 5. Serve
 
 **First boot (cluster)**:
 
-1. `abixio -v /d1 -v /d2 --peers http://node-2:10000`
+1. `abixio -v /d1 -v /d2 --nodes http://node-2:10000`
 2. No volume.json found -- generate node_id, volume_id UUIDs
 3. Write partial volume.json (node_id, volume_id only)
-4. Exchange identity with peers via `/_admin/cluster/join`
-5. Block until all peers respond
+4. Exchange identity with nodes via `/_admin/cluster/join`
+5. Block until all nodes respond
 6. Compute deployment_id and set_id deterministically from sorted node_ids
 7. Build full member list, write complete volume.json
 8. Serve
@@ -125,7 +125,7 @@ All four are UUIDv4, generated at format time, immutable after that.
 
 1. Read volume.json from each volume
 2. Validate all volumes agree on deployment_id, set_id, node_id
-3. If `--peers` set: probe peers for quorum confirmation
+3. If `--nodes` set: probe nodes for quorum confirmation
 4. Serve
 
 **Volume migration**:
@@ -145,8 +145,8 @@ On boot, the binary validates volume.json across all local volumes:
 | Check | Error |
 |---|---|
 | volume.json missing on some volumes but present on others | Mixed state: refuse to start |
-| volume.json missing on all volumes, no peers | Standalone first boot: auto-format |
-| volume.json missing on all volumes, peers set | Cluster first boot: peer exchange |
+| volume.json missing on all volumes, no nodes | Standalone first boot: auto-format |
+| volume.json missing on all volumes, nodes set | Cluster first boot: peer exchange |
 | deployment_id mismatch across local volumes | Corrupt or mixed cluster: refuse to start |
 | set_id mismatch across local volumes | Corrupt or mixed set: refuse to start |
 | node_id mismatch across local volumes | Volumes from different nodes mixed: refuse to start |
@@ -384,7 +384,7 @@ and externally inspectable across nodes.
 |---|---|---|---|
 | `-v` / `--volume` | yes | -- | Volume path (repeat for each) |
 | `--listen` | no | `:10000` | Bind address |
-| `--peers` | no | empty | Peer endpoints for cluster mode |
+| `--nodes` | no | empty | Node endpoints for cluster mode |
 | `--cluster-secret` | no | empty | Shared secret for peer probes |
 | `--no-auth` | no | false | Disable S3 authentication |
 

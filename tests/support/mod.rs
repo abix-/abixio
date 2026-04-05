@@ -302,7 +302,7 @@ impl ClusterHarness {
                     node_id: node_id.clone(),
                     advertise_s3: "http://127.0.0.1:0".to_string(),
                     advertise_cluster: "http://127.0.0.1:0".to_string(),
-                    peers: Vec::new(),
+                    nodes: Vec::new(),
                     cluster_secret: String::new(),
                     disk_paths: vec![
                         disk_paths[node_index * 2].clone(),
@@ -436,7 +436,7 @@ async fn start_server(
             node_id: node_id.to_string(),
             advertise_s3: "http://127.0.0.1:0".to_string(),
             advertise_cluster: "http://127.0.0.1:0".to_string(),
-            peer_count: 3,
+            node_count: 3,
         },
         Arc::clone(&cluster),
     ));

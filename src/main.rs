@@ -32,7 +32,7 @@ async fn main() {
     let identity = resolve_identity(
         &cfg.volumes,
         &cfg.listen,
-        &cfg.peers,
+        &cfg.nodes,
         &cfg.cluster_secret,
     )
     .await
@@ -124,7 +124,7 @@ async fn main() {
             node_id: identity.node_id.clone(),
             advertise_s3: identity.advertise.clone(),
             advertise_cluster: identity.advertise.clone(),
-            peers: identity.peers.clone(),
+            nodes: identity.nodes.clone(),
             cluster_secret: cfg.cluster_secret.clone(),
             disk_paths: cfg.volumes.clone(),
         })

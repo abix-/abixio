@@ -23,7 +23,7 @@ pub struct ClusterConfig {
     pub node_id: String,
     pub advertise_s3: String,
     pub advertise_cluster: String,
-    pub peers: Vec<String>,
+    pub nodes: Vec<String>,
     pub cluster_secret: String,
     pub disk_paths: Vec<PathBuf>,
 }
@@ -47,7 +47,7 @@ pub struct ClusterSummary {
     pub state: ServiceState,
     pub epoch_id: u64,
     pub leader_id: String,
-    pub peer_count: usize,
+    pub node_count: usize,
     pub voter_count: usize,
     pub reachable_voters: usize,
     pub quorum: usize,
@@ -122,11 +122,11 @@ impl ClusterManager {
             node_id: normalize_id(&config.node_id),
             advertise_s3: normalize_endpoint(&config.advertise_s3),
             advertise_cluster: normalize_endpoint(&config.advertise_cluster),
-            peers: normalize_peers(&config.peers),
+            nodes: normalize_nodes(&config.nodes),
             cluster_secret: config.cluster_secret,
             disk_paths: config.disk_paths,
         };
-        let cluster_id = cluster_id_for(&config.node_id, &config.peers);
+        let cluster_id = cluster_id_for(&config.node_id, &config.nodes);
         let persisted = load_persisted_state(&config.disk_paths)?
             .filter(|state| state.summary.cluster_id == cluster_id)
             .unwrap_or_else(|| initial_state(&config, &cluster_id));
@@ -153,7 +153,7 @@ impl ClusterManager {
     }
 
     pub fn cluster_enabled(&self) -> bool {
-        !self.config.peers.is_empty()
+        !self.config.nodes.is_empty()
     }
 
     pub fn cluster_secret(&self) -> &str {
@@ -245,7 +245,7 @@ impl ClusterManager {
         };
         guard.summary.epoch_id = epoch_id;
         guard.summary.leader_id = leader_id.clone();
-        guard.summary.peer_count = nodes.len().saturating_sub(1);
+        guard.summary.node_count = nodes.len().saturating_sub(1);
         guard.summary.voter_count = voter_count;
         guard.summary.reachable_voters = reachable_voters;
         guard.summary.quorum = quorum;
@@ -286,7 +286,7 @@ impl ClusterManager {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        if let Err(err) = self.refresh_from_peers().await {
+                        if let Err(err) = self.refresh_from_nodes().await {
                             tracing::warn!("cluster peer refresh failed: {}", err);
                         }
                     }
@@ -300,10 +300,10 @@ impl ClusterManager {
         });
     }
 
-    async fn refresh_from_peers(&self) -> Result<()> {
+    async fn refresh_from_nodes(&self) -> Result<()> {
         let peer_summaries = self.fetch_peer_summaries().await;
         let reachable_voters = 1 + peer_summaries.len();
-        let voter_count = self.config.peers.len() + 1;
+        let voter_count = self.config.nodes.len() + 1;
         let quorum = voter_count / 2 + 1;
         let leader_id = elect_leader(&self.config.node_id, &peer_summaries);
         if reachable_voters < quorum {
@@ -330,7 +330,7 @@ impl ClusterManager {
 
     async fn fetch_peer_summaries(&self) -> Vec<(String, ClusterSummary)> {
         let mut summaries = Vec::new();
-        for peer in &self.config.peers {
+        for peer in &self.config.nodes {
             let url = format!("{}/_admin/cluster/status", peer.trim_end_matches('/'));
             let mut req = self.http.get(&url);
             if !self.config.cluster_secret.is_empty() {
@@ -359,7 +359,7 @@ impl ClusterManager {
     ) {
         let mut guard = self.state.write().unwrap();
         let committed_at = unix_secs();
-        let voter_count = self.config.peers.len() + 1;
+        let voter_count = self.config.nodes.len() + 1;
         let quorum = voter_count / 2 + 1;
         guard.summary.state = ServiceState::Ready;
         guard.summary.epoch_id = epoch_id;
@@ -405,7 +405,7 @@ impl ClusterManager {
         reason: Option<String>,
     ) {
         let mut guard = self.state.write().unwrap();
-        let voter_count = self.config.peers.len() + 1;
+        let voter_count = self.config.nodes.len() + 1;
         let quorum = voter_count / 2 + 1;
         guard.summary.state = ServiceState::Fenced;
         guard.summary.epoch_id = epoch_id;
@@ -445,20 +445,20 @@ impl ClusterManager {
             last_heartbeat_unix_secs: unix_secs(),
         }];
 
-        let peers = peer_summaries.unwrap_or_default();
-        for peer in &self.config.peers {
-            let status = peers
+        let probed = peer_summaries.unwrap_or_default();
+        for remote in &self.config.nodes {
+            let status = probed
                 .iter()
-                .find(|(endpoint, _)| endpoint == peer)
+                .find(|(endpoint, _)| endpoint == remote)
                 .map(|(_, summary)| summary);
             nodes.push(ClusterNodeStatus {
                 node_id: status
                     .map(|summary| summary.node_id.clone())
-                    .unwrap_or_else(|| peer.clone()),
+                    .unwrap_or_else(|| remote.clone()),
                 advertise_s3: status
                     .map(|summary| summary.node_id.clone())
                     .unwrap_or_else(|| String::new()),
-                advertise_cluster: peer.clone(),
+                advertise_cluster: remote.clone(),
                 state: status
                     .map(|summary| summary.state)
                     .unwrap_or(ServiceState::Joining),
@@ -475,8 +475,8 @@ impl ClusterManager {
         let mut guard = self.state.write().unwrap();
         guard.summary.node_id = self.config.node_id.clone();
         guard.summary.cluster_id =
-            cluster_id_for(&self.config.node_id, &self.config.peers);
-        guard.summary.peer_count = self.config.peers.len();
+            cluster_id_for(&self.config.node_id, &self.config.nodes);
+        guard.summary.node_count = self.config.nodes.len();
         guard.summary.topology_hash = None;
         guard.topology.cluster_id = guard.summary.cluster_id.clone();
         guard.topology.volumes = self
@@ -525,28 +525,28 @@ fn load_persisted_state(disks: &[PathBuf]) -> Result<Option<PersistedClusterStat
 fn initial_state(config: &ClusterConfig, cluster_id: &str) -> PersistedClusterState {
     let committed_at = unix_secs();
     let summary = ClusterSummary {
-        enabled: !config.peers.is_empty(),
+        enabled: !config.nodes.is_empty(),
         cluster_id: cluster_id.to_string(),
         node_id: config.node_id.clone(),
         topology_hash: None,
-        state: if config.peers.is_empty() {
+        state: if config.nodes.is_empty() {
             ServiceState::Ready
         } else {
             ServiceState::SyncingEpoch
         },
         epoch_id: 1,
         leader_id: config.node_id.clone(),
-        peer_count: config.peers.len(),
-        voter_count: config.peers.len() + 1,
+        node_count: config.nodes.len(),
+        voter_count: config.nodes.len() + 1,
         reachable_voters: 1,
-        quorum: (config.peers.len() + 1) / 2 + 1,
+        quorum: (config.nodes.len() + 1) / 2 + 1,
         fenced_reason: None,
     };
     let epoch = ClusterEpoch {
         epoch_id: 1,
         leader_id: config.node_id.clone(),
         committed_at_unix_secs: committed_at,
-        voter_count: config.peers.len() + 1,
+        voter_count: config.nodes.len() + 1,
         reachable_voters: 1,
     };
     let topology = ClusterTopology {
@@ -590,11 +590,11 @@ fn elect_leader(local_node_id: &str, peer_summaries: &[(String, ClusterSummary)]
         .unwrap_or_else(|| local_node_id.to_string())
 }
 
-fn cluster_id_for(node_id: &str, peers: &[String]) -> String {
+fn cluster_id_for(node_id: &str, nodes: &[String]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(node_id.as_bytes());
-    for peer in peers {
-        hasher.update(peer.as_bytes());
+    for node in nodes {
+        hasher.update(node.as_bytes());
     }
     let digest = hasher.finalize();
     format!("abixio-{}", hex::encode(&digest[..8]))
@@ -608,11 +608,11 @@ fn volume_id_for(node_id: &str, path: &Path) -> String {
     format!("vol-{}", hex::encode(&digest[..8]))
 }
 
-fn normalize_peers(peers: &[String]) -> Vec<String> {
+fn normalize_nodes(nodes: &[String]) -> Vec<String> {
     let mut seen = BTreeSet::new();
     let mut normalized = Vec::new();
-    for peer in peers {
-        let value = normalize_endpoint(peer);
+    for node in nodes {
+        let value = normalize_endpoint(node);
         if seen.insert(value.clone()) {
             normalized.push(value);
         }
@@ -675,7 +675,7 @@ mod tests {
             node_id: "node-a".to_string(),
             advertise_s3: "127.0.0.1:9000".to_string(),
             advertise_cluster: "127.0.0.1:9000".to_string(),
-            peers: Vec::new(),
+            nodes: Vec::new(),
             cluster_secret: String::new(),
             disk_paths: vec![disk],
         }
@@ -763,7 +763,7 @@ mod tests {
     fn clustered_config_starts_syncing_and_blocked() {
         let (_base, disk) = test_disk();
         let mut cfg = test_config(disk);
-        cfg.peers = vec!["node-b:9000".to_string(), "node-c:9000".to_string()];
+        cfg.nodes = vec!["node-b:9000".to_string(), "node-c:9000".to_string()];
         let manager = ClusterManager::new(cfg).unwrap();
         let summary = manager.summary();
         assert_eq!(summary.state, ServiceState::SyncingEpoch);
@@ -772,14 +772,14 @@ mod tests {
     }
 
     #[test]
-    fn normalize_peers_deduplicates_and_adds_scheme() {
-        let peers = normalize_peers(&[
+    fn normalize_nodes_deduplicates_and_adds_scheme() {
+        let result = normalize_nodes(&[
             "node-b:9000".to_string(),
             "http://node-b:9000/".to_string(),
             "node-c:9000".to_string(),
         ]);
         assert_eq!(
-            peers,
+            result,
             vec![
                 "http://node-b:9000".to_string(),
                 "http://node-c:9000".to_string()
@@ -791,7 +791,7 @@ mod tests {
     fn persisted_state_survives_restart() {
         let (_base, disk) = test_disk();
         let mut cfg = test_config(disk.clone());
-        cfg.peers = vec!["http://127.0.0.1:65011".to_string()];
+        cfg.nodes = vec!["http://127.0.0.1:65011".to_string()];
         let manager = ClusterManager::new(cfg.clone()).unwrap();
         manager.force_fence("persisted fence");
 
@@ -812,7 +812,7 @@ mod tests {
             state: ServiceState::Ready,
             epoch_id: 1,
             leader_id: "node-a".to_string(),
-            peer_count: 1,
+            node_count: 1,
             voter_count: 2,
             reachable_voters: 2,
             quorum: 2,
@@ -823,9 +823,9 @@ mod tests {
             cluster_id_for("node-a", std::slice::from_ref(&peer));
 
         let mut cfg = test_config(disk);
-        cfg.peers = vec![peer];
+        cfg.nodes = vec![peer];
         let manager = ClusterManager::new(cfg).unwrap();
-        manager.refresh_from_peers().await.unwrap();
+        manager.refresh_from_nodes().await.unwrap();
 
         let summary = manager.summary();
         assert_eq!(summary.state, ServiceState::Ready);
@@ -838,12 +838,12 @@ mod tests {
     async fn quorum_loss_fences_cluster() {
         let (_base, disk) = test_disk();
         let mut cfg = test_config(disk);
-        cfg.peers = vec![
+        cfg.nodes = vec![
             "http://127.0.0.1:65001".to_string(),
             "http://127.0.0.1:65002".to_string(),
         ];
         let manager = ClusterManager::new(cfg).unwrap();
-        manager.refresh_from_peers().await.unwrap();
+        manager.refresh_from_nodes().await.unwrap();
 
         let summary = manager.summary();
         assert_eq!(summary.state, ServiceState::Fenced);
@@ -863,7 +863,7 @@ mod tests {
             state: ServiceState::Ready,
             epoch_id: 1,
             leader_id: "node-a".to_string(),
-            peer_count: 1,
+            node_count: 1,
             voter_count: 2,
             reachable_voters: 2,
             quorum: 2,
@@ -878,10 +878,10 @@ mod tests {
             cluster_id_for("node-a", std::slice::from_ref(&peer));
 
         let mut cfg = test_config(disk);
-        cfg.peers = vec![peer];
+        cfg.nodes = vec![peer];
         cfg.cluster_secret = "wrong-secret".to_string();
         let manager = ClusterManager::new(cfg).unwrap();
-        manager.refresh_from_peers().await.unwrap();
+        manager.refresh_from_nodes().await.unwrap();
 
         let summary = manager.summary();
         assert_eq!(summary.state, ServiceState::Fenced);
@@ -900,7 +900,7 @@ mod tests {
             state: ServiceState::Ready,
             epoch_id: 1,
                 leader_id: "node-a".to_string(),
-                peer_count: 1,
+                node_count: 1,
                 voter_count: 2,
             reachable_voters: 2,
             quorum: 2,
@@ -911,12 +911,12 @@ mod tests {
             cluster_id_for("node-a", std::slice::from_ref(&peer));
 
         let mut cfg = test_config(disk);
-        cfg.peers = vec![peer];
+        cfg.nodes = vec![peer];
         let manager = ClusterManager::new(cfg).unwrap();
         manager.force_fence("temporary fence");
         assert_eq!(manager.summary().state, ServiceState::Fenced);
 
-        manager.refresh_from_peers().await.unwrap();
+        manager.refresh_from_nodes().await.unwrap();
         let summary = manager.summary();
         assert_eq!(summary.state, ServiceState::Ready);
         assert_eq!(summary.fenced_reason, None);

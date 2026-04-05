@@ -14,11 +14,11 @@ pub struct Config {
     #[arg(short = 'v', long = "volume")]
     pub volumes: Vec<PathBuf>,
 
-    /// Comma-separated peer endpoints for cluster mode
+    /// Comma-separated node endpoints for cluster mode
     #[arg(long, value_delimiter = ',', default_value = "")]
-    pub peers: Vec<String>,
+    pub nodes: Vec<String>,
 
-    /// Shared secret for cluster peer probes
+    /// Shared secret for cluster node probes
     #[arg(long, default_value = "")]
     pub cluster_secret: String,
 
@@ -119,7 +119,7 @@ mod tests {
     fn config_with(volumes: Vec<PathBuf>) -> Config {
         Config {
             listen: ":10000".to_string(),
-            peers: Vec::new(),
+            nodes: Vec::new(),
             cluster_secret: String::new(),
             volumes,
             no_auth: false,

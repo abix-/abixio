@@ -22,14 +22,14 @@ pub struct VolumeEntry {
     pub index: u32,
 }
 
-/// Resolved cluster identity after boot + peer exchange.
+/// Resolved cluster identity after boot + node exchange.
 #[derive(Debug, Clone)]
 pub struct ResolvedIdentity {
     pub node_id: String,
     pub deployment_id: String,
     pub set_id: String,
     pub advertise: String,
-    pub peers: Vec<String>,
+    pub nodes: Vec<String>,
     pub disk_paths: Vec<PathBuf>,
     pub all_members: Vec<SetMember>,
 }
@@ -38,7 +38,7 @@ pub struct ResolvedIdentity {
 pub async fn resolve_identity(
     disk_paths: &[PathBuf],
     listen: &str,
-    peers: &[String],
+    nodes: &[String],
     cluster_secret: &str,
 ) -> Result<ResolvedIdentity, String> {
     // step 1: load or format volumes
@@ -63,7 +63,7 @@ pub async fn resolve_identity(
     };
 
     // step 2: standalone or cluster?
-    if peers.is_empty() {
+    if nodes.is_empty() {
         // standalone: finalize immediately
         let deployment_id = deployment_id_for(&[node_id.clone()]);
         let set_id = uuid::Uuid::new_v4().to_string();
@@ -74,7 +74,7 @@ pub async fn resolve_identity(
             deployment_id,
             set_id,
             advertise,
-            peers: Vec::new(),
+            nodes: Vec::new(),
             disk_paths: disk_paths.to_vec(),
             all_members: members,
         });
@@ -90,37 +90,36 @@ pub async fn resolve_identity(
             deployment_id,
             set_id,
             advertise,
-            peers: peers.to_vec(),
+            nodes: nodes.to_vec(),
             disk_paths: disk_paths.to_vec(),
             all_members: members,
         });
     }
 
-    // step 4: first boot cluster -- exchange identity with peers
+    // step 4: first boot cluster -- exchange identity with nodes
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
         .map_err(|e| format!("build http client: {}", e))?;
 
     let mut all_identities = vec![local_identity.clone()];
-    let expected_nodes = peers.len() + 1;
+    let expected_nodes = nodes.len() + 1;
 
     tracing::info!(
-        "waiting for {} peer(s) to exchange identity",
-        peers.len()
+        "waiting for {} node(s) to exchange identity",
+        nodes.len()
     );
 
     loop {
-        for peer in peers {
+        for node in nodes {
             if all_identities.iter().any(|id| {
-                // check by advertise endpoint, not node_id (peer might not be in our list yet)
-                let peer_base = peer.trim_end_matches('/');
-                id.advertise.trim_end_matches('/') == peer_base
+                let node_base = node.trim_end_matches('/');
+                id.advertise.trim_end_matches('/') == node_base
             }) {
                 continue;
             }
 
-            let url = format!("{}/_admin/cluster/join", peer.trim_end_matches('/'));
+            let url = format!("{}/_admin/cluster/join", node.trim_end_matches('/'));
             let mut req = client.post(&url).json(&local_identity);
             if !cluster_secret.is_empty() {
                 req = req.header("x-abixio-cluster-secret", cluster_secret);
@@ -129,7 +128,7 @@ pub async fn resolve_identity(
                 Ok(resp) if resp.status().is_success() => {
                     if let Ok(peer_identity) = resp.json::<NodeIdentity>().await {
                         if !all_identities.iter().any(|id| id.node_id == peer_identity.node_id) {
-                            tracing::info!("discovered peer {}", peer_identity.node_id);
+                            tracing::info!("discovered node {}", peer_identity.node_id);
                             all_identities.push(peer_identity);
                         }
                     }
@@ -166,7 +165,7 @@ pub async fn resolve_identity(
         deployment_id,
         set_id,
         advertise,
-        peers: peer_endpoints,
+        nodes: peer_endpoints,
         disk_paths: disk_paths.to_vec(),
         all_members: members,
     })

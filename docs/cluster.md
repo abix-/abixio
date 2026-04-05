@@ -1,13 +1,13 @@
 # Cluster Design
 
-AbixIO has a peer-based cluster-control layer for multi-node deployments.
-Nodes generate their own identity, exchange it with peers at startup, and
+AbixIO has a node-based cluster-control layer for multi-node deployments.
+Nodes generate their own identity, exchange it with nodes at startup, and
 persist the full membership on their volumes. No topology file, no master
 server.
 
 This is intentionally a control-plane-first design. The current implementation
-adds peer-based identity exchange, persisted cluster metadata, self-describing
-volumes, peer monitoring, admin visibility, hard fencing, and deterministic
+adds node-based identity exchange, persisted cluster metadata, self-describing
+volumes, node monitoring, admin visibility, hard fencing, and deterministic
 node-aware placement metadata. It does **not** yet add internode shard RPC or
 consensus-backed topology reconfiguration.
 
@@ -21,7 +21,7 @@ The cluster layer is designed around these rules:
    at formatted volumes can reconstruct the cluster.
 
 2. **No master server.**
-   Nodes discover each other via `--peers` and exchange identity at startup.
+   Nodes discover each other via `--nodes` and exchange identity at startup.
    There is no central coordinator or topology file.
 
 3. **Cluster state is explicit.**
@@ -39,11 +39,11 @@ The cluster layer is designed around these rules:
 
 The current implementation provides:
 
-- peer-based identity exchange at startup via `/_admin/cluster/join`
+- node-based identity exchange at startup via `/_admin/cluster/join`
 - self-describing volumes with `.abixio.sys/volume.json`
 - persisted cluster state on local volumes
 - admin endpoints for cluster summary, nodes, epochs, and topology
-- peer probing and basic quorum tracking
+- node probing and basic quorum tracking
 - hard fencing when the node is not in a `ready` cluster state
 - S3 request rejection while fenced
 - mutating admin request rejection while fenced
@@ -67,8 +67,8 @@ The current implementation does **not** provide:
 |---|---|---|---|
 | `-v` / `--volume` | yes | -- | Volume path (repeat for each) |
 | `--listen` | no | `:10000` | Bind address |
-| `--peers` | no | empty | Peer endpoints for cluster mode |
-| `--cluster-secret` | no | empty | Shared secret for peer probes |
+| `--nodes` | no | empty | Node endpoints for cluster mode |
+| `--cluster-secret` | no | empty | Shared secret for node probes |
 | `--no-auth` | no | false | Disable S3 authentication |
 
 Example:
@@ -76,10 +76,10 @@ Example:
 ```bash
 ./target/release/abixio \
   -v /srv/abixio/d1 -v /srv/abixio/d2 \
-  --peers http://node-2:10000,http://node-3:10000
+  --nodes http://node-2:10000,http://node-3:10000
 ```
 
-For a standalone node, omit `--peers`. The node immediately transitions to
+For a standalone node, omit `--nodes`. The node immediately transitions to
 `ready` and does not require quorum.
 
 ## Boot Sequence
@@ -87,10 +87,10 @@ For a standalone node, omit `--peers`. The node immediately transitions to
 1. Read `.abixio.sys/volume.json` from each `-v` path
 2. If no volume.json exists (first boot): generate node_id and volume_id UUIDs,
    write partial volume.json
-3. If `--peers` is empty: standalone mode -- finalize volume.json immediately
-4. If `--peers` is set: exchange identity with peers via `/_admin/cluster/join`,
-   block until all peers respond, then finalize volume.json with full membership
-5. On subsequent boots: read identity from volume.json, probe peers for quorum
+3. If `--nodes` is empty: standalone mode -- finalize volume.json immediately
+4. If `--nodes` is set: exchange identity with nodes via `/_admin/cluster/join`,
+   block until all nodes respond, then finalize volume.json with full membership
+5. On subsequent boots: read identity from volume.json, probe nodes for quorum
 
 ## Persisted State
 
@@ -150,11 +150,11 @@ or split-brain behavior.
 
 ## Quorum Model Today
 
-Today the cluster manager uses a simple peer-probe model on top of the static
+Today the cluster manager uses a simple node-probe model on top of the static
 manifest:
 
 1. Load local persisted cluster state.
-2. Probe configured peers over `/_admin/cluster/status`.
+2. Probe configured nodes over `/_admin/cluster/status`.
 3. Count reachable voters.
 4. Compute quorum as `voter_count / 2 + 1`.
 5. Enter `ready` only if reachable voters meet quorum.
@@ -190,9 +190,9 @@ see whether the node is `ready` or `fenced`.
 - `volume_id`
 - shard status and checksum
 
-### Peer Probe Authentication
+### Node Probe Authentication
 
-Peer probes use the `x-abixio-cluster-secret` header when `--cluster-secret` is
+Node probes use the `x-abixio-cluster-secret` header when `--cluster-secret` is
 configured. This is only a lightweight internode gate for the current control
 plane. It is not a full cluster PKI or mTLS design.
 
@@ -248,8 +248,8 @@ and the scaffold those features would build on.
 ## Operational Notes
 
 - Standalone mode remains supported and automatically reports `ready`.
-- Peer-based cluster mode is the primary clustered configuration.
-- Multi-peer service is still experimental as a full distributed storage data
+- Node-based cluster mode is the primary clustered configuration.
+- Multi-node service is still experimental as a full distributed storage data
   plane until remote shard RPC is implemented.
 - A fenced node is working as designed. It is refusing service to avoid
   inconsistent behavior.
@@ -259,7 +259,7 @@ and the scaffold those features would build on.
 
 Each volume carries `.abixio.sys/volume.json` with deployment, set, node, and
 volume UUIDs plus the full erasure set membership. Identity is generated at
-first boot and exchanged with peers. A fresh binary pointed at formatted
+first boot and exchanged with nodes. A fresh binary pointed at formatted
 volumes can reconstruct the cluster without any config files.
 
 See [storage-layout.md](storage-layout.md) for the full design.

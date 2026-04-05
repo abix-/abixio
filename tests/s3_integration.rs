@@ -42,7 +42,7 @@ async fn start_server_with_cluster(
             node_id: "test-node".to_string(),
             advertise_s3: "http://127.0.0.1:0".to_string(),
             advertise_cluster: "http://127.0.0.1:0".to_string(),
-            peers: Vec::new(),
+            nodes: Vec::new(),
             cluster_secret: String::new(),
             disk_paths: paths.to_vec(),
         })
@@ -94,7 +94,7 @@ async fn start_server_pool(
             node_id: "test-node".to_string(),
             advertise_s3: "http://127.0.0.1:0".to_string(),
             advertise_cluster: "http://127.0.0.1:0".to_string(),
-            peers: Vec::new(),
+            nodes: Vec::new(),
             cluster_secret: String::new(),
             disk_paths: paths.to_vec(),
         })

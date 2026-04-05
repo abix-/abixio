@@ -58,7 +58,7 @@ pub struct AdminConfig {
     pub node_id: String,
     pub advertise_s3: String,
     pub advertise_cluster: String,
-    pub peer_count: usize,
+    pub node_count: usize,
 }
 
 impl AdminConfig {
@@ -79,7 +79,7 @@ impl AdminConfig {
             node_id: identity.node_id.clone(),
             advertise_s3: identity.advertise.clone(),
             advertise_cluster: identity.advertise.clone(),
-            peer_count: identity.peers.len(),
+            node_count: identity.nodes.len(),
         }
     }
 }

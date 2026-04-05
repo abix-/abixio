@@ -52,7 +52,7 @@ curl http://localhost:10000/_admin/status
     "state": "ready",
     "epoch_id": 1,
     "leader_id": "node1",
-    "peer_count": 2,
+    "node_count": 2,
     "voter_count": 3,
     "reachable_voters": 3,
     "quorum": 2
@@ -88,7 +88,7 @@ The `cluster` object contains:
 | `state` | string | `joining`, `syncing_epoch`, `fenced`, or `ready` |
 | `epoch_id` | u64 | Current epoch ID |
 | `leader_id` | string | Current leader ID in the local view; this is not a consensus proof |
-| `peer_count` | usize | Number of configured peers |
+| `node_count` | usize | Number of configured nodes |
 | `voter_count` | usize | Number of quorum voters in the local view |
 | `reachable_voters` | usize | Number of voters currently reachable |
 | `quorum` | usize | Required voter count for readiness |
@@ -329,7 +329,7 @@ curl http://localhost:10000/_admin/cluster/status
     "state": "ready",
     "epoch_id": 1,
     "leader_id": "node1",
-    "peer_count": 2,
+    "node_count": 2,
     "voter_count": 3,
     "reachable_voters": 3,
     "quorum": 2
@@ -411,8 +411,8 @@ unsafe cluster state.
 
 ## Cluster Notes
 
-When `--peers` is used, nodes exchange identity at startup and build the
-erasure set membership from the peer handshake. See [cluster.md](cluster.md)
+When `--nodes` is used, nodes exchange identity at startup and build the
+erasure set membership from the node handshake. See [cluster.md](cluster.md)
 for the full cluster design.
 
 See [per-object-ec.md](per-object-ec.md) for the full EC precedence chain

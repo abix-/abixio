@@ -1,6 +1,6 @@
 # AbixIO
 
-S3-compatible object store with erasure coding. Single Rust binary, peer-based
+S3-compatible object store with erasure coding. Single Rust binary, node-based
 clustering, self-describing volumes.
 
 ## What it does
@@ -48,33 +48,33 @@ Works with AWS CLI, rclone, MinIO client, boto3, or any S3-compatible tool.
 
 ## Cluster mode
 
-Nodes discover each other via `--peers`. No topology file needed. Each node
-generates its own identity on first boot, exchanges it with peers, and builds
+Nodes discover each other via `--nodes`. No topology file needed. Each node
+generates its own identity on first boot, exchanges it with other nodes, and builds
 the erasure set membership from the handshake.
 
 ```bash
 # node 1
 ./target/release/abixio \
   -v /srv/abixio/d1 -v /srv/abixio/d2 \
-  --peers http://node-2:10000,http://node-3:10000
+  --nodes http://node-2:10000,http://node-3:10000
 
 # node 2
 ./target/release/abixio \
   -v /srv/abixio/d1 -v /srv/abixio/d2 \
-  --peers http://node-1:10000,http://node-3:10000
+  --nodes http://node-1:10000,http://node-3:10000
 
 # node 3
 ./target/release/abixio \
   -v /srv/abixio/d1 -v /srv/abixio/d2 \
-  --peers http://node-1:10000,http://node-2:10000
+  --nodes http://node-1:10000,http://node-2:10000
 ```
 
 What happens at startup:
 
 1. Each node reads `.abixio.sys/volume.json` from its volumes
 2. If first boot, generates node_id and volume_id UUIDs, writes volume.json
-3. Exchanges identity with peers via `/_admin/cluster/join`
-4. Blocks until all peers respond, then finalizes volume.json with full membership
+3. Exchanges identity with other nodes via `/_admin/cluster/join`
+4. Blocks until all nodes respond, then finalizes volume.json with full membership
 5. Serves traffic
 
 On subsequent boots, identity is read from volume.json. Peers are probed for
@@ -86,8 +86,8 @@ quorum confirmation. If quorum is lost, the node fences itself.
 |---|---|---|---|
 | `-v` / `--volume` | yes | -- | Volume path (repeat for each) |
 | `--listen` | no | `:10000` | Bind address |
-| `--peers` | no | empty | Peer endpoints for cluster mode |
-| `--cluster-secret` | no | empty | Shared secret for peer probes |
+| `--nodes` | no | empty | Node endpoints for cluster mode |
+| `--cluster-secret` | no | empty | Shared secret for node probes |
 | `--no-auth` | no | false | Disable S3 authentication |
 
 EC defaults are auto-computed from volume count: 1 volume = `1+0` (no

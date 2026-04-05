@@ -53,20 +53,20 @@ cluster-control direction.
 
 ## Cluster Direction
 
-AbixIO has a peer-based cluster-control layer:
+AbixIO has a node-based cluster-control layer:
 
-- peer-based identity exchange at startup
+- node-based identity exchange at startup
 - self-describing volumes with `.abixio.sys/volume.json`
 - persisted cluster metadata in `.abixio.sys/cluster.json`
 - cluster admin endpoints
-- peer monitoring and quorum tracking
+- node monitoring and quorum tracking
 - hard fencing when quorum is lost
 
 This is not yet a full distributed object-store data plane. Distributed shard
 RPC, live topology changes, heterogeneous set planning, and rebalance are still
 future work.
 
-Nodes generate their own identity on first boot, exchange it with peers, and
+Nodes generate their own identity on first boot, exchange it with other nodes, and
 persist the full membership on their volumes. Unsafe nodes fence themselves.
 
 See [cluster.md](cluster.md) for the full design and current behavior.
@@ -76,7 +76,7 @@ See [cluster.md](cluster.md) for the full design and current behavior.
 | Aspect | MinIO | AbixIO |
 |---|---|---|
 | Language | Go | Rust |
-| Scope | distributed multi-node | single process today, peer-based cluster control in progress |
+| Scope | distributed multi-node | single process today, node-based cluster control in progress |
 | Erasure coding | cluster-level EC ratio | per-object EC (data/parity per object) |
 | EC config | fixed per server pool | per-object header > bucket config > server default |
 | Min disks | 4 (enforced) | 1 (with 0 parity) |
@@ -95,8 +95,8 @@ src/
   main.rs                 # CLI entry, parse args, start server
   lib.rs                  # module re-exports
   cluster/
-    mod.rs                # persisted cluster state, peer monitoring, fencing, cluster types
-    identity.rs           # peer identity exchange and boot sequence
+    mod.rs                # persisted cluster state, node monitoring, fencing, cluster types
+    identity.rs           # node identity exchange and boot sequence
     placement.rs          # deterministic node-first placement planner and invariants
   config.rs               # Config struct (clap derive) + validation
   query.rs                # URL query string parsing
@@ -135,7 +135,7 @@ tests/
   e2e.py                  # end-to-end Python test (starts server, exercises S3 + admin)
 docs/
   architecture.md         # this file
-  cluster.md              # cluster control design, peer exchange, fencing
+  cluster.md              # cluster control design, node exchange, fencing
   storage-layout.md       # volume identity, metadata layers, directory structure
   per-object-ec.md        # per-object erasure coding, bucket EC config, volume pools
   admin-api.md            # admin API endpoints (status, volumes, heal, inspect, bucket EC)
