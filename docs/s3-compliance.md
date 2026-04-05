@@ -136,7 +136,7 @@ How complete our responses are compared to what S3 clients expect.
 
 ### Overall S3 compliance: 4/10
 
-abixio implements 26 of ~100 S3 API operations. The 26 it implements are
+abixio implements 26 of ~80 S3 API operations (MinIO implements 81 routes). The 26 it implements are
 solid (auth, conditionals, presigned URLs, tagging, batch delete, copy,
 range requests, custom metadata) but the missing surface is large: no
 multipart upload (blocks files >5GB), no versioning, no policies, no

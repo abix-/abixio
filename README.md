@@ -48,7 +48,7 @@ Works with AWS CLI, rclone, MinIO client, boto3, or any S3-compatible tool.
 
 ## S3 API coverage
 
-26 of ~100 S3 API operations implemented. 175 tests.
+26 of ~80 S3 API operations implemented. 175 tests.
 See [docs/s3-compliance.md](docs/s3-compliance.md) for the full audit.
 
 **Implemented:** ListBuckets, CreateBucket, HeadBucket, DeleteBucket,
