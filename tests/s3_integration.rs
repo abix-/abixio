@@ -2298,6 +2298,48 @@ async fn bucket_lifecycle_multiple_rules() {
     assert!(body.contains("rule2"), "body: {}", body);
 }
 
+// --- Bucket CORS (stubs matching MinIO) ---
+
+#[tokio::test]
+async fn bucket_cors_get_returns_404() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client.get(url(&addr, "/tb?cors")).send().await.unwrap();
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("NoSuchCORSConfiguration"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn bucket_cors_put_returns_501() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb?cors"))
+        .body("<CORSConfiguration/>")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 501);
+}
+
+#[tokio::test]
+async fn bucket_cors_delete_returns_501() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client.delete(url(&addr, "/tb?cors")).send().await.unwrap();
+    assert_eq!(resp.status(), 501);
+}
+
 fn md5_hex(data: &[u8]) -> String {
     use md5::{Digest, Md5};
     let mut hasher = Md5::new();

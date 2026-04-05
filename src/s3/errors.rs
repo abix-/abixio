@@ -94,6 +94,18 @@ pub const ERR_NO_SUCH_LIFECYCLE: S3Error = S3Error {
     http_status: 404,
 };
 
+pub const ERR_NO_SUCH_CORS: S3Error = S3Error {
+    code: "NoSuchCORSConfiguration",
+    message: "The CORS configuration does not exist",
+    http_status: 404,
+};
+
+pub const ERR_NOT_IMPLEMENTED: S3Error = S3Error {
+    code: "NotImplemented",
+    message: "A header you provided implies functionality that is not implemented",
+    http_status: 501,
+};
+
 pub const ERR_ACCESS_DENIED: S3Error = S3Error {
     code: "AccessDenied",
     message: "Access Denied",

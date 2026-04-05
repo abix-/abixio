@@ -123,6 +123,7 @@ impl S3Handler {
         let has_part_number = query.contains("partNumber");
         let is_policy = query.contains("policy");
         let is_lifecycle = query.contains("lifecycle");
+        let is_cors = query.contains("cors");
 
         let mut resp = match (bucket, key, &method) {
             ("", _, &Method::GET) => self.list_buckets().await,
@@ -138,6 +139,11 @@ impl S3Handler {
 
             // list multipart uploads
             (b, "", &Method::GET) if is_uploads => self.list_multipart_uploads(b).await,
+
+            // bucket CORS (stubs matching MinIO -- not implemented, 2.0 item)
+            (_, "", &Method::GET) if is_cors => error_response(&super::errors::ERR_NO_SUCH_CORS),
+            (_, "", &Method::PUT) if is_cors => error_response(&super::errors::ERR_NOT_IMPLEMENTED),
+            (_, "", &Method::DELETE) if is_cors => error_response(&super::errors::ERR_NOT_IMPLEMENTED),
 
             // bucket policy
             (b, "", &Method::GET) if is_policy => self.get_bucket_policy(b).await,

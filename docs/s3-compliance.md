@@ -3,7 +3,7 @@
 Authoritative audit of every S3 API operation. Compared against MinIO's
 72 unique handler routes in `cmd/api-router.go`.
 
-abixio implements **32 of 72** operations. 186 tests.
+abixio implements **35 of 72** operations. 189 tests.
 
 ## All operations
 
@@ -32,9 +32,9 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 | GetBucketLifecycle | `GET /{bucket}?lifecycle` | Done | 8/10 | Returns stored XML. 404 if none. |
 | PutBucketLifecycle | `PUT /{bucket}?lifecycle` | Done | 7/10 | Stores XML. Basic validation. No enforcement. |
 | DeleteBucketLifecycle | `DELETE /{bucket}?lifecycle` | Done | 8/10 | Idempotent. |
-| GetBucketCors | `GET /{bucket}?cors` | No | 0/10 | |
-| PutBucketCors | `PUT /{bucket}?cors` | No | 0/10 | |
-| DeleteBucketCors | `DELETE /{bucket}?cors` | No | 0/10 | |
+| GetBucketCors | `GET /{bucket}?cors` | Stub | 3/10 | Returns 404 NoSuchCORSConfiguration (matches MinIO). 2.0 item. |
+| PutBucketCors | `PUT /{bucket}?cors` | Stub | 3/10 | Returns 501 NotImplemented (matches MinIO). 2.0 item. |
+| DeleteBucketCors | `DELETE /{bucket}?cors` | Stub | 3/10 | Returns 501 NotImplemented (matches MinIO). 2.0 item. |
 | GetBucketACL | `GET /{bucket}?acl` | No | 0/10 | Legacy. |
 | PutBucketACL | `PUT /{bucket}?acl` | No | 0/10 | Legacy. |
 | GetBucketReplication | `GET /{bucket}?replication` | No | 0/10 | |
@@ -139,7 +139,8 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 
 ## Summary
 
-32 of 72 operations (44%). 186 tests.
+35 of 72 operations (49%). 189 tests.
 
-Not implemented: encryption config, CORS, replication,
-notifications, object lock/retention, ACLs, S3 Select.
+Not implemented: encryption config, replication, notifications,
+object lock/retention, ACLs, S3 Select.
+CORS is stub-only (matches MinIO) -- full implementation is a 2.0 item.
