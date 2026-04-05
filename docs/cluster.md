@@ -298,7 +298,7 @@ plus the full erasure set membership. This replaces `--node-id` on the CLI and
 makes the topology file a one-time formatting input rather than a boot
 requirement.
 
-See [disk-format.md](disk-format.md) for the full design.
+See [storage-layout.md](storage-layout.md) for the full design.
 
 ## Recommended Reading
 
@@ -306,5 +306,5 @@ See [disk-format.md](disk-format.md) for the full design.
 - [admin-api.md](admin-api.md) for the admin endpoints
 - [static-topology.md](static-topology.md) for the manifest schema
 - [per-object-ec.md](per-object-ec.md) for current erasure-coding behavior
-- [disk-format.md](disk-format.md) for the disk format and metadata architecture
+- [storage-layout.md](storage-layout.md) for the disk format and metadata architecture
 - [storage-layout.md](storage-layout.md) for on-disk object metadata layout

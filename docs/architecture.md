@@ -45,7 +45,7 @@ cluster-control direction.
 11. **Self-describing disks.** Every disk carries `.abixio.sys/format.json` with
     its identity (deployment, set, node, disk UUIDs) and the full erasure set
     membership. A fresh binary pointed at formatted disks can reconstruct the
-    cluster without external config. See [disk-format.md](disk-format.md).
+    cluster without external config. See [storage-layout.md](storage-layout.md).
 
 10. **Cluster control fences unsafe nodes.** Multi-node control-plane behavior
     must fail closed. A node that cannot confirm safe cluster state stops
@@ -137,8 +137,7 @@ docs/
   architecture.md         # this file
   cluster.md              # cluster control design, fencing, current scope
   static-topology.md      # topology manifest schema and restart-based cluster operation
-  disk-format.md          # disk format, metadata architecture, self-describing disks
-  storage-layout.md       # disk layout, meta.json format
+  storage-layout.md       # disk format, metadata layers, directory structure
   per-object-ec.md        # per-object erasure coding, bucket EC config, disk pools
   admin-api.md            # admin API endpoints (status, disks, heal, inspect, bucket EC)
   versioning.md           # S3 object versioning
