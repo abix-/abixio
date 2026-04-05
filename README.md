@@ -15,6 +15,8 @@ lose nothing. Any S3 client works out of the box.
 - AWS Signature V4 authentication + presigned URL support
 - Object versioning (enable/suspend per bucket)
 - Object and bucket tagging
+- Multipart upload (files of any size)
+- Bucket policies and lifecycle configuration
 - Admin API for disk health, healing status, shard inspection
 
 ## Quick start
@@ -48,20 +50,25 @@ Works with AWS CLI, rclone, MinIO client, boto3, or any S3-compatible tool.
 
 ## S3 API coverage
 
-32 of 72 S3 API operations implemented. 186 tests.
+41 of 72 S3 API operations (57%). 196 tests.
 See [docs/s3-compliance.md](docs/s3-compliance.md) for the full audit.
 
-**Implemented:** ListBuckets, CreateBucket, HeadBucket, DeleteBucket,
+**Fully implemented (26):** ListBuckets, CreateBucket, HeadBucket, DeleteBucket,
 ListObjectsV2, PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects,
 CopyObject, Get/Put/DeleteObjectTagging, Get/Put/DeleteBucketTagging,
 PutBucketVersioning, GetBucketVersioning, ListObjectVersions,
 CreateMultipartUpload, UploadPart, CompleteMultipartUpload,
-AbortMultipartUpload, ListParts, ListMultipartUploads,
-GetBucketPolicy, PutBucketPolicy, DeleteBucketPolicy,
-GetBucketLifecycle, PutBucketLifecycle, DeleteBucketLifecycle.
+AbortMultipartUpload, ListParts, ListMultipartUploads.
 
-**Not implemented:** Encryption config, CORS, replication, notifications,
-object lock/retention, ACLs, cloud storage backends.
+**Stored but not enforced (6):** Get/Put/DeleteBucketPolicy,
+Get/Put/DeleteBucketLifecycle.
+
+**Stubs matching MinIO (9):** Get/Put/DeleteBucketCors (501 NotImplemented),
+Get/PutBucketACL, Get/PutObjectACL (hardcoded FULL_CONTROL),
+Get/PutBucketNotification (empty config / 501).
+
+**Not implemented:** Encryption config, replication, object lock/retention,
+S3 Select, cloud storage backends.
 
 ## Documentation
 
@@ -77,7 +84,7 @@ object lock/retention, ACLs, cloud storage backends.
 | [multipart-upload.md](docs/multipart-upload.md) | Multipart upload lifecycle and disk layout |
 | [bucket-policy.md](docs/bucket-policy.md) | Bucket policy storage and validation |
 | [healing.md](docs/healing.md) | Erasure healing, MRF queue, scanner |
-| [s3-compliance.md](docs/s3-compliance.md) | S3 API compliance audit |
+| [s3-compliance.md](docs/s3-compliance.md) | Full S3 API compliance audit (all 72 operations) |
 
 ## License
 
