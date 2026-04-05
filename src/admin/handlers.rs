@@ -110,11 +110,11 @@ impl AdminHandler {
             ("cluster/nodes", &hyper::Method::GET) => self.cluster_nodes(),
             ("cluster/epochs", &hyper::Method::GET) => self.cluster_epochs(),
             ("cluster/topology", &hyper::Method::GET) => self.cluster_topology(),
-            _ if path.starts_with("bucket/") && path.ends_with("/ec") => {
-                let bucket = &path["bucket/".len()..path.len() - "/ec".len()];
+            _ if path.starts_with("bucket/") && path.ends_with("/ftt") => {
+                let bucket = &path["bucket/".len()..path.len() - "/ftt".len()];
                 match *method {
-                    hyper::Method::GET => self.get_bucket_ec(bucket),
-                    hyper::Method::PUT => self.set_bucket_ec(bucket, query),
+                    hyper::Method::GET => self.get_bucket_ftt(bucket),
+                    hyper::Method::PUT => self.set_bucket_ftt(bucket, query),
                     _ => error_json(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
                 }
             }
@@ -316,37 +316,21 @@ impl AdminHandler {
         })
     }
 
-    fn get_bucket_ec(&self, bucket: &str) -> Response<BoxBody> {
+    fn get_bucket_ftt(&self, bucket: &str) -> Response<BoxBody> {
         if let Err(e) = pathing::validate_bucket_name(bucket) {
             return error_json(StatusCode::BAD_REQUEST, &e.to_string());
         }
         match self.store.get_ec_config(bucket) {
-            Ok(Some(config)) => {
-                let disk_count = self.store.disk_count();
-                let (data, parity) = crate::storage::erasure_set::ftt_to_ec(config.ftt, disk_count)
-                    .unwrap_or((1, 0));
-                json_response(&serde_json::json!({
-                    "ftt": config.ftt,
-                    "data": data,
-                    "parity": parity,
-                }))
-            }
+            Ok(Some(config)) => json_response(&config),
             Ok(None) => {
                 let ftt = crate::storage::erasure_set::default_ftt(self.store.disk_count());
-                let (data, parity) = crate::storage::erasure_set::ftt_to_ec(ftt, self.store.disk_count())
-                    .unwrap_or((1, 0));
-                json_response(&serde_json::json!({
-                    "ftt": ftt,
-                    "data": data,
-                    "parity": parity,
-                    "source": "bucket_default"
-                }))
+                json_response(&crate::storage::metadata::EcConfig { ftt })
             }
             Err(e) => error_json(map_storage_status(&e), &e.to_string()),
         }
     }
 
-    fn set_bucket_ec(&self, bucket: &str, query: &str) -> Response<BoxBody> {
+    fn set_bucket_ftt(&self, bucket: &str, query: &str) -> Response<BoxBody> {
         if let Err(e) = pathing::validate_bucket_name(bucket) {
             return error_json(StatusCode::BAD_REQUEST, &e.to_string());
         }
@@ -358,20 +342,12 @@ impl AdminHandler {
             Some(f) => f,
             None => return error_json(StatusCode::BAD_REQUEST, "missing ftt parameter"),
         };
-        let disk_count = self.store.disk_count();
-        if let Err(e) = crate::storage::erasure_set::ftt_to_ec(ftt, disk_count) {
+        if let Err(e) = crate::storage::erasure_set::ftt_to_ec(ftt, self.store.disk_count()) {
             return error_json(StatusCode::BAD_REQUEST, &e.to_string());
         }
         let config = crate::storage::metadata::EcConfig { ftt };
         match self.store.set_ec_config(bucket, &config) {
-            Ok(()) => {
-                let (data, parity) = crate::storage::erasure_set::ftt_to_ec(ftt, disk_count).unwrap();
-                json_response(&serde_json::json!({
-                    "ftt": ftt,
-                    "data": data,
-                    "parity": parity,
-                }))
-            }
+            Ok(()) => json_response(&config),
             Err(e) => error_json(StatusCode::BAD_REQUEST, &e.to_string()),
         }
     }

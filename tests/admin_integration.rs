@@ -809,7 +809,7 @@ async fn admin_get_ec_config_returns_server_default() {
 
     // get EC config -- should return server defaults
     let resp = client
-        .get(url(&addr, "/_admin/bucket/ecbucket/ec"))
+        .get(url(&addr, "/_admin/bucket/ecbucket/ftt"))
         .send()
         .await
         .unwrap();
@@ -817,8 +817,6 @@ async fn admin_get_ec_config_returns_server_default() {
 
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["ftt"], 1);
-    assert_eq!(body["data"], 5);
-    assert_eq!(body["parity"], 1);
 }
 
 #[tokio::test]
@@ -832,7 +830,7 @@ async fn admin_set_and_get_ec_config() {
     // set EC config via FTT=3 on 6 disks -> 3+3
     let set_url = url_with_query(
         &addr,
-        "/_admin/bucket/ecbucket/ec",
+        "/_admin/bucket/ecbucket/ftt",
         &[("ftt", "3")],
     );
     let resp = client.put(set_url).send().await.unwrap();
@@ -840,12 +838,10 @@ async fn admin_set_and_get_ec_config() {
 
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["ftt"], 3);
-    assert_eq!(body["data"], 3);
-    assert_eq!(body["parity"], 3);
 
     // get should return the custom config
     let resp = client
-        .get(url(&addr, "/_admin/bucket/ecbucket/ec"))
+        .get(url(&addr, "/_admin/bucket/ecbucket/ftt"))
         .send()
         .await
         .unwrap();
@@ -853,8 +849,6 @@ async fn admin_set_and_get_ec_config() {
 
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["ftt"], 3);
-    assert_eq!(body["data"], 3);
-    assert_eq!(body["parity"], 3);
 }
 
 #[tokio::test]
@@ -868,7 +862,7 @@ async fn admin_set_ec_config_invalid_params() {
     // ftt >= disk count should fail
     let set_url = url_with_query(
         &addr,
-        "/_admin/bucket/ecbucket/ec",
+        "/_admin/bucket/ecbucket/ftt",
         &[("ftt", "6")],
     );
     let resp = client.put(set_url).send().await.unwrap();
@@ -877,7 +871,7 @@ async fn admin_set_ec_config_invalid_params() {
     // ftt way too high should fail
     let set_url = url_with_query(
         &addr,
-        "/_admin/bucket/ecbucket/ec",
+        "/_admin/bucket/ecbucket/ftt",
         &[("ftt", "100")],
     );
     let resp = client.put(set_url).send().await.unwrap();
@@ -885,7 +879,7 @@ async fn admin_set_ec_config_invalid_params() {
 
     // missing ftt param should fail
     let resp = client
-        .put(url(&addr, "/_admin/bucket/ecbucket/ec"))
+        .put(url(&addr, "/_admin/bucket/ecbucket/ftt"))
         .send()
         .await
         .unwrap();
@@ -899,7 +893,7 @@ async fn admin_ec_config_nonexistent_bucket_returns_404() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .get(url(&addr, "/_admin/bucket/nonexistent/ec"))
+        .get(url(&addr, "/_admin/bucket/nonexistent/ftt"))
         .send()
         .await
         .unwrap();
@@ -917,7 +911,7 @@ async fn admin_bucket_ec_config_affects_new_objects() {
     // set bucket EC to FTT=3 (3+3 on 6 disks)
     let set_url = url_with_query(
         &addr,
-        "/_admin/bucket/ecobj/ec",
+        "/_admin/bucket/ecobj/ftt",
         &[("ftt", "3")],
     );
     client.put(set_url).send().await.unwrap();
@@ -992,7 +986,7 @@ async fn admin_set_bucket_ec_via_ftt() {
     // set bucket EC via FTT=2 on 6 disks
     let resp = client
         .put(format!(
-            "http://{}/_admin/bucket/fttadmin/ec?ftt=2",
+            "http://{}/_admin/bucket/fttadmin/ftt?ftt=2",
             addr
         ))
         .send()
@@ -1001,14 +995,12 @@ async fn admin_set_bucket_ec_via_ftt() {
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["data"], 4);
-    assert_eq!(body["parity"], 2);
     assert_eq!(body["ftt"], 2);
 
     // GET should return the same config
     let resp = client
         .get(format!(
-            "http://{}/_admin/bucket/fttadmin/ec",
+            "http://{}/_admin/bucket/fttadmin/ftt",
             addr
         ))
         .send()
@@ -1016,8 +1008,7 @@ async fn admin_set_bucket_ec_via_ftt() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["data"], 4);
-    assert_eq!(body["parity"], 2);
+    assert_eq!(body["ftt"], 2);
 }
 
 #[tokio::test]
@@ -1030,7 +1021,7 @@ async fn admin_set_bucket_ec_ftt_exceeding_disks_returns_400() {
 
     let resp = client
         .put(format!(
-            "http://{}/_admin/bucket/fttbadmin/ec?ftt=6",
+            "http://{}/_admin/bucket/fttbadmin/ftt?ftt=6",
             addr
         ))
         .send()

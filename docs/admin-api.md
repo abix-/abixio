@@ -16,8 +16,8 @@ body with an `error` field.
 | `/_admin/heal` | GET | MRF queue and scanner statistics |
 | `/_admin/heal?bucket=X&key=Y` | POST | Trigger manual heal for one object |
 | `/_admin/object?bucket=X&key=Y` | GET | Shard-level object inspection |
-| `/_admin/bucket/{name}/ec` | GET | Get bucket FTT config |
-| `/_admin/bucket/{name}/ec?ftt=N` | PUT | Set bucket FTT |
+| `/_admin/bucket/{name}/ftt` | GET | Get bucket FTT config |
+| `/_admin/bucket/{name}/ftt?ftt=N` | PUT | Set bucket FTT |
 | `/_admin/cluster/status` | GET | Cluster summary and current topology |
 | `/_admin/cluster/nodes` | GET | Current node view |
 | `/_admin/cluster/epochs` | GET | Epoch snapshots tracked by the local node |
@@ -266,28 +266,26 @@ externally visible to operators and tests.
 | Missing `key` param | 400 | `{"error": "missing key parameter"}` |
 | Object not on any disk | 404 | `{"error": "object not found on any disk"}` |
 
-## GET /_admin/bucket/{name}/ec
+## GET /_admin/bucket/{name}/ftt
 
-Get the FTT configuration for a bucket. Every bucket has FTT (auto-assigned at creation, default FTT=1). Response includes the computed data/parity for the current disk count.
+Get the FTT configuration for a bucket. Every bucket has FTT (auto-assigned at creation, default FTT=1).
 
 ```bash
-curl http://localhost:10000/_admin/bucket/mybucket/ec
+curl http://localhost:10000/_admin/bucket/mybucket/ftt
 ```
 
 ```json
 {
-  "ftt": 1,
-  "data": 5,
-  "parity": 1
+  "ftt": 1
 }
 ```
 
-## PUT /_admin/bucket/{name}/ec?ftt=N
+## PUT /_admin/bucket/{name}/ftt?ftt=N
 
 Set the FTT for a bucket. Does not affect existing objects.
 
 ```bash
-curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?ftt=2"
+curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ftt?ftt=2"
 ```
 
 ### Error cases

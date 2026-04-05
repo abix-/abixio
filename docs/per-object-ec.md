@@ -83,18 +83,16 @@ Set a default EC for all new objects in a bucket. Stored in
 
 ```bash
 # set bucket default
-curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?ftt=2"
+curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ftt?ftt=2"
 
 # get bucket config (returns auto-computed default if not set)
-curl http://localhost:10000/_admin/bucket/mybucket/ec
+curl http://localhost:10000/_admin/bucket/mybucket/ftt
 ```
 
 Response format:
 
 ```json
 {
-  "data": 4,
-  "parity": 2,
   "ftt": 2
 }
 ```
@@ -111,7 +109,7 @@ are used for every object.
 abixio --volumes /d{1...6}
 
 # set bucket to FTT=2 -> 4+2
-curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?ftt=2"
+curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ftt?ftt=2"
 ```
 
 In the single-node path, shard distribution is a deterministic backend
@@ -172,7 +170,7 @@ disk0/
   .abixio.sys/
     buckets/
       mybucket/
-        settings.json     # { "ec": { "data": 4, "parity": 2, "ftt": 2 } }
+        settings.json     # { "ec": { "ftt": 2 } }
   mybucket/
     critical.txt/
       meta.json           # erasure: { data: 1, parity: 5, ... }

@@ -152,7 +152,7 @@ curl -X PUT -d "important" \
 Override per bucket through the admin API:
 
 ```bash
-curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?ftt=2"
+curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ftt?ftt=2"
 ```
 
 Precedence: per-object FTT > bucket FTT.

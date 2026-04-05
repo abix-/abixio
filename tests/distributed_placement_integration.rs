@@ -23,7 +23,7 @@ async fn distributed_placement_exact_map_matches_raw_disk_state() {
 
     // set bucket FTT=2 (2+2 on 4 shards used)
     let resp = client
-        .put(endpoint(&harness.nodes[0], "/_admin/bucket/testbucket/ec?ftt=2"))
+        .put(endpoint(&harness.nodes[0], "/_admin/bucket/testbucket/ftt?ftt=2"))
         .send()
         .await
         .unwrap();
@@ -83,7 +83,7 @@ async fn distributed_placement_is_identical_from_every_node() {
         .await
         .unwrap();
     client
-        .put(endpoint(&harness.nodes[0], "/_admin/bucket/testbucket/ec?ftt=2"))
+        .put(endpoint(&harness.nodes[0], "/_admin/bucket/testbucket/ftt?ftt=2"))
         .send()
         .await
         .unwrap();
@@ -127,7 +127,7 @@ async fn distributed_read_survives_one_node_loss_for_2_plus_2() {
         .await
         .unwrap();
     client
-        .put(endpoint(&harness.nodes[0], "/_admin/bucket/testbucket/ec?ftt=2"))
+        .put(endpoint(&harness.nodes[0], "/_admin/bucket/testbucket/ftt?ftt=2"))
         .send()
         .await
         .unwrap();
