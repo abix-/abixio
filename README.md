@@ -178,7 +178,8 @@ Not implemented:
 
 | Doc | Subject |
 |---|---|
-| [architecture.md](docs/architecture.md) | Design principles, project structure, MinIO comparison |
+| [architecture.md](docs/architecture.md) | Design principles, cluster direction, project structure |
+| [comparison.md](docs/comparison.md) | Competitor overlap, differentiation, and capability matrix |
 | [cluster.md](docs/cluster.md) | Cluster control design, quorum model, fencing |
 | [storage-layout.md](docs/storage-layout.md) | On-disk metadata layers, volume identity, directory structure |
 | [versioning.md](docs/versioning.md) | S3 object versioning lifecycle |

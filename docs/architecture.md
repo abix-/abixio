@@ -76,69 +76,17 @@ persist the full membership on their volumes. Unsafe nodes fence themselves.
 
 See [cluster.md](cluster.md) for the full design and current behavior.
 
-## Comparison with Adjacent Projects
+## Competitive Positioning
 
-This section is meant to answer a practical question: where does AbixIO overlap
-with existing projects, and where does it actually differ?
+The product comparison and overlap analysis now live in
+[comparison.md](comparison.md).
 
-Public project status and positioning below are based on the upstream GitHub
-repositories and top-level READMEs as observed on 2026-04-05.
+That document covers:
 
-### High-level overlap
-
-| Project | Public positioning | Overlap with AbixIO | Main differences from AbixIO | Current public repo status |
-|---|---|---|---|---|
-| MinIO | High-performance S3-compatible object store | **High overlap.** Same buyer/user mental model: self-hosted S3 object storage server. | More mature ecosystem and broader auth/admin surface. AbixIO differs with per-object EC, self-describing volumes, and a simpler early-stage design. | GitHub repo is **archived**; upstream README says **\"THIS REPOSITORY IS NO LONGER MAINTAINED.\"** Repo `pushedAt`: 2026-02-12. |
-| Garage | S3-compatible distributed object storage for small-to-medium self-hosted geo-distributed deployments | **Medium-high overlap.** Same general space: self-hosted distributed S3 object storage, also written in Rust. | Garage publicly positions around geo-distributed replication, resilience, and operational maturity. AbixIO currently differentiates more on per-object EC, shard-level inspection, and self-describing volumes. | Active public repo, not archived. README says it has been used in production since 2020. Repo `pushedAt`: 2026-03-22. |
-| SeaweedFS | Distributed storage system with object storage (S3), file system, WebDAV, Hadoop, cloud tiering, and more | **Medium overlap.** Competes on the \"store objects behind an S3 API\" use case. | SeaweedFS is much broader than an S3 object store. It is not S3-only and has a different architecture and product surface. AbixIO is much narrower and more S3-server-focused. | Active public repo, not archived. Repo `pushedAt`: 2026-04-05. |
-| AbixIO | S3-compatible erasure-coded object store | Baseline | Early Rust server focused on S3 compatibility, per-object EC, internode shard RPC, and self-describing clustered volumes. | Active public repo. Repo `pushedAt`: 2026-04-05. |
-
-### Capability comparison
-
-| Aspect | MinIO | Garage | SeaweedFS | AbixIO |
-|---|---|---|---|---|
-| Primary language | Go | Rust | Go | Rust |
-| Core identity | S3 object store | Distributed S3 object store | Distributed storage platform with S3 as one interface | S3 object store |
-| Self-hosted multi-node storage | Yes | Yes | Yes | Yes |
-| S3-compatible API | Yes | Yes | Yes | Yes |
-| Erasure coding | Yes, cluster/server-level | Not a top-level differentiator in the public README | Yes, emphasized for warm storage in public docs | Yes, per-object |
-| Per-object EC selection | No public indication | No public indication | No public indication | Yes |
-| Arbitrary pluggable volume backends | No public indication | No public indication | Partial: cloud/tiering integrations, but not presented as arbitrary interchangeable volume backends | Partial today (`Backend` trait, local + internode remote); broader arbitrary backends are planned |
-| Rust implementation | No | Yes | No | Yes |
-| Self-describing on-disk volume identity | No public indication | No public indication | No public indication | Yes |
-| Shard-level inspection/admin workflows | Mature admin ecosystem, but different model | No public indication from top-level README | Admin and operational tooling exist, but different architecture | Yes, built into the admin API |
-| Product scope beyond S3 object storage | Primarily object storage | Primarily object storage | Much broader: filer, WebDAV, Hadoop, cloud tiering, etc. | Narrowly focused on object storage |
-| Operational maturity | Very high historically | High relative maturity for this niche | High | Very early |
-
-### What this means
-
-AbixIO is **not** creating a new category. There is direct overlap with MinIO,
-Garage, and SeaweedFS in the broad sense of \"self-hosted storage reachable over
-an S3-compatible API.\"
-
-The overlap is strongest with MinIO because both projects are easiest to
-describe as \"an S3-compatible object storage server.\" The overlap with Garage
-is also substantial because it is another Rust project in that same space. The
-overlap with SeaweedFS is real, but SeaweedFS is broader and less directly a
-one-for-one product match.
-
-The clearest current AbixIO differentiators are:
-
-- per-object erasure coding rather than only server- or pool-level defaults
-- self-describing volumes that carry cluster identity on disk
-- internode shard RPC with explicit shard-level admin inspection
-- a narrower S3-server-first architecture instead of a broader storage platform
-
-Potential future differentiator if completed:
-
-- a genuinely extensible volume-backend model where local disks, remote AbixIO
-  nodes, and third-party storage providers can participate through the same
-  backend abstraction instead of being treated only as separate gateway or
-  tiering features
-
-The clearest current AbixIO weakness is maturity: the design has interesting
-differences, but the project does not yet have the operational history,
-benchmarking, ecosystem, or production credibility of the established systems.
+- where AbixIO overlaps with MinIO, Garage, and SeaweedFS
+- where the current differentiators are real
+- where the roadmap is differentiated but not built yet
+- a capability matrix focused on overlap, maturity, and backend flexibility
 
 ## Project structure
 
