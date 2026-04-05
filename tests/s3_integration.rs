@@ -2167,6 +2167,137 @@ async fn multipart_empty_part() {
     assert_eq!(resp.text().await.unwrap(), "data");
 }
 
+// --- Bucket lifecycle ---
+
+#[tokio::test]
+async fn bucket_lifecycle_put_get_delete() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let lifecycle_xml = r#"<LifecycleConfiguration><Rule><ID>expire-logs</ID><Status>Enabled</Status><Filter><Prefix>logs/</Prefix></Filter><Expiration><Days>30</Days></Expiration></Rule></LifecycleConfiguration>"#;
+
+    // PUT
+    let resp = client
+        .put(url(&addr, "/tb?lifecycle"))
+        .body(lifecycle_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    // GET
+    let resp = client
+        .get(url(&addr, "/tb?lifecycle"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.headers()["content-type"], "application/xml");
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("LifecycleConfiguration"), "body: {}", body);
+    assert!(body.contains("expire-logs"), "body: {}", body);
+    assert!(body.contains("<Days>30</Days>"), "body: {}", body);
+
+    // DELETE
+    let resp = client
+        .delete(url(&addr, "/tb?lifecycle"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+
+    // GET after delete returns 404
+    let resp = client
+        .get(url(&addr, "/tb?lifecycle"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("NoSuchLifecycleConfiguration"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn bucket_lifecycle_get_when_none_returns_404() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .get(url(&addr, "/tb?lifecycle"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn bucket_lifecycle_put_invalid_xml_returns_400() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb?lifecycle"))
+        .body("this is not valid xml at all")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn bucket_lifecycle_delete_idempotent() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .delete(url(&addr, "/tb?lifecycle"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+    let resp = client
+        .delete(url(&addr, "/tb?lifecycle"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 204);
+}
+
+#[tokio::test]
+async fn bucket_lifecycle_multiple_rules() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let lifecycle_xml = r#"<LifecycleConfiguration><Rule><ID>rule1</ID><Status>Enabled</Status><Filter><Prefix>logs/</Prefix></Filter><Expiration><Days>7</Days></Expiration></Rule><Rule><ID>rule2</ID><Status>Enabled</Status><Filter><Prefix>temp/</Prefix></Filter><Expiration><Days>1</Days></Expiration></Rule></LifecycleConfiguration>"#;
+
+    let resp = client
+        .put(url(&addr, "/tb?lifecycle"))
+        .body(lifecycle_xml)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let resp = client
+        .get(url(&addr, "/tb?lifecycle"))
+        .send()
+        .await
+        .unwrap();
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("rule1"), "body: {}", body);
+    assert!(body.contains("rule2"), "body: {}", body);
+}
+
 fn md5_hex(data: &[u8]) -> String {
     use md5::{Digest, Md5};
     let mut hasher = Md5::new();

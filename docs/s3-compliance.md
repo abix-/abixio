@@ -3,7 +3,7 @@
 Authoritative audit of every S3 API operation. Compared against MinIO's
 72 unique handler routes in `cmd/api-router.go`.
 
-abixio implements **29 of 72** operations. 181 tests.
+abixio implements **32 of 72** operations. 186 tests.
 
 ## All operations
 
@@ -29,9 +29,9 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 | GetBucketEncryption | `GET /{bucket}?encryption` | No | 0/10 | |
 | PutBucketEncryption | `PUT /{bucket}?encryption` | No | 0/10 | |
 | DeleteBucketEncryption | `DELETE /{bucket}?encryption` | No | 0/10 | |
-| GetBucketLifecycle | `GET /{bucket}?lifecycle` | No | 0/10 | |
-| PutBucketLifecycle | `PUT /{bucket}?lifecycle` | No | 0/10 | |
-| DeleteBucketLifecycle | `DELETE /{bucket}?lifecycle` | No | 0/10 | |
+| GetBucketLifecycle | `GET /{bucket}?lifecycle` | Done | 8/10 | Returns stored XML. 404 if none. |
+| PutBucketLifecycle | `PUT /{bucket}?lifecycle` | Done | 7/10 | Stores XML. Basic validation. No enforcement. |
+| DeleteBucketLifecycle | `DELETE /{bucket}?lifecycle` | Done | 8/10 | Idempotent. |
 | GetBucketCors | `GET /{bucket}?cors` | No | 0/10 | |
 | PutBucketCors | `PUT /{bucket}?cors` | No | 0/10 | |
 | DeleteBucketCors | `DELETE /{bucket}?cors` | No | 0/10 | |
@@ -139,10 +139,7 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 
 ## Summary
 
-29 of 72 operations (40%). The implemented operations are well-tested
-(181 tests) and cover the core S3 workflow: object CRUD, multipart upload,
-versioning, tagging, bucket policies, batch delete, copy, range requests,
-conditional requests, presigned URLs.
+32 of 72 operations (44%). 186 tests.
 
-Not implemented: lifecycle, encryption config, CORS, replication,
+Not implemented: encryption config, CORS, replication,
 notifications, object lock/retention, ACLs, S3 Select.

@@ -88,6 +88,12 @@ pub const ERR_POLICY_TOO_LARGE: S3Error = S3Error {
     http_status: 400,
 };
 
+pub const ERR_NO_SUCH_LIFECYCLE: S3Error = S3Error {
+    code: "NoSuchLifecycleConfiguration",
+    message: "The lifecycle configuration does not exist",
+    http_status: 404,
+};
+
 pub const ERR_ACCESS_DENIED: S3Error = S3Error {
     code: "AccessDenied",
     message: "Access Denied",

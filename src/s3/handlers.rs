@@ -122,6 +122,7 @@ impl S3Handler {
         let has_upload_id = query.contains("uploadId");
         let has_part_number = query.contains("partNumber");
         let is_policy = query.contains("policy");
+        let is_lifecycle = query.contains("lifecycle");
 
         let mut resp = match (bucket, key, &method) {
             ("", _, &Method::GET) => self.list_buckets().await,
@@ -142,6 +143,11 @@ impl S3Handler {
             (b, "", &Method::GET) if is_policy => self.get_bucket_policy(b).await,
             (b, "", &Method::PUT) if is_policy => self.put_bucket_policy(b, req).await,
             (b, "", &Method::DELETE) if is_policy => self.delete_bucket_policy(b).await,
+
+            // bucket lifecycle
+            (b, "", &Method::GET) if is_lifecycle => self.get_bucket_lifecycle(b).await,
+            (b, "", &Method::PUT) if is_lifecycle => self.put_bucket_lifecycle(b, req).await,
+            (b, "", &Method::DELETE) if is_lifecycle => self.delete_bucket_lifecycle(b).await,
 
             // bucket tagging (must precede bucket catch-alls)
             (b, "", &Method::GET) if is_tagging => self.get_bucket_tagging(b).await,
@@ -1015,6 +1021,58 @@ impl S3Handler {
             std::path::PathBuf::from(".")
         };
         disk_root.join(bucket).join(filename)
+    }
+
+    // -- bucket lifecycle --
+
+    async fn get_bucket_lifecycle(&self, bucket: &str) -> Response<BoxBody> {
+        match self.store.head_bucket(bucket) {
+            Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
+            Ok(true) => {}
+        }
+        let path = self.bucket_metadata_path(bucket, ".lifecycle.xml");
+        match std::fs::read(&path) {
+            Ok(data) => Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/xml")
+                .body(Full::new(Bytes::from(data)))
+                .unwrap(),
+            Err(_) => error_response(&super::errors::ERR_NO_SUCH_LIFECYCLE),
+        }
+    }
+
+    async fn put_bucket_lifecycle(
+        &self,
+        bucket: &str,
+        req: Request<Incoming>,
+    ) -> Response<BoxBody> {
+        match self.store.head_bucket(bucket) {
+            Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
+            Ok(true) => {}
+        }
+        let body = match req.collect().await {
+            Ok(b) => b.to_bytes(),
+            Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
+        };
+        // validate body contains LifecycleConfiguration
+        let body_str = match std::str::from_utf8(&body) {
+            Ok(s) => s,
+            Err(_) => return error_response(&ERR_MALFORMED_XML),
+        };
+        if !body_str.contains("LifecycleConfiguration") {
+            return error_response(&ERR_MALFORMED_XML);
+        }
+        let path = self.bucket_metadata_path(bucket, ".lifecycle.xml");
+        match std::fs::write(&path, &body) {
+            Ok(()) => empty_response(StatusCode::OK),
+            Err(_) => error_response(&super::errors::ERR_INTERNAL),
+        }
+    }
+
+    async fn delete_bucket_lifecycle(&self, bucket: &str) -> Response<BoxBody> {
+        let path = self.bucket_metadata_path(bucket, ".lifecycle.xml");
+        let _ = std::fs::remove_file(&path);
+        empty_response(StatusCode::NO_CONTENT)
     }
 
     // -- multipart upload --
