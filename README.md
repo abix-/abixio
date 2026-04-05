@@ -1,33 +1,26 @@
 # AbixIO Server
 
-## Why AbixIO
+S3-compatible object storage with per-object fault tolerance, heterogeneous volume pools, and single-node to multi-node clustering. Written in Rust.
 
-MinIO and its closest descendants (RustFS) require identical nodes within a pool and fix parity at the erasure-set level. AbixIO drops both constraints.
+> **Home lab use only.** Early development. Do not store business data on this.
+> For production, see [RustFS](https://github.com/rustfs/rustfs) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
 
-**Per-object fault tolerance.** Set failures to tolerate per object. Your critical config survives 5 disk failures. Your bulk logs tolerate 1. Same bucket, same disks. One header.
+---
 
-**Heterogeneous everything.** Mixed disk counts, mixed node sizes, mixed volume types. One flat pool. Think vSAN meets S3.
+### What makes it different
 
-**One node to many.** Single disk, six disks, three nodes. Same storage model. Node count changes the resilience envelope, not the product.
+- **Per-object fault tolerance** -- set failures to tolerate per object, not per pool
+- **Heterogeneous pools** -- mixed disk counts, mixed node sizes, one flat pool
+- **Single node to cluster** -- same storage model whether you run 1 disk or 30 across 5 nodes
+- **Self-describing volumes** -- volumes carry their own identity, no external database
 
-Early. Foundation works. Vision is what to watch.
-
-## Status
-
-**Early development. Home lab use only.** Do not store business data on this. S3-compatible object storage server in Rust. 316 tests. 41 of 72 S3 operations. No releases or production deployments.
-
-For production use, look at [RustFS](https://github.com/rustfs/rustfs) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
-
-## Quick Start
+### Quick start
 
 ```bash
 cargo build --release
-
 mkdir -p /tmp/abixio/{d1,d2,d3,d4}
 
-./target/release/abixio \
-  --volumes /tmp/abixio/d{1...4} \
-  --no-auth
+./target/release/abixio --volumes /tmp/abixio/d{1...4} --no-auth
 ```
 
 ```bash
@@ -36,33 +29,32 @@ curl -X PUT -d "hello world" http://localhost:10000/mybucket/hello.txt
 curl http://localhost:10000/mybucket/hello.txt
 ```
 
-Any S3 client works. 4 volumes gives you FTT=1 (tolerates 1 disk failure) by default.
+Any S3 client works. 4 volumes = FTT 1 (tolerates 1 disk failure) by default.
 
-## Cluster Mode
+### Cluster
 
 ```bash
 abixio --volumes /data{1...2} --nodes http://node{1...3}:10000
 ```
 
-Each node gets the same `--nodes` list. Identity is resolved automatically at startup. See [cluster.md](docs/cluster.md).
+Same `--nodes` list on every node. Identity resolves automatically. See [cluster docs](docs/cluster.md).
 
-## Documentation
+### Current state
 
-| Doc | Subject |
+| | |
 |---|---|
-| [architecture.md](docs/architecture.md) | Design, project structure |
-| [comparison.md](docs/comparison.md) | Differentiation vs MinIO, RustFS, Garage, SeaweedFS, Ceph, Swift |
-| [cluster.md](docs/cluster.md) | Cluster control, quorum, fencing |
-| [storage-layout.md](docs/storage-layout.md) | On-disk metadata, volume identity |
-| [per-object-ec.md](docs/per-object-ec.md) | FTT, per-object erasure coding |
-| [s3-compliance.md](docs/s3-compliance.md) | S3 API coverage audit |
-| [admin-api.md](docs/admin-api.md) | Admin endpoints |
-| [healing.md](docs/healing.md) | Erasure healing, MRF queue, scanner |
+| **Tests** | 316 (unit + integration) |
+| **S3 coverage** | 41 of 72 operations ([details](docs/s3-compliance.md)) |
+| **Releases** | None yet |
 
-## Related
+### Docs
 
-- **[abixio-ui](https://github.com/abix-/abixio-ui)**: desktop S3 manager and AbixIO admin UI
+[Architecture](docs/architecture.md) -- [Storage layout](docs/storage-layout.md) -- [Per-object EC](docs/per-object-ec.md) -- [Cluster](docs/cluster.md) -- [Admin API](docs/admin-api.md) -- [Healing](docs/healing.md) -- [S3 compliance](docs/s3-compliance.md) -- [Comparison](docs/comparison.md)
 
-## License
+### Related
 
-[GNU General Public License v3.0](LICENSE)
+[abixio-ui](https://github.com/abix-/abixio-ui) -- desktop S3 manager and AbixIO admin UI
+
+### License
+
+[GPLv3](LICENSE)
