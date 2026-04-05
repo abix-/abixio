@@ -1,0 +1,83 @@
+site_name: AbixIO Server
+site_description: S3-compatible erasure-coded object storage server in Rust
+site_url: https://abix-.github.io/abixio/
+repo_url: https://github.com/abix-/abixio
+repo_name: abix-/abixio
+edit_uri: edit/master/docs/
+
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: custom
+    accent: custom
+  font:
+    text: Roboto
+    code: Roboto Mono
+  icon:
+    repo: fontawesome/brands/github
+  features:
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.sections
+    - navigation.expand
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - search.suggest
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.mark
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+
+extra_css:
+  - stylesheets/extra.css
+
+exclude_docs: |
+  todo.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/abix-/abixio
+
+nav:
+  - Overview: index.md
+  - Architecture: architecture.md
+  - Cluster: cluster.md
+  - Storage Layout: storage-layout.md
+  - Per-Object EC: per-object-ec.md
+  - Admin API: admin-api.md
+  - Multipart Upload: multipart-upload.md
+  - Healing: healing.md
+  - Distributed Testing: distributed-placement-testing.md
+  - Versioning: versioning.md
+  - Tagging: tagging.md
+  - Presigned URLs: presigned-urls.md
+  - Conditional Requests: conditional-requests.md
+  - Error Responses: error-responses.md
+  - Bucket Policy: bucket-policy.md
+  - Encryption: encryption.md
+  - S3 Compliance: s3-compliance.md
+  - Comparison: comparison.md
+
+copyright: AbixIO Server &mdash; Erasure-coded storage with a steel-blue control-plane aesthetic
