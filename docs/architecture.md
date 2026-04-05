@@ -32,19 +32,18 @@ cluster-control direction.
 7. **Single meta.json per object.** All version metadata in one file, matching
    MinIO's `xl.meta` pattern. See [storage-layout.md](storage-layout.md).
 
-8. **Per-object erasure coding.** Each object owns its data/parity ratio, stored
-   in `meta.json`. The encode path resolves EC per-request (per-object FTT >
-   bucket FTT). The decode and heal paths read EC from metadata.
-   Objects with different EC ratios coexist in the same bucket and disk pool.
-   See [per-object-ec.md](per-object-ec.md).
+8. **Per-object fault tolerance.** Each object stores its FTT in `meta.json`.
+   The encode path resolves FTT per-request (per-object > bucket default).
+   The decode and heal paths read FTT from metadata. Objects with different
+   FTT coexist in the same bucket and pool. See [per-object-ec.md](per-object-ec.md).
 
 9. **Volume pool model.** Volumes form a pool across all nodes. Objects use all
    volumes by default. FTT determines the data/parity split, spreading I/O
    across nodes.
 
 10. **Self-describing volumes.** Every volume carries `.abixio.sys/volume.json`
-    with its identity (deployment, set, node, volume UUIDs) and the full erasure
-    set membership. A fresh binary pointed at formatted volumes can reconstruct
+    with its identity (deployment, set, node, volume UUIDs) and the full pool
+    membership. A fresh binary pointed at formatted volumes can reconstruct
     the cluster without external config. See [storage-layout.md](storage-layout.md).
 
 11. **Internode shard RPC.** Remote volumes are accessed over HTTP via
@@ -52,41 +51,17 @@ cluster-control direction.
     credentials. The storage server dispatches to the local `LocalVolume` for
     the target volume path.
 
-10. **Cluster control fences unsafe nodes.** Multi-node control-plane behavior
+12. **Cluster control fences unsafe nodes.** Multi-node control-plane behavior
     must fail closed. A node that cannot confirm safe cluster state stops
     serving instead of risking stale writes or split-brain.
 
-## Cluster Direction
+## Cluster
 
-AbixIO has a node-based cluster-control layer:
+See [cluster.md](cluster.md).
 
-- node-based identity exchange at startup
-- self-describing volumes with `.abixio.sys/volume.json`
-- persisted cluster metadata in `.abixio.sys/cluster.json`
-- cluster admin endpoints
-- node monitoring and quorum tracking
-- hard fencing when quorum is lost
+## Comparison
 
-Internode shard RPC is implemented: each node can read/write shards on remote
-nodes via `RemoteVolume` over HTTP. Live topology changes, heterogeneous set
-planning, and rebalance are still future work.
-
-Nodes generate their own identity on first boot, exchange it with other nodes, and
-persist the full membership on their volumes. Unsafe nodes fence themselves.
-
-See [cluster.md](cluster.md) for the full design and current behavior.
-
-## Competitive Positioning
-
-The product comparison and overlap analysis now live in
-[comparison.md](comparison.md).
-
-That document covers:
-
-- where AbixIO overlaps with MinIO, Garage, and SeaweedFS
-- where the current differentiators are real
-- where the roadmap is differentiated but not built yet
-- a capability matrix focused on overlap, maturity, and backend flexibility
+See [comparison.md](comparison.md).
 
 ## Project structure
 
