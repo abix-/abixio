@@ -124,6 +124,7 @@ impl S3Handler {
         let is_policy = query.contains("policy");
         let is_lifecycle = query.contains("lifecycle");
         let is_cors = query.contains("cors");
+        let is_acl = query.contains("acl");
 
         let mut resp = match (bucket, key, &method) {
             ("", _, &Method::GET) => self.list_buckets().await,
@@ -144,6 +145,10 @@ impl S3Handler {
             (_, "", &Method::GET) if is_cors => error_response(&super::errors::ERR_NO_SUCH_CORS),
             (_, "", &Method::PUT) if is_cors => error_response(&super::errors::ERR_NOT_IMPLEMENTED),
             (_, "", &Method::DELETE) if is_cors => error_response(&super::errors::ERR_NOT_IMPLEMENTED),
+
+            // bucket ACL (stubs matching MinIO -- hardcoded FULL_CONTROL)
+            (_, "", &Method::GET) if is_acl => self.get_acl_stub().await,
+            (_, "", &Method::PUT) if is_acl => self.put_acl_stub(&req).await,
 
             // bucket policy
             (b, "", &Method::GET) if is_policy => self.get_bucket_policy(b).await,
@@ -167,6 +172,10 @@ impl S3Handler {
             (b, "", &Method::POST) if query.contains("delete") => {
                 self.delete_objects(b, req).await
             }
+
+            // object ACL (stubs matching MinIO)
+            (_, _, &Method::GET) if is_acl => self.get_acl_stub().await,
+            (_, _, &Method::PUT) if is_acl => self.put_acl_stub(&req).await,
 
             // object tagging (must precede object catch-alls)
             (b, k, &Method::GET) if is_tagging => self.get_object_tagging(b, k).await,
@@ -1027,6 +1036,27 @@ impl S3Handler {
             std::path::PathBuf::from(".")
         };
         disk_root.join(bucket).join(filename)
+    }
+
+    // -- ACL stubs (matching MinIO: hardcoded FULL_CONTROL, no real ACL storage) --
+
+    async fn get_acl_stub(&self) -> Response<BoxBody> {
+        // return hardcoded FULL_CONTROL ACL, same as MinIO
+        let xml = r#"<AccessControlPolicy><Owner><ID>abixio</ID><DisplayName>abixio</DisplayName></Owner><AccessControlList><Grant><Grantee xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="CanonicalUser"><ID>abixio</ID><DisplayName>abixio</DisplayName></Grantee><Permission>FULL_CONTROL</Permission></Grant></AccessControlList></AccessControlPolicy>"#;
+        ok_body(xml.as_bytes().to_vec())
+    }
+
+    async fn put_acl_stub(&self, req: &Request<Incoming>) -> Response<BoxBody> {
+        // only accept private ACL or FULL_CONTROL, reject everything else
+        let acl_header = req
+            .headers()
+            .get("x-amz-acl")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("");
+        if !acl_header.is_empty() && acl_header != "private" {
+            return error_response(&super::errors::ERR_NOT_IMPLEMENTED);
+        }
+        empty_response(StatusCode::OK)
     }
 
     // -- bucket lifecycle --

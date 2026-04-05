@@ -2340,6 +2340,95 @@ async fn bucket_cors_delete_returns_501() {
     assert_eq!(resp.status(), 501);
 }
 
+// --- ACL stubs (matching MinIO) ---
+
+#[tokio::test]
+async fn bucket_acl_get_returns_full_control() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client.get(url(&addr, "/tb?acl")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("FULL_CONTROL"), "body: {}", body);
+    assert!(body.contains("AccessControlPolicy"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn bucket_acl_put_private_succeeds() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb?acl"))
+        .header("x-amz-acl", "private")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn bucket_acl_put_public_returns_501() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb?acl"))
+        .header("x-amz-acl", "public-read")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 501);
+}
+
+#[tokio::test]
+async fn object_acl_get_returns_full_control() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client.get(url(&addr, "/tb/obj?acl")).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("FULL_CONTROL"), "body: {}", body);
+}
+
+#[tokio::test]
+async fn object_acl_put_private_succeeds() {
+    let (_base, paths) = setup();
+    let (addr, _handle) = start_server(&paths).await;
+    let client = reqwest::Client::new();
+    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client
+        .put(url(&addr, "/tb/obj"))
+        .body("data")
+        .send()
+        .await
+        .unwrap();
+
+    let resp = client
+        .put(url(&addr, "/tb/obj?acl"))
+        .header("x-amz-acl", "private")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
 fn md5_hex(data: &[u8]) -> String {
     use md5::{Digest, Md5};
     let mut hasher = Md5::new();

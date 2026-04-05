@@ -3,7 +3,7 @@
 Authoritative audit of every S3 API operation. Compared against MinIO's
 72 unique handler routes in `cmd/api-router.go`.
 
-abixio implements **35 of 72** operations. 189 tests.
+abixio implements **39 of 72** operations. 194 tests.
 
 ## All operations
 
@@ -35,8 +35,8 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 | GetBucketCors | `GET /{bucket}?cors` | Stub | 3/10 | Returns 404 NoSuchCORSConfiguration (matches MinIO). 2.0 item. |
 | PutBucketCors | `PUT /{bucket}?cors` | Stub | 3/10 | Returns 501 NotImplemented (matches MinIO). 2.0 item. |
 | DeleteBucketCors | `DELETE /{bucket}?cors` | Stub | 3/10 | Returns 501 NotImplemented (matches MinIO). 2.0 item. |
-| GetBucketACL | `GET /{bucket}?acl` | No | 0/10 | Legacy. |
-| PutBucketACL | `PUT /{bucket}?acl` | No | 0/10 | Legacy. |
+| GetBucketACL | `GET /{bucket}?acl` | Stub | 3/10 | Returns hardcoded FULL_CONTROL (matches MinIO). |
+| PutBucketACL | `PUT /{bucket}?acl` | Stub | 3/10 | Accepts private only, rejects others with 501 (matches MinIO). |
 | GetBucketReplication | `GET /{bucket}?replication` | No | 0/10 | |
 | PutBucketReplication | `PUT /{bucket}?replication` | No | 0/10 | |
 | DeleteBucketReplication | `DELETE /{bucket}?replication` | No | 0/10 | |
@@ -72,8 +72,8 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 | GetObjectTagging | `GET /{bucket}/{key}?tagging` | Done | 8/10 | |
 | PutObjectTagging | `PUT /{bucket}/{key}?tagging` | Done | 8/10 | |
 | DeleteObjectTagging | `DELETE /{bucket}/{key}?tagging` | Done | 8/10 | |
-| GetObjectACL | `GET /{bucket}/{key}?acl` | No | 0/10 | Legacy. |
-| PutObjectACL | `PUT /{bucket}/{key}?acl` | No | 0/10 | Legacy. |
+| GetObjectACL | `GET /{bucket}/{key}?acl` | Stub | 3/10 | Returns hardcoded FULL_CONTROL (matches MinIO). |
+| PutObjectACL | `PUT /{bucket}/{key}?acl` | Stub | 3/10 | Accepts private only (matches MinIO). |
 | GetObjectRetention | `GET /{bucket}/{key}?retention` | No | 0/10 | |
 | PutObjectRetention | `PUT /{bucket}/{key}?retention` | No | 0/10 | |
 | GetObjectLegalHold | `GET /{bucket}/{key}?legal-hold` | No | 0/10 | |
@@ -139,7 +139,7 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 
 ## Summary
 
-35 of 72 operations (49%). 189 tests.
+39 of 72 operations (54%). 194 tests.
 
 Not implemented: encryption config, replication, notifications,
 object lock/retention, ACLs, S3 Select.
