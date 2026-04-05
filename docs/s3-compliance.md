@@ -32,9 +32,9 @@ These are routed in `src/s3/handlers.rs` dispatch table.
 | GetObjectTagging | `GET /{bucket}/{key}?tagging` | 8/10 | Returns XML TagSet from object metadata. |
 | PutObjectTagging | `PUT /{bucket}/{key}?tagging` | 8/10 | Parses XML TagSet, stores in object metadata on all shards. |
 | DeleteObjectTagging | `DELETE /{bucket}/{key}?tagging` | 8/10 | Clears tags from object metadata on all shards. |
-| ListObjectVersions | `GET /{bucket}?versions` | 1/10 | No versioning support. Cannot list object versions. |
-| GetBucketVersioning | `GET /{bucket}?versioning` | 1/10 | Cannot check if versioning is enabled. |
-| PutBucketVersioning | `PUT /{bucket}?versioning` | 1/10 | Cannot enable/disable versioning. |
+| ListObjectVersions | `GET /{bucket}?versions` | 8/10 | Returns versions and delete markers per object. |
+| GetBucketVersioning | `GET /{bucket}?versioning` | 8/10 | Returns Enabled/Suspended status per bucket. |
+| PutBucketVersioning | `PUT /{bucket}?versioning` | 8/10 | Enable or suspend versioning per bucket. |
 | GetBucketPolicy | `GET /{bucket}?policy` | 1/10 | No policy support. |
 | PutBucketPolicy | `PUT /{bucket}?policy` | 1/10 | Same. |
 | DeleteBucketPolicy | `DELETE /{bucket}?policy` | 1/10 | Same. |
@@ -136,7 +136,7 @@ How complete our responses are compared to what S3 clients expect.
 
 ### Overall S3 compliance: 4/10
 
-abixio implements 17 of ~100 S3 API operations. The 17 it implements are
+abixio implements 20 of ~100 S3 API operations. The 20 it implements are
 solid (auth, conditionals, presigned URLs, tagging, batch delete, copy,
 range requests, custom metadata) but the missing surface is large: no
 multipart upload (blocks files >5GB), no versioning, no policies, no
