@@ -11,6 +11,16 @@ use super::{StorageError, Store};
 use crate::cluster::placement::{PlacementVolume, PlacementPlanner};
 use crate::heal::mrf::MrfQueue;
 
+/// Auto-compute server default EC from volume count.
+/// Aims for 1-failure tolerance when possible.
+pub fn default_ec(num_volumes: usize) -> (usize, usize) {
+    if num_volumes <= 1 {
+        (1, 0)
+    } else {
+        (num_volumes - 1, 1)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PlacementTopology {
     epoch_id: u64,
@@ -669,6 +679,28 @@ mod tests {
 
     fn make_set(paths: &[std::path::PathBuf], data: usize, parity: usize) -> ErasureSet {
         ErasureSet::new(make_backends(paths), data, parity).unwrap()
+    }
+
+    // -- default_ec tests --
+
+    #[test]
+    fn default_ec_single_volume() {
+        assert_eq!(default_ec(1), (1, 0));
+    }
+
+    #[test]
+    fn default_ec_two_volumes() {
+        assert_eq!(default_ec(2), (1, 1));
+    }
+
+    #[test]
+    fn default_ec_four_volumes() {
+        assert_eq!(default_ec(4), (3, 1));
+    }
+
+    #[test]
+    fn default_ec_eight_volumes() {
+        assert_eq!(default_ec(8), (7, 1));
     }
 
     // -- construction tests --

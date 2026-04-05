@@ -66,8 +66,6 @@ The current implementation does **not** provide:
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
 | `--disks` | yes | -- | Comma-separated volume paths |
-| `--data` | no | 1 | Server default data shards |
-| `--parity` | no | 0 | Server default parity shards |
 | `--listen` | no | `:10000` | Bind address |
 | `--peers` | no | empty | Peer endpoints for cluster mode |
 | `--cluster-secret` | no | empty | Shared secret for peer probes |
@@ -78,8 +76,7 @@ Example:
 ```bash
 ./target/release/abixio \
   --disks /srv/abixio/d1,/srv/abixio/d2 \
-  --peers http://node-2:10000,http://node-3:10000 \
-  --data 2 --parity 2
+  --peers http://node-2:10000,http://node-3:10000
 ```
 
 For a standalone node, omit `--peers`. The node immediately transitions to

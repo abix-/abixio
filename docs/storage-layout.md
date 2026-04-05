@@ -104,7 +104,7 @@ All four are UUIDv4, generated at format time, immutable after that.
 
 **First boot (standalone)**:
 
-1. `abixio --disks /d1,/d2,/d3,/d4 --data 2 --parity 2`
+1. `abixio --disks /d1,/d2,/d3,/d4`
 2. No volume.json found -- generate node_id, volume_id UUIDs
 3. No `--peers` -- standalone mode, generate deployment_id and set_id
 4. Write complete volume.json to every volume
@@ -195,7 +195,7 @@ EC parameters are resolved per-request at write time using this precedence:
 ```
 1. Per-object headers    x-amz-meta-ec-data / x-amz-meta-ec-parity   (highest)
 2. Bucket default        .abixio.sys/buckets/<bucket>/settings.json
-3. Server default        --data / --parity CLI flags                   (lowest)
+3. Server default        auto-computed from volume count               (lowest)
 ```
 
 The resolved data/parity values are stored in `meta.json` with the object.
@@ -383,12 +383,14 @@ and externally inspectable across nodes.
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
 | `--disks` | yes | -- | Comma-separated volume paths |
-| `--data` | no | 1 | Server default data shards |
-| `--parity` | no | 0 | Server default parity shards |
 | `--listen` | no | `:10000` | Bind address |
 | `--peers` | no | empty | Peer endpoints for cluster mode |
 | `--cluster-secret` | no | empty | Shared secret for peer probes |
 | `--no-auth` | no | false | Disable S3 authentication |
+
+EC defaults are auto-computed from the volume count: 1 volume = `1+0`,
+2+ volumes = `(N-1)+1` for 1-failure tolerance. Override per bucket or
+per object.
 
 Node identity is read from volume.json. Cluster membership is established via
 peer exchange at startup.

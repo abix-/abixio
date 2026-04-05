@@ -14,14 +14,6 @@ pub struct Config {
     #[arg(long, value_delimiter = ',')]
     pub disks: Vec<PathBuf>,
 
-    /// Number of data shards
-    #[arg(long, default_value_t = 1)]
-    pub data: usize,
-
-    /// Number of parity shards
-    #[arg(long, default_value_t = 0)]
-    pub parity: usize,
-
     /// Comma-separated peer endpoints for cluster mode
     #[arg(long, value_delimiter = ',', default_value = "")]
     pub peers: Vec<String>,
@@ -49,21 +41,8 @@ pub struct Config {
 
 impl Config {
     pub fn validate(&self) -> Result<(), String> {
-        if self.data == 0 {
-            return Err("data shards must be >= 1".to_string());
-        }
         if self.disks.is_empty() {
             return Err("no disks specified".to_string());
-        }
-        let total = self.data + self.parity;
-        if self.disks.len() < total {
-            return Err(format!(
-                "need at least {} disks (data={} + parity={}), got {}",
-                total,
-                self.data,
-                self.parity,
-                self.disks.len()
-            ));
         }
         for path in &self.disks {
             if !path.is_dir() {
@@ -137,14 +116,12 @@ mod tests {
         (base, paths)
     }
 
-    fn config_with(disks: Vec<PathBuf>, data: usize, parity: usize) -> Config {
+    fn config_with(disks: Vec<PathBuf>) -> Config {
         Config {
             listen: ":10000".to_string(),
             peers: Vec::new(),
             cluster_secret: String::new(),
             disks,
-            data,
-            parity,
             no_auth: false,
             scan_interval: "10m".to_string(),
             heal_interval: "24h".to_string(),
@@ -153,70 +130,35 @@ mod tests {
     }
 
     #[test]
-    fn valid_4_disks_2_2() {
+    fn valid_single_disk() {
+        let (_base, paths) = make_dirs(1);
+        let cfg = config_with(paths);
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn valid_multiple_disks() {
         let (_base, paths) = make_dirs(4);
-        let cfg = config_with(paths, 2, 2);
-        assert!(cfg.validate().is_ok());
-    }
-
-    #[test]
-    fn valid_1_disk_1_0() {
-        let (_base, paths) = make_dirs(1);
-        let cfg = config_with(paths, 1, 0);
-        assert!(cfg.validate().is_ok());
-    }
-
-    #[test]
-    fn valid_2_disks_1_1() {
-        let (_base, paths) = make_dirs(2);
-        let cfg = config_with(paths, 1, 1);
-        assert!(cfg.validate().is_ok());
-    }
-
-    #[test]
-    fn valid_3_disks_2_1() {
-        let (_base, paths) = make_dirs(3);
-        let cfg = config_with(paths, 2, 1);
-        assert!(cfg.validate().is_ok());
-    }
-
-    #[test]
-    fn invalid_data_zero() {
-        let (_base, paths) = make_dirs(1);
-        let cfg = config_with(paths, 0, 1);
-        assert!(cfg.validate().is_err());
-    }
-
-    #[test]
-    fn invalid_too_few_disks() {
-        let (_base, paths) = make_dirs(3);
-        let cfg = config_with(paths, 2, 2); // needs 4, got 3
-        assert!(cfg.validate().is_err());
-    }
-
-    #[test]
-    fn valid_more_disks_than_needed() {
-        let (_base, paths) = make_dirs(6);
-        let cfg = config_with(paths, 2, 2); // pool of 6, default EC 2+2
+        let cfg = config_with(paths);
         assert!(cfg.validate().is_ok());
     }
 
     #[test]
     fn invalid_no_disks() {
-        let cfg = config_with(vec![], 1, 0);
+        let cfg = config_with(vec![]);
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn invalid_disk_path_missing() {
-        let cfg = config_with(vec![PathBuf::from("/tmp/nonexistent_abixio_test")], 1, 0);
+        let cfg = config_with(vec![PathBuf::from("/tmp/nonexistent_abixio_test")]);
         assert!(cfg.validate().is_err());
     }
 
     #[test]
     fn defaults() {
         let (_base, paths) = make_dirs(2);
-        let cfg = config_with(paths, 1, 1);
+        let cfg = config_with(paths);
         assert_eq!(cfg.listen, ":10000");
         assert_eq!(cfg.scan_interval_duration(), Duration::from_secs(600));
         assert_eq!(cfg.heal_interval_duration(), Duration::from_secs(86400));

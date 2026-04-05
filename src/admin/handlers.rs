@@ -14,7 +14,7 @@ use crate::query::parse_query;
 use crate::storage::Backend;
 use crate::storage::Store;
 use crate::storage::bitrot::sha256_hex;
-use crate::storage::erasure_set::ErasureSet;
+use crate::storage::erasure_set::{ErasureSet, default_ec};
 
 type BoxBody = Full<Bytes>;
 
@@ -66,10 +66,11 @@ impl AdminConfig {
         identity: &crate::cluster::identity::ResolvedIdentity,
         cfg: &Config,
     ) -> Self {
+        let (data_shards, parity_shards) = default_ec(cfg.disks.len());
         Self {
             listen: cfg.listen.clone(),
-            data_shards: cfg.data,
-            parity_shards: cfg.parity,
+            data_shards,
+            parity_shards,
             total_disks: cfg.disks.len(),
             auth_enabled: !cfg.no_auth,
             scan_interval: cfg.scan_interval.clone(),

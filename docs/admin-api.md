@@ -65,8 +65,8 @@ curl http://localhost:10000/_admin/status
 | `server` | string | Always `"abixio"` |
 | `version` | string | Cargo package version |
 | `uptime_secs` | u64 | Seconds since server start |
-| `data_shards` | usize | Server default data shard count |
-| `parity_shards` | usize | Server default parity shard count |
+| `data_shards` | usize | Auto-computed default data shard count |
+| `parity_shards` | usize | Auto-computed default parity shard count |
 | `total_disks` | usize | Number of disks in pool |
 | `listen` | string | Listen address from config |
 | `auth_enabled` | bool | True unless `--no-auth` was passed |

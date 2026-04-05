@@ -16,7 +16,7 @@ use abixio::s3::handlers::S3Handler;
 use abixio::s3::router;
 use abixio::storage::Backend;
 use abixio::storage::disk::LocalDisk;
-use abixio::storage::erasure_set::ErasureSet;
+use abixio::storage::erasure_set::{ErasureSet, default_ec};
 
 #[tokio::main]
 async fn main() {
@@ -60,7 +60,10 @@ async fn main() {
             std::process::exit(1);
         }
     };
-    let mut set = match ErasureSet::new(backends, cfg.data, cfg.parity) {
+    let (default_data, default_parity) = default_ec(backends.len());
+    tracing::info!(data = default_data, parity = default_parity, "auto-computed EC defaults");
+
+    let mut set = match ErasureSet::new(backends, default_data, default_parity) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("error: {}", e);
@@ -90,8 +93,8 @@ async fn main() {
     if let Some(rx) = mrf.take_receiver() {
         tokio::spawn(mrf_drain_worker(
             Arc::clone(&heal_disks),
-            cfg.data,
-            cfg.parity,
+            default_data,
+            default_parity,
             Arc::clone(&mrf),
             rx,
             shutdown_rx.clone(),
@@ -101,8 +104,8 @@ async fn main() {
     // spawn background scanner
     tokio::spawn(scanner_loop(
         Arc::clone(&heal_disks),
-        cfg.data,
-        cfg.parity,
+        default_data,
+        default_parity,
         Arc::clone(&mrf),
         scan_state,
         cfg.scan_interval_duration(),

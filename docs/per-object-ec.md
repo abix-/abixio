@@ -27,9 +27,10 @@ itself.
 |---|---|---|
 | 1 (highest) | Per-object | `x-amz-meta-ec-data` / `x-amz-meta-ec-parity` headers on PUT |
 | 2 | Bucket default | Admin API: `PUT /_admin/bucket/{name}/ec?data=N&parity=N` |
-| 3 (lowest) | Server default | CLI flags: `--data N --parity N` |
+| 3 (lowest) | Server default | Auto-computed from volume count |
 
-If no override is specified, objects use the server default.
+If no override is specified, objects use the auto-computed server default:
+1 volume = `1+0`, 2+ volumes = `(N-1)+1` for 1-failure tolerance.
 
 ## Per-object EC via S3 headers
 
@@ -40,17 +41,17 @@ Standard S3 `x-amz-meta-*` custom metadata headers. Any S3 client works.
 curl -X PUT -d "critical data" \
   -H "x-amz-meta-ec-data: 1" \
   -H "x-amz-meta-ec-parity: 5" \
-  http://localhost:9000/mybucket/critical.txt
+  http://localhost:10000/mybucket/critical.txt
 
 # large video: 4 data + 2 parity (throughput-optimized)
 curl -X PUT -T bigfile.bin \
   -H "x-amz-meta-ec-data: 4" \
   -H "x-amz-meta-ec-parity: 2" \
-  http://localhost:9000/mybucket/bigfile.bin
+  http://localhost:10000/mybucket/bigfile.bin
 
 # no headers: uses bucket default or server default
 curl -X PUT -d "normal data" \
-  http://localhost:9000/mybucket/normal.txt
+  http://localhost:10000/mybucket/normal.txt
 ```
 
 The EC headers are returned on GET and HEAD like all S3 custom metadata.
@@ -70,10 +71,10 @@ Set a default EC ratio for all new objects in a bucket. Stored in
 
 ```bash
 # set bucket default
-curl -X PUT "http://localhost:9000/_admin/bucket/mybucket/ec?data=3&parity=3"
+curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=3&parity=3"
 
-# get bucket config (returns server default if not set)
-curl http://localhost:9000/_admin/bucket/mybucket/ec
+# get bucket config (returns auto-computed default if not set)
+curl http://localhost:10000/_admin/bucket/mybucket/ec
 ```
 
 Response format:
@@ -85,20 +86,23 @@ Response format:
 }
 ```
 
-If no bucket config is set, the GET endpoint returns the server defaults with
-`"source": "server_default"`.
+If no bucket config is set, the GET endpoint returns the auto-computed server
+defaults with `"source": "server_default"`.
 
-## Disk pool model
+## Volume pool model
 
-AbixIO disks form a pool. The server default `--data N --parity N` sets the
-minimum configuration, but the pool can have more disks than `data + parity`.
+AbixIO volumes form a pool. The auto-computed server default uses all volumes
+(e.g., 6 volumes = `5+1`). Per-bucket EC can select a smaller subset.
 
 ```bash
-# 6-disk pool with default EC 2+2
-abixio --disks /d1,/d2,/d3,/d4,/d5,/d6 --data 2 --parity 2
+# 6-volume pool, auto-computes 5+1 default
+abixio --disks /d1,/d2,/d3,/d4,/d5,/d6
+
+# set bucket to use 2+2 instead (4 of 6 volumes per object)
+curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=2&parity=2"
 ```
 
-Each object selects a subset of disks from the pool.
+Each object selects a subset of volumes from the pool.
 
 In the single-node path this is a deterministic backend subset. In the
 placement-aware path the same EC choice is combined with stable placement
@@ -129,7 +133,7 @@ The decode path reads `erasure.data` and `erasure.parity` from the object's
 `meta.json`. It does not use the server or bucket defaults. This means:
 
 - Objects written with EC 1+5 are always read with EC 1+5
-- Changing server defaults does not affect existing objects
+- Changing volume count does not affect existing objects
 - Objects from before per-object EC still work (their `meta.json` records the
   EC params they were written with)
 

@@ -32,8 +32,11 @@ mkdir -p /tmp/abixio/{d1,d2,d3,d4}
 
 ./target/release/abixio \
   --disks /tmp/abixio/d1,/tmp/abixio/d2,/tmp/abixio/d3,/tmp/abixio/d4 \
-  --data 2 --parity 2 --no-auth
+  --no-auth
 ```
+
+With 4 volumes, the server auto-computes `3+1` EC (1-failure tolerance).
+Override per bucket or per object.
 
 ```bash
 curl -X PUT http://localhost:10000/mybucket
@@ -53,20 +56,17 @@ the erasure set membership from the handshake.
 # node 1
 ./target/release/abixio \
   --disks /srv/abixio/d1,/srv/abixio/d2 \
-  --peers http://node-2:10000,http://node-3:10000 \
-  --data 2 --parity 2
+  --peers http://node-2:10000,http://node-3:10000
 
 # node 2
 ./target/release/abixio \
   --disks /srv/abixio/d1,/srv/abixio/d2 \
-  --peers http://node-1:10000,http://node-3:10000 \
-  --data 2 --parity 2
+  --peers http://node-1:10000,http://node-3:10000
 
 # node 3
 ./target/release/abixio \
   --disks /srv/abixio/d1,/srv/abixio/d2 \
-  --peers http://node-1:10000,http://node-2:10000 \
-  --data 2 --parity 2
+  --peers http://node-1:10000,http://node-2:10000
 ```
 
 What happens at startup:
@@ -85,25 +85,33 @@ quorum confirmation. If quorum is lost, the node fences itself.
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
 | `--disks` | yes | -- | Comma-separated volume paths |
-| `--data` | no | 1 | Server default data shards |
-| `--parity` | no | 0 | Server default parity shards |
 | `--listen` | no | `:10000` | Bind address |
 | `--peers` | no | empty | Peer endpoints for cluster mode |
 | `--cluster-secret` | no | empty | Shared secret for peer probes |
 | `--no-auth` | no | false | Disable S3 authentication |
 
+EC defaults are auto-computed from volume count: 1 volume = `1+0` (no
+redundancy), 2+ volumes = `(N-1)+1` (1-failure tolerance). Override per
+bucket via admin API or per object via S3 headers.
+
 ## Configuration
 
-Server defaults set the data/parity ratio for new objects. You can override
-per bucket or per object.
+EC defaults are auto-computed from the volume count to achieve 1-failure
+tolerance. Override per bucket or per object.
 
-| Config | Behavior |
-|---|---|
-| 1 volume, 1 data, 0 parity | Plain S3 storage. No redundancy. |
-| 2 volumes, 1 data, 1 parity | Mirror-like. Survives 1 volume failure. |
-| 4 volumes, 2 data, 2 parity | Erasure coding. Survives 2 failures. |
-| 6 volumes, 2 data, 4 parity | Heavy parity. Survives 4 failures. |
-| 6 volumes, 2 data, 2 parity | Volume pool. Default EC uses 4 of 6 volumes per object. |
+| Volumes | Auto EC | Behavior |
+|---|---|---|
+| 1 | `1+0` | Plain S3 storage. No redundancy. |
+| 2 | `1+1` | Mirror. Survives 1 failure. |
+| 4 | `3+1` | Erasure coding. Survives 1 failure. |
+| 6 | `5+1` | Erasure coding. Survives 1 failure. |
+
+For different ratios, set per-bucket EC via the admin API:
+
+```bash
+# 6 volumes, want 2+2 instead of auto 5+1
+curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=2&parity=2"
+```
 
 ### Per-object erasure coding
 
@@ -121,13 +129,7 @@ curl -X PUT -d @bigfile.bin \
   http://localhost:10000/mybucket/bigfile.bin
 ```
 
-Bucket-level defaults via admin API:
-
-```bash
-curl -X PUT "http://localhost:10000/_admin/bucket/mybucket/ec?data=3&parity=3"
-```
-
-Precedence: per-object header > bucket config > server default (`--data`/`--parity`).
+Precedence: per-object header > bucket config > auto-computed server default.
 
 ## S3 API coverage
 
