@@ -24,19 +24,19 @@ Any S3 client works. One node and one disk means no redundancy, but everything w
 
 Now add a Linux node with 2 disks. Nodes do not need to match.
 
-**Linux node** (192.168.1.2):
+**Linux node**:
 
 ```bash
 mkdir -p /data1 /data2
 abixio --volumes /data{1...2} \
-  --nodes http://192.168.1.{1...2}:10000 \
+  --nodes http://windows:10000,http://linux:10000 \
   --no-auth
 ```
 
-**Windows node** (192.168.1.1). Restart it with `--nodes`:
+**Windows node**. Restart it with `--nodes`:
 
 ```powershell
-abixio --volumes C:\data1 --nodes http://192.168.1.{1...2}:10000 --no-auth
+abixio --volumes C:\data1 --nodes http://windows:10000,http://linux:10000 --no-auth
 ```
 
 `{N...M}` expands sequential ranges in `--volumes` and `--nodes`. For example `--nodes http://node{1...3}:10000` expands to node1, node2, node3.
