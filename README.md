@@ -33,8 +33,7 @@ Now add a Linux node with 3 disks.
 export ABIXIO_ACCESS_KEY=admin
 export ABIXIO_SECRET_KEY=supersecret
 mkdir -p /data3 /data4 /data5
-abixio --volumes /data{3...5} \
-  --nodes http://windows:10000,http://linux:10000
+abixio --volumes /data{3...5} --nodes http://windows:10000,http://linux:10000
 ```
 
 **Windows node**. Restart it with `--nodes`:
