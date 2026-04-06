@@ -5,7 +5,7 @@ use super::internode_auth;
 pub struct RemoteVolume {
     endpoint: String,
     volume_path: String,
-    client: reqwest::blocking::Client,
+    client: reqwest::Client,
     access_key: String,
     secret_key: String,
     no_auth: bool,
@@ -19,7 +19,7 @@ impl RemoteVolume {
         secret_key: String,
         no_auth: bool,
     ) -> Result<Self, String> {
-        let client = reqwest::blocking::Client::builder()
+        let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|e| {
@@ -33,7 +33,7 @@ impl RemoteVolume {
         format!("{}/_storage/v1{}", self.endpoint.trim_end_matches('/'), method)
     }
 
-    fn get(&self, method: &str) -> reqwest::blocking::RequestBuilder {
+    fn get(&self, method: &str) -> reqwest::RequestBuilder {
         let mut req = self.client.get(self.url(method))
             .header("x-abixio-volume-path", &self.volume_path);
         if !self.no_auth {
@@ -45,7 +45,7 @@ impl RemoteVolume {
         req
     }
 
-    fn post(&self, method: &str) -> reqwest::blocking::RequestBuilder {
+    fn post(&self, method: &str) -> reqwest::RequestBuilder {
         let mut req = self.client.post(self.url(method))
             .header("x-abixio-volume-path", &self.volume_path);
         if !self.no_auth {
@@ -57,9 +57,9 @@ impl RemoteVolume {
         req
     }
 
-    fn parse_error(resp: reqwest::blocking::Response) -> StorageError {
+    async fn parse_error(resp: reqwest::Response) -> StorageError {
         let status = resp.status().as_u16();
-        let body = resp.text().unwrap_or_default();
+        let body = resp.text().await.unwrap_or_default();
         let msg = serde_json::from_str::<serde_json::Value>(&body)
             .ok()
             .and_then(|v| v["error"].as_str().map(String::from))
@@ -76,10 +76,15 @@ impl RemoteVolume {
             _ => StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, msg)),
         }
     }
+
+    fn io_err(e: reqwest::Error) -> StorageError {
+        StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e))
+    }
 }
 
+#[async_trait::async_trait]
 impl Backend for RemoteVolume {
-    fn write_shard(
+    async fn write_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -91,121 +96,114 @@ impl Backend for RemoteVolume {
         let resp = self.post("/write-shard")
             .query(&[("bucket", bucket), ("key", key), ("meta", &meta_json)])
             .body(data.to_vec())
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .send().await
+            .map_err(Self::io_err)?;
         if resp.status().is_success() {
             Ok(())
         } else {
-            Err(Self::parse_error(resp))
+            Err(Self::parse_error(resp).await)
         }
     }
 
-    fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
+    async fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
         let resp = self.get("/read-shard")
             .query(&[("bucket", bucket), ("key", key)])
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .send().await
+            .map_err(Self::io_err)?;
         if !resp.status().is_success() {
-            return Err(Self::parse_error(resp));
+            return Err(Self::parse_error(resp).await);
         }
         let meta_json = resp.headers().get("x-abixio-meta")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("{}");
-        let meta: ObjectMeta = serde_json::from_str(meta_json)
+            .unwrap_or("{}")
+            .to_string();
+        let meta: ObjectMeta = serde_json::from_str(&meta_json)
             .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        let data = resp.bytes()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+        let data = resp.bytes().await
+            .map_err(Self::io_err)?
             .to_vec();
         Ok((data, meta))
     }
 
-    fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+    async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
         let resp = self.post("/delete-object")
             .query(&[("bucket", bucket), ("key", key)])
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp)) }
+            .send().await
+            .map_err(Self::io_err)?;
+        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp).await) }
     }
 
-    fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError> {
+    async fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError> {
         let resp = self.get("/list-objects")
             .query(&[("bucket", bucket), ("prefix", prefix)])
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if !resp.status().is_success() { return Err(Self::parse_error(resp)); }
-        resp.json().map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
+            .send().await
+            .map_err(Self::io_err)?;
+        if !resp.status().is_success() { return Err(Self::parse_error(resp).await); }
+        resp.json().await.map_err(Self::io_err)
     }
 
-    fn list_buckets(&self) -> Result<Vec<String>, StorageError> {
+    async fn list_buckets(&self) -> Result<Vec<String>, StorageError> {
         let resp = self.get("/list-buckets")
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if !resp.status().is_success() { return Err(Self::parse_error(resp)); }
-        resp.json().map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
+            .send().await
+            .map_err(Self::io_err)?;
+        if !resp.status().is_success() { return Err(Self::parse_error(resp).await); }
+        resp.json().await.map_err(Self::io_err)
     }
 
-    fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+    async fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
         let resp = self.post("/make-bucket")
             .query(&[("bucket", bucket)])
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp)) }
+            .send().await
+            .map_err(Self::io_err)?;
+        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp).await) }
     }
 
-    fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+    async fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
         let resp = self.post("/delete-bucket")
             .query(&[("bucket", bucket)])
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp)) }
+            .send().await
+            .map_err(Self::io_err)?;
+        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp).await) }
     }
 
     fn bucket_exists(&self, bucket: &str) -> bool {
-        self.get("/bucket-exists")
-            .query(&[("bucket", bucket)])
-            .send()
-            .ok()
-            .and_then(|r: reqwest::blocking::Response| r.json::<bool>().ok())
-            .unwrap_or(false)
+        // sync fallback -- this is called from non-async contexts (placement, init)
+        // TODO: make async when callers are async
+        false
     }
 
     fn bucket_created_at(&self, bucket: &str) -> u64 {
-        self.get("/bucket-created-at")
-            .query(&[("bucket", bucket)])
-            .send()
-            .ok()
-            .and_then(|r: reqwest::blocking::Response| r.json::<u64>().ok())
-            .unwrap_or(0)
+        0
     }
 
-    fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
+    async fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
         let resp = self.get("/stat-object")
             .query(&[("bucket", bucket), ("key", key)])
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if !resp.status().is_success() { return Err(Self::parse_error(resp)); }
-        resp.json().map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
+            .send().await
+            .map_err(Self::io_err)?;
+        if !resp.status().is_success() { return Err(Self::parse_error(resp).await); }
+        resp.json().await.map_err(Self::io_err)
     }
 
-    fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError> {
+    async fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError> {
         let resp = self.post("/update-meta")
             .query(&[("bucket", bucket), ("key", key)])
             .json(meta)
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp)) }
+            .send().await
+            .map_err(Self::io_err)?;
+        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp).await) }
     }
 
-    fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError> {
+    async fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError> {
         let resp = self.get("/read-meta-versions")
             .query(&[("bucket", bucket), ("key", key)])
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if !resp.status().is_success() { return Err(Self::parse_error(resp)); }
-        resp.json().map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))
+            .send().await
+            .map_err(Self::io_err)?;
+        if !resp.status().is_success() { return Err(Self::parse_error(resp).await); }
+        resp.json().await.map_err(Self::io_err)
     }
 
-    fn write_meta_versions(
+    async fn write_meta_versions(
         &self,
         bucket: &str,
         key: &str,
@@ -214,12 +212,12 @@ impl Backend for RemoteVolume {
         let resp = self.post("/write-meta-versions")
             .query(&[("bucket", bucket), ("key", key)])
             .json(versions)
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp)) }
+            .send().await
+            .map_err(Self::io_err)?;
+        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp).await) }
     }
 
-    fn write_versioned_shard(
+    async fn write_versioned_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -232,12 +230,12 @@ impl Backend for RemoteVolume {
         let resp = self.post("/write-versioned-shard")
             .query(&[("bucket", bucket), ("key", key), ("version_id", version_id), ("meta", &meta_json)])
             .body(data.to_vec())
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp)) }
+            .send().await
+            .map_err(Self::io_err)?;
+        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp).await) }
     }
 
-    fn read_versioned_shard(
+    async fn read_versioned_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -245,21 +243,22 @@ impl Backend for RemoteVolume {
     ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
         let resp = self.get("/read-versioned-shard")
             .query(&[("bucket", bucket), ("key", key), ("version_id", version_id)])
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if !resp.status().is_success() { return Err(Self::parse_error(resp)); }
+            .send().await
+            .map_err(Self::io_err)?;
+        if !resp.status().is_success() { return Err(Self::parse_error(resp).await); }
         let meta_json = resp.headers().get("x-abixio-meta")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("{}");
-        let meta: ObjectMeta = serde_json::from_str(meta_json)
+            .unwrap_or("{}")
+            .to_string();
+        let meta: ObjectMeta = serde_json::from_str(&meta_json)
             .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        let data = resp.bytes()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?
+        let data = resp.bytes().await
+            .map_err(Self::io_err)?
             .to_vec();
         Ok((data, meta))
     }
 
-    fn delete_version_data(
+    async fn delete_version_data(
         &self,
         bucket: &str,
         key: &str,
@@ -267,21 +266,22 @@ impl Backend for RemoteVolume {
     ) -> Result<(), StorageError> {
         let resp = self.post("/delete-version-data")
             .query(&[("bucket", bucket), ("key", key), ("version_id", version_id)])
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp)) }
+            .send().await
+            .map_err(Self::io_err)?;
+        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp).await) }
     }
 
-    fn read_bucket_settings(&self, bucket: &str) -> BucketSettings {
-        self.get("/read-bucket-settings")
+    async fn read_bucket_settings(&self, bucket: &str) -> BucketSettings {
+        let resp = match self.get("/read-bucket-settings")
             .query(&[("bucket", bucket)])
-            .send()
-            .ok()
-            .and_then(|r: reqwest::blocking::Response| r.json::<BucketSettings>().ok())
-            .unwrap_or_default()
+            .send().await {
+            Ok(r) => r,
+            Err(_) => return BucketSettings::default(),
+        };
+        resp.json::<BucketSettings>().await.unwrap_or_default()
     }
 
-    fn write_bucket_settings(
+    async fn write_bucket_settings(
         &self,
         bucket: &str,
         settings: &BucketSettings,
@@ -289,23 +289,19 @@ impl Backend for RemoteVolume {
         let resp = self.post("/write-bucket-settings")
             .query(&[("bucket", bucket)])
             .json(settings)
-            .send()
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp)) }
+            .send().await
+            .map_err(Self::io_err)?;
+        if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp).await) }
     }
 
     fn info(&self) -> BackendInfo {
-        self.get("/info")
-            .send()
-            .ok()
-            .and_then(|r: reqwest::blocking::Response| r.json::<BackendInfo>().ok())
-            .unwrap_or(BackendInfo {
-                label: format!("{}:{}", self.endpoint, self.volume_path),
-                volume_id: String::new(),
-                backend_type: "remote".to_string(),
-                total_bytes: None,
-                used_bytes: None,
-                free_bytes: None,
-            })
+        BackendInfo {
+            label: format!("{}:{}", self.endpoint, self.volume_path),
+            volume_id: String::new(),
+            backend_type: "remote".to_string(),
+            total_bytes: None,
+            used_bytes: None,
+            free_bytes: None,
+        }
     }
 }

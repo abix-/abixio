@@ -21,8 +21,9 @@ use metadata::{
 
 /// Backend is the per-disk storage interface. Each erasure "disk" implements
 /// this -- whether it is a local directory, a cloud drive, or anything else.
+#[async_trait::async_trait]
 pub trait Backend: Send + Sync {
-    fn write_shard(
+    async fn write_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -30,28 +31,28 @@ pub trait Backend: Send + Sync {
         meta: &ObjectMeta,
     ) -> Result<(), StorageError>;
 
-    fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError>;
+    async fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError>;
 
-    fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
+    async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
 
-    fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError>;
+    async fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError>;
 
-    fn list_buckets(&self) -> Result<Vec<String>, StorageError>;
+    async fn list_buckets(&self) -> Result<Vec<String>, StorageError>;
 
-    fn make_bucket(&self, bucket: &str) -> Result<(), StorageError>;
+    async fn make_bucket(&self, bucket: &str) -> Result<(), StorageError>;
 
-    fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError>;
+    async fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError>;
 
     fn bucket_exists(&self, bucket: &str) -> bool;
 
     fn bucket_created_at(&self, bucket: &str) -> u64;
 
-    fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError>;
+    async fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError>;
 
-    fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError>;
+    async fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError>;
 
-    fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError>;
-    fn write_meta_versions(
+    async fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError>;
+    async fn write_meta_versions(
         &self,
         bucket: &str,
         key: &str,
@@ -59,7 +60,7 @@ pub trait Backend: Send + Sync {
     ) -> Result<(), StorageError>;
 
     // versioned shard ops
-    fn write_versioned_shard(
+    async fn write_versioned_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -68,22 +69,22 @@ pub trait Backend: Send + Sync {
         meta: &ObjectMeta,
     ) -> Result<(), StorageError>;
 
-    fn read_versioned_shard(
+    async fn read_versioned_shard(
         &self,
         bucket: &str,
         key: &str,
         version_id: &str,
     ) -> Result<(Vec<u8>, ObjectMeta), StorageError>;
 
-    fn delete_version_data(
+    async fn delete_version_data(
         &self,
         bucket: &str,
         key: &str,
         version_id: &str,
     ) -> Result<(), StorageError>;
 
-    fn read_bucket_settings(&self, bucket: &str) -> BucketSettings;
-    fn write_bucket_settings(
+    async fn read_bucket_settings(&self, bucket: &str) -> BucketSettings;
+    async fn write_bucket_settings(
         &self,
         bucket: &str,
         settings: &BucketSettings,
@@ -107,8 +108,9 @@ pub struct BackendInfo {
 }
 
 /// Store is the primary storage interface. VolumePool implements this.
+#[async_trait::async_trait]
 pub trait Store: Send + Sync {
-    fn put_object(
+    async fn put_object(
         &self,
         bucket: &str,
         key: &str,
@@ -116,47 +118,47 @@ pub trait Store: Send + Sync {
         opts: PutOptions,
     ) -> Result<ObjectInfo, StorageError>;
 
-    fn get_object(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectInfo), StorageError>;
+    async fn get_object(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectInfo), StorageError>;
 
-    fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo, StorageError>;
+    async fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo, StorageError>;
 
-    fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
+    async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
 
-    fn make_bucket(&self, bucket: &str) -> Result<(), StorageError>;
+    async fn make_bucket(&self, bucket: &str) -> Result<(), StorageError>;
 
-    fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError>;
+    async fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError>;
 
-    fn head_bucket(&self, bucket: &str) -> Result<bool, StorageError>;
+    async fn head_bucket(&self, bucket: &str) -> Result<bool, StorageError>;
 
-    fn list_buckets(&self) -> Result<Vec<BucketInfo>, StorageError>;
+    async fn list_buckets(&self) -> Result<Vec<BucketInfo>, StorageError>;
 
-    fn list_objects(&self, bucket: &str, opts: ListOptions) -> Result<ListResult, StorageError>;
+    async fn list_objects(&self, bucket: &str, opts: ListOptions) -> Result<ListResult, StorageError>;
 
-    fn get_object_tags(
+    async fn get_object_tags(
         &self,
         bucket: &str,
         key: &str,
     ) -> Result<HashMap<String, String>, StorageError>;
 
-    fn put_object_tags(
+    async fn put_object_tags(
         &self,
         bucket: &str,
         key: &str,
         tags: HashMap<String, String>,
     ) -> Result<(), StorageError>;
 
-    fn delete_object_tags(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
+    async fn delete_object_tags(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
 
     // versioning
-    fn get_versioning_config(&self, bucket: &str)
+    async fn get_versioning_config(&self, bucket: &str)
     -> Result<Option<VersioningConfig>, StorageError>;
-    fn set_versioning_config(
+    async fn set_versioning_config(
         &self,
         bucket: &str,
         config: &VersioningConfig,
     ) -> Result<(), StorageError>;
 
-    fn put_object_versioned(
+    async fn put_object_versioned(
         &self,
         bucket: &str,
         key: &str,
@@ -165,21 +167,21 @@ pub trait Store: Send + Sync {
         version_id: &str,
     ) -> Result<ObjectInfo, StorageError>;
 
-    fn get_object_version(
+    async fn get_object_version(
         &self,
         bucket: &str,
         key: &str,
         version_id: &str,
     ) -> Result<(Vec<u8>, ObjectInfo), StorageError>;
 
-    fn delete_object_version(
+    async fn delete_object_version(
         &self,
         bucket: &str,
         key: &str,
         version_id: &str,
     ) -> Result<(), StorageError>;
 
-    fn list_object_versions(
+    async fn list_object_versions(
         &self,
         bucket: &str,
         prefix: &str,
@@ -187,18 +189,18 @@ pub trait Store: Send + Sync {
 
     // -- per-bucket FTT --
 
-    fn get_ftt(&self, bucket: &str) -> Result<Option<usize>, StorageError>;
+    async fn get_ftt(&self, bucket: &str) -> Result<Option<usize>, StorageError>;
 
-    fn set_ftt(&self, bucket: &str, ftt: usize) -> Result<(), StorageError>;
+    async fn set_ftt(&self, bucket: &str, ftt: usize) -> Result<(), StorageError>;
 
     // -- bucket settings --
 
-    fn get_bucket_settings(
+    async fn get_bucket_settings(
         &self,
         bucket: &str,
     ) -> Result<BucketSettings, StorageError>;
 
-    fn set_bucket_settings(
+    async fn set_bucket_settings(
         &self,
         bucket: &str,
         settings: &BucketSettings,

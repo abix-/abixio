@@ -127,8 +127,9 @@ impl LocalVolume {
     }
 }
 
+#[async_trait::async_trait]
 impl Backend for LocalVolume {
-    fn write_shard(
+    async fn write_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -153,7 +154,7 @@ impl Backend for LocalVolume {
         Ok(())
     }
 
-    fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
+    async fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
@@ -179,7 +180,7 @@ impl Backend for LocalVolume {
         Ok((data, version.clone()))
     }
 
-    fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+    async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
@@ -188,7 +189,7 @@ impl Backend for LocalVolume {
         Ok(())
     }
 
-    fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError> {
+    async fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError> {
         let bucket_dir = pathing::bucket_dir(&self.root, bucket)?;
         if !bucket_dir.is_dir() {
             return Err(StorageError::BucketNotFound);
@@ -199,7 +200,7 @@ impl Backend for LocalVolume {
         Ok(keys)
     }
 
-    fn list_buckets(&self) -> Result<Vec<String>, StorageError> {
+    async fn list_buckets(&self) -> Result<Vec<String>, StorageError> {
         let mut buckets = Vec::new();
         for entry in fs::read_dir(&self.root)? {
             let entry = entry?;
@@ -215,7 +216,7 @@ impl Backend for LocalVolume {
         Ok(buckets)
     }
 
-    fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+    async fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
         let path = pathing::bucket_dir(&self.root, bucket)?;
         if path.is_dir() {
             return Err(StorageError::BucketExists);
@@ -224,7 +225,7 @@ impl Backend for LocalVolume {
         Ok(())
     }
 
-    fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+    async fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
         let path = pathing::bucket_dir(&self.root, bucket)?;
         if !path.is_dir() {
             return Err(StorageError::BucketNotFound);
@@ -258,7 +259,7 @@ impl Backend for LocalVolume {
             .unwrap_or(0)
     }
 
-    fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
+    async fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
@@ -272,7 +273,7 @@ impl Backend for LocalVolume {
             .ok_or(StorageError::ObjectNotFound)
     }
 
-    fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError> {
+    async fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError> {
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
@@ -291,7 +292,7 @@ impl Backend for LocalVolume {
             .map_err(StorageError::Io)
     }
 
-    fn write_versioned_shard(
+    async fn write_versioned_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -322,7 +323,7 @@ impl Backend for LocalVolume {
         Ok(())
     }
 
-    fn read_versioned_shard(
+    async fn read_versioned_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -342,7 +343,7 @@ impl Backend for LocalVolume {
         Ok((data, version.clone()))
     }
 
-    fn delete_version_data(
+    async fn delete_version_data(
         &self,
         bucket: &str,
         key: &str,
@@ -366,14 +367,14 @@ impl Backend for LocalVolume {
         Ok(())
     }
 
-    fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError> {
+    async fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError> {
         match read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?) {
             Ok(mf) => Ok(mf.versions),
             Err(_) => Ok(Vec::new()),
         }
     }
 
-    fn write_meta_versions(
+    async fn write_meta_versions(
         &self,
         bucket: &str,
         key: &str,
@@ -388,7 +389,7 @@ impl Backend for LocalVolume {
             .map_err(StorageError::Io)
     }
 
-    fn read_bucket_settings(&self, bucket: &str) -> BucketSettings {
+    async fn read_bucket_settings(&self, bucket: &str) -> BucketSettings {
         let Ok(path) = pathing::bucket_settings_path(&self.root, bucket) else {
             return BucketSettings::default();
         };
@@ -398,7 +399,7 @@ impl Backend for LocalVolume {
             .unwrap_or_default()
     }
 
-    fn write_bucket_settings(
+    async fn write_bucket_settings(
         &self,
         bucket: &str,
         settings: &BucketSettings,
