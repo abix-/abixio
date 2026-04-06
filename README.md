@@ -41,7 +41,7 @@ abixio --volumes C:\data1 --nodes http://192.168.1.10:10000,http://192.168.1.20:
 
 `{N...M}` expands sequential ranges in `--volumes` and `--nodes`. For example `--nodes http://node{1...3}:10000` expands to node1, node2, node3.
 
-Same `--nodes` on every node. Identity resolves automatically. You now have 3 volumes across 2 nodes, 2 operating systems, and different disk counts. FTT 1 tolerates 1 disk failure. See [cluster docs](docs/cluster.md).
+Same `--nodes` on every node. Identity resolves automatically. You now have 3 volumes across 2 nodes, 2 operating systems, and different disk counts. Each bucket defaults to 1 volume failure tolerance per object. See [cluster docs](docs/cluster.md).
 
 ### Current state
 
