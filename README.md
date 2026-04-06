@@ -8,10 +8,8 @@ Rust S3-compatible object storage where each object chooses its own fault tolera
 ### Quick start: single node on Windows
 
 ```powershell
-cargo build --release
 mkdir C:\abixio\d1
-
-.\target\release\abixio.exe --volumes C:\abixio\d1 --no-auth
+abixio --volumes C:\abixio\d1 --no-auth
 ```
 
 ```powershell
