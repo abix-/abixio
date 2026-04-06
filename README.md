@@ -27,8 +27,8 @@ Now add a Linux node with 3 disks.
 **Linux node**:
 
 ```bash
-mkdir -p /data1 /data2 /data3
-abixio --volumes /data{1...3} \
+mkdir -p /data3 /data4 /data5
+abixio --volumes /data{3...5} \
   --nodes http://windows:10000,http://linux:10000 \
   --no-auth
 ```
