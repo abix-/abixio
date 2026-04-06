@@ -9,7 +9,7 @@ Rust S3-compatible object storage where each object chooses its own fault tolera
 
 Start a single node on Windows with 2 disks.
 
-```powershell
+```
 $env:ABIXIO_ACCESS_KEY = "admin"
 $env:ABIXIO_SECRET_KEY = "supersecret"
 mkdir C:\data1, C:\data2
@@ -29,7 +29,7 @@ Now add a Linux node with 3 disks.
 
 **Linux node**:
 
-```bash
+```
 export ABIXIO_ACCESS_KEY=admin
 export ABIXIO_SECRET_KEY=supersecret
 mkdir -p /data3 /data4 /data5
@@ -38,7 +38,7 @@ abixio --volumes /data{3...5} --nodes http://windows:10000,http://linux:10000
 
 **Windows node**. Restart it with `--nodes`:
 
-```powershell
+```
 abixio --volumes C:\data{1...2} --nodes http://windows:10000,http://linux:10000
 ```
 
