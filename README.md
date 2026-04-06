@@ -5,7 +5,9 @@ Rust S3-compatible object storage where each object chooses its own fault tolera
 > **Home lab use only.** Early development. Do not store business data on this.
 > For production, see [RustFS](https://github.com/rustfs/rustfs) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
 
-### Quick start: single node on Windows
+### Quick start
+
+Start a single node on Windows with one disk.
 
 ```powershell
 mkdir C:\abixio\d1
@@ -20,17 +22,13 @@ curl http://localhost:10000/mybucket/hello.txt
 
 Any S3 client works. One node and one disk means no redundancy, but everything works.
 
-### Quick start: mixed cluster
-
-Add a Linux node with 2 disks. The Windows node keeps its 1 disk. Nodes do not need to match.
+Now add a Linux node with 2 disks. Nodes do not need to match.
 
 **Linux node** (192.168.1.20):
 
 ```bash
 mkdir -p /srv/abixio/{d1,d2}
-
-./abixio \
-  --volumes /srv/abixio/d{1...2} \
+abixio --volumes /srv/abixio/d{1...2} \
   --nodes http://192.168.1.10:10000,http://192.168.1.20:10000 \
   --no-auth
 ```
@@ -38,12 +36,10 @@ mkdir -p /srv/abixio/{d1,d2}
 **Windows node** (192.168.1.10). Restart it with `--nodes`:
 
 ```powershell
-.\abixio.exe --volumes C:\abixio\d1 --nodes http://192.168.1.10:10000,http://192.168.1.20:10000 --no-auth
+abixio --volumes C:\abixio\d1 --nodes http://192.168.1.10:10000,http://192.168.1.20:10000 --no-auth
 ```
 
-Same `--nodes` list on every node. Identity resolves automatically.
-
-Result: 3 volumes across 2 nodes, 2 operating systems, different disk counts. FTT 1 works (tolerates 1 disk failure). See [cluster docs](docs/cluster.md).
+Same `--nodes` on every node. Identity resolves automatically. You now have 3 volumes across 2 nodes, 2 operating systems, and different disk counts. FTT 1 tolerates 1 disk failure. See [cluster docs](docs/cluster.md).
 
 ### Current state
 
