@@ -22,13 +22,13 @@ curl http://localhost:10000/mybucket/hello.txt
 
 Any S3 client works. By default, each object tolerates 1 volume failure.
 
-Now add a Linux node with 2 more disks.
+Now add a Linux node with 3 disks.
 
 **Linux node**:
 
 ```bash
-mkdir -p /data1 /data2
-abixio --volumes /data{1...2} \
+mkdir -p /data1 /data2 /data3
+abixio --volumes /data{1...3} \
   --nodes http://windows:10000,http://linux:10000 \
   --no-auth
 ```
@@ -39,7 +39,7 @@ abixio --volumes /data{1...2} \
 abixio --volumes C:\data{1...2} --nodes http://windows:10000,http://linux:10000 --no-auth
 ```
 
-Same `--nodes` on every node. Identity resolves automatically. You now have 4 volumes across 2 nodes and 2 operating systems. `{N...M}` expands sequential ranges in `--volumes` and `--nodes`. See [cluster docs](docs/cluster.md).
+Same `--nodes` on every node. Identity resolves automatically. You now have 5 volumes across 2 nodes and 2 operating systems. `{N...M}` expands sequential ranges in `--volumes` and `--nodes`. See [cluster docs](docs/cluster.md).
 
 ### Current state
 
