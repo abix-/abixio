@@ -29,17 +29,17 @@ Now add a Linux node with 2 disks. Nodes do not need to match.
 ```bash
 mkdir -p /data1 /data2
 abixio --volumes /data{1...2} \
-  --nodes http://192.168.1.{10...20}:10000 \
+  --nodes http://192.168.1.10:10000,http://192.168.1.20:10000 \
   --no-auth
 ```
 
 **Windows node** (192.168.1.10). Restart it with `--nodes`:
 
 ```powershell
-abixio --volumes C:\data1 --nodes http://192.168.1.{10...20}:10000 --no-auth
+abixio --volumes C:\data1 --nodes http://192.168.1.10:10000,http://192.168.1.20:10000 --no-auth
 ```
 
-`{N...M}` expands ranges. `http://192.168.1.{10...20}:10000` becomes `http://192.168.1.10:10000, http://192.168.1.20:10000`. Works for `--volumes` and `--nodes`.
+`{N...M}` expands sequential ranges in `--volumes` and `--nodes`. For example `--nodes http://node{1...3}:10000` expands to node1, node2, node3.
 
 Same `--nodes` on every node. Identity resolves automatically. You now have 3 volumes across 2 nodes, 2 operating systems, and different disk counts. FTT 1 tolerates 1 disk failure. See [cluster docs](docs/cluster.md).
 
