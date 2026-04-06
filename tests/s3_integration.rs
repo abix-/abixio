@@ -3690,7 +3690,6 @@ async fn windows_forbidden_chars_rejected_at_storage_layer() {
             erasure: abixio::storage::metadata::ErasureMeta {
                 ftt: 0, index: 0,
                 epoch_id: 1,
-                pool_id: String::new(),
                 volume_ids: vec!["v".to_string()],
             },
             checksum: String::new(),

@@ -28,7 +28,6 @@ pub struct VolumeEntry {
 pub struct ResolvedIdentity {
     pub node_id: String,
     pub cluster_id: String,
-    pub pool_id: String,
     pub advertise: String,
     pub nodes: Vec<String>,
     pub disk_paths: Vec<PathBuf>,
@@ -86,9 +85,8 @@ pub async fn resolve_identity(
     if nodes.is_empty() {
         // standalone: finalize immediately
         let cluster_id = cluster_id_for(&[node_id.clone()]);
-        let pool_id = uuid::Uuid::new_v4().to_string();
         let members = build_members(&[local_identity.clone()]);
-        finalize_volumes(disk_paths, &mut formats, &cluster_id, &pool_id, members.clone())?;
+        finalize_volumes(disk_paths, &mut formats, &cluster_id, members.clone())?;
         let node_volumes = vec![NodeVolumes {
             node_id: node_id.clone(),
             endpoint: advertise.clone(),
@@ -97,7 +95,6 @@ pub async fn resolve_identity(
         return Ok(ResolvedIdentity {
             node_id,
             cluster_id,
-            pool_id,
             advertise,
             nodes: Vec::new(),
             disk_paths: disk_paths.to_vec(),
@@ -107,12 +104,9 @@ pub async fn resolve_identity(
     }
 
     // step 3: cluster -- already finalized from previous boot?
-    if formats[0].cluster_id.is_some() && formats[0].pool.is_some() {
+    if formats[0].cluster_id.is_some() && formats[0].cluster.is_some() {
         let cluster_id = formats[0].cluster_id.clone().unwrap();
-        let pool_id = formats[0].pool_id.clone().unwrap();
-        let members = formats[0].pool.as_ref().unwrap().members.clone();
-        // rebuild node_volumes from members + nodes list
-        // we know our own paths; remote paths will be discovered via probes
+        let members = formats[0].cluster.as_ref().unwrap().members.clone();
         let node_volumes = build_node_volumes_from_members(
             &node_id,
             &advertise,
@@ -123,7 +117,6 @@ pub async fn resolve_identity(
         return Ok(ResolvedIdentity {
             node_id,
             cluster_id,
-            pool_id,
             advertise,
             nodes: nodes.to_vec(),
             disk_paths: disk_paths.to_vec(),
@@ -181,11 +174,10 @@ pub async fn resolve_identity(
     let mut node_ids: Vec<String> = all_identities.iter().map(|id| id.node_id.clone()).collect();
     node_ids.sort();
     let cluster_id = cluster_id_for(&node_ids);
-    let pool_id = pool_id_for(&node_ids);
 
     // step 6: build full member list and finalize
     let members = build_members(&all_identities);
-    finalize_volumes(disk_paths, &mut formats, &cluster_id, &pool_id, members.clone())?;
+    finalize_volumes(disk_paths, &mut formats, &cluster_id, members.clone())?;
 
     let peer_endpoints: Vec<String> = all_identities
         .iter()
@@ -205,7 +197,6 @@ pub async fn resolve_identity(
     Ok(ResolvedIdentity {
         node_id,
         cluster_id,
-        pool_id,
         advertise,
         nodes: peer_endpoints,
         disk_paths: disk_paths.to_vec(),
@@ -242,17 +233,6 @@ fn cluster_id_for(sorted_node_ids: &[String]) -> String {
     }
     let digest = hasher.finalize();
     format!("abixio-{}", hex::encode(&digest[..8]))
-}
-
-fn pool_id_for(sorted_node_ids: &[String]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"set:");
-    for id in sorted_node_ids {
-        hasher.update(id.as_bytes());
-        hasher.update(b":");
-    }
-    let digest = hasher.finalize();
-    format!("set-{}", hex::encode(&digest[..8]))
 }
 
 /// Rebuild node_volumes from persisted members + the --nodes list.

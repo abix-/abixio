@@ -54,7 +54,6 @@ async fn distributed_placement_exact_map_matches_raw_disk_state() {
     assert_eq!(inspect["erasure"]["data"], 6);
     assert_eq!(inspect["erasure"]["parity"], 2);
     assert_eq!(inspect["erasure"]["epoch_id"], 7);
-    assert_eq!(inspect["erasure"]["pool_id"], "cluster-set-4x2");
 
     let shards = inspect["shards"].as_array().unwrap();
     assert_eq!(shards.len(), 8);

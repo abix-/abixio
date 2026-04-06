@@ -47,8 +47,7 @@ The current implementation provides:
 - hard fencing when the node is not in a `ready` cluster state
 - S3 request rejection while fenced
 - mutating admin request rejection while fenced
-- deterministic placement planning metadata with stable `epoch_id`, `pool_id`,
-  and `volume_ids` stored in object shard metadata
+- deterministic placement metadata with `epoch_id` and `volume_ids` stored in object shard metadata
 - internode shard RPC via `RemoteVolume` over HTTP (`/_storage/v1/*`)
 - JWT-authenticated internode requests (signed with S3 credentials)
 - mixed local + remote backend construction after identity exchange
@@ -116,7 +115,6 @@ The persisted state includes:
 Object shard metadata now also persists placement identity:
 
 - `epoch_id`
-- `pool_id`
 - ordered shard `volume_ids`
 
 This lets admin inspection and tests validate exact placement instead of only

@@ -688,7 +688,6 @@ impl S3Handler {
                             ftt: 0,
                             index: 0,
                             epoch_id: 0,
-                            pool_id: String::new(),
                             volume_ids: Vec::new(),
                         },
                         checksum: String::new(),

@@ -263,7 +263,6 @@ impl ClusterHarness {
         let _topology = StaticTopology {
             cluster_id: "cluster-harness".to_string(),
             epoch_id: 7,
-            pool_id: "cluster-set-4x2".to_string(),
             nodes: (0..4)
                 .map(|node_index| TopologyNode {
                     node_id: format!("node-{}", node_index + 1),

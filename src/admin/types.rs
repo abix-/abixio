@@ -69,7 +69,6 @@ pub struct ErasureInfo {
     pub data: usize,
     pub parity: usize,
     pub epoch_id: u64,
-    pub pool_id: String,
     pub volume_ids: Vec<String>,
 }
 

@@ -233,19 +233,18 @@ curl "http://localhost:10000/_admin/object?bucket=mybucket&key=photo.jpg"
     "data": 2,
     "parity": 2,
     "epoch_id": 7,
-    "pool_id": "set-a",
     "volume_ids": ["vol-1a", "vol-2a", "vol-3a", "vol-4a"]
   },
   "shards": [
-    { "index": 0, "disk": 2, "node_id": "node-3", "volume_id": "vol-3a", "status": "ok", "checksum": "abc123..." },
-    { "index": 1, "disk": 0, "node_id": "node-1", "volume_id": "vol-1a", "status": "ok", "checksum": "def456..." },
-    { "index": 2, "disk": 3, "node_id": "node-4", "volume_id": "vol-4a", "status": "missing", "checksum": null },
-    { "index": 3, "disk": 1, "node_id": "node-2", "volume_id": "vol-2a", "status": "ok", "checksum": "ghi789..." }
+    { "index": 0, "disk": 2, "volume_id": "vol-3a", "status": "ok", "checksum": "abc123..." },
+    { "index": 1, "disk": 0, "volume_id": "vol-1a", "status": "ok", "checksum": "def456..." },
+    { "index": 2, "disk": 3, "volume_id": "vol-4a", "status": "missing", "checksum": null },
+    { "index": 3, "disk": 1, "volume_id": "vol-2a", "status": "ok", "checksum": "ghi789..." }
   ]
 }
 ```
 
-`epoch_id`, `pool_id`, and `volume_ids` make exact placement externally
+`epoch_id` and `volume_ids` make exact placement externally
 visible to operators and tests.
 
 ### Shard status values

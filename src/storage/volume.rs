@@ -13,20 +13,18 @@ pub struct VolumeFormat {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(alias = "deployment_id")]
     pub cluster_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(alias = "set_id")]
-    pub pool_id: Option<String>,
     pub node_id: String,
     pub volume_id: String,
     pub volume_index: u32,
     pub created_at: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(alias = "erasure_set")]
-    pub pool: Option<PoolMembers>,
+    #[serde(alias = "pool")]
+    pub cluster: Option<ClusterMembers>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct PoolMembers {
+pub struct ClusterMembers {
     pub members: Vec<SetMember>,
 }
 
@@ -67,12 +65,11 @@ pub fn generate_volume_format(node_id: &str, volume_index: u32) -> VolumeFormat 
     VolumeFormat {
         version: 1,
         cluster_id: None,
-        pool_id: None,
         node_id: node_id.to_string(),
         volume_id: uuid::Uuid::new_v4().to_string(),
         volume_index,
         created_at: unix_now(),
-        pool: None,
+        cluster: None,
     }
 }
 
@@ -109,9 +106,6 @@ pub fn load_volumes(disk_paths: &[PathBuf]) -> Result<Option<Vec<VolumeFormat>>,
         if fmt.cluster_id != present[0].cluster_id {
             return Err("cluster_id mismatch across volumes".to_string());
         }
-        if fmt.pool_id != present[0].pool_id {
-            return Err("pool_id mismatch across volumes".to_string());
-        }
     }
 
     // check for duplicate volume_ids
@@ -137,19 +131,17 @@ pub fn format_volumes(disk_paths: &[PathBuf]) -> Result<Vec<VolumeFormat>, Strin
     Ok(formats)
 }
 
-/// Finalize volumes with cluster_id, pool_id, and full member list.
+/// Finalize volumes with cluster_id and full member list.
 pub fn finalize_volumes(
     disk_paths: &[PathBuf],
     formats: &mut [VolumeFormat],
     cluster_id: &str,
-    pool_id: &str,
     members: Vec<SetMember>,
 ) -> Result<(), String> {
-    let pool = PoolMembers { members };
+    let cm = ClusterMembers { members };
     for (i, fmt) in formats.iter_mut().enumerate() {
         fmt.cluster_id = Some(cluster_id.to_string());
-        fmt.pool_id = Some(pool_id.to_string());
-        fmt.pool = Some(pool.clone());
+        fmt.cluster = Some(cm.clone());
         write_volume_format(&disk_paths[i], fmt)
             .map_err(|e| format!("write volume.json: {}", e))?;
     }
@@ -191,12 +183,11 @@ mod tests {
             node_id: formats[0].node_id.clone(),
             index: 0,
         }];
-        finalize_volumes(&paths, &mut formats, "deploy-1", "set-1", members).unwrap();
+        finalize_volumes(&paths, &mut formats, "deploy-1", members).unwrap();
 
         let loaded = load_volumes(&paths).unwrap().unwrap();
         assert_eq!(loaded[0].cluster_id.as_deref(), Some("deploy-1"));
-        assert_eq!(loaded[0].pool_id.as_deref(), Some("set-1"));
-        assert!(loaded[0].pool.is_some());
+        assert!(loaded[0].cluster.is_some());
     }
 
     #[test]

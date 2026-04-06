@@ -168,7 +168,6 @@ fn encode_and_write_impl(
                 ftt: parity_n,
                 index: shard_idx,
                 epoch_id: placement.epoch_id,
-                pool_id: placement.pool_id.clone(),
                 volume_ids: volume_ids.clone(),
             },
             checksum,

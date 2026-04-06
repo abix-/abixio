@@ -44,14 +44,13 @@ volume pool does it belong to, and who are all the other members.
 |---|---|---|
 | `version` | u32 | Format schema version (currently `1`) |
 | `cluster_id` | UUID | Cluster-wide identifier. Same on every disk in the cluster |
-| `pool_id` | UUID | Pool identifier. Same on every disk in the pool |
 | `node_id` | UUID | Node identifier. Same on every disk owned by this node |
 | `volume_id` | UUID | Globally unique volume identifier |
-| `volume_index` | u32 | This volume's position in the pool member list |
+| `volume_index` | u32 | This volume's position in the cluster member list |
 | `created_at` | u64 | Unix timestamp when this disk was formatted |
-| `pool.members` | array | Full pool membership (see below) |
+| `cluster.members` | array | Full cluster membership (see below) |
 
-Each member in `pool.members`:
+Each member in `cluster.members`:
 
 | Field | Type | Description |
 |---|---|---|
@@ -70,12 +69,11 @@ Each member in `pool.members`:
 {
   "version": 1,
   "cluster_id": "a1b2c3d4-0000-0000-0000-000000000000",
-  "pool_id": "e5f6a7b8-0000-0000-0000-000000000000",
   "node_id": "11111111-0000-0000-0000-000000000000",
   "volume_id": "aaaaaaaa-0000-0000-0000-000000000000",
   "volume_index": 0,
   "created_at": 1712300000,
-  "pool": {
+  "cluster": {
     "members": [
       { "volume_id": "aaaaaaaa-0000-0000-0000-000000000000", "node_id": "11111111-0000-0000-0000-000000000000", "index": 0 },
       { "volume_id": "bbbbbbbb-0000-0000-0000-000000000000", "node_id": "11111111-0000-0000-0000-000000000000", "index": 1 },
@@ -86,19 +84,18 @@ Each member in `pool.members`:
 }
 ```
 
-Every disk in the cluster carries the full pool membership. Any single
+Every disk in the cluster carries the full cluster membership. Any single
 disk is enough to reconstruct the cluster's identity.
 
 ### Identity hierarchy
 
 ```
 cluster_id       one per cluster, all disks share it
-  pool_id            one per pool, all disks in the pool share it
-    node_id         one per node, all disks on a node share it
-      volume_id       one per volume, globally unique
+  node_id         one per node, all disks on a node share it
+    volume_id       one per volume, globally unique
 ```
 
-All four are UUIDv4, generated at format time, immutable after that.
+All three are UUIDv4, generated at format time, immutable after that.
 
 ### Boot sequence
 
@@ -106,7 +103,7 @@ All four are UUIDv4, generated at format time, immutable after that.
 
 1. `abixio --volumes /d{1...4}`
 2. No volume.json found -- generate node_id, volume_id UUIDs
-3. No `--nodes` -- standalone mode, generate cluster_id and pool_id
+3. No `--nodes` -- standalone mode, generate cluster_id
 4. Write complete volume.json to every volume
 5. Serve
 
@@ -117,14 +114,14 @@ All four are UUIDv4, generated at format time, immutable after that.
 3. Write partial volume.json (node_id, volume_id only)
 4. Exchange identity with nodes via `/_admin/cluster/join`
 5. Block until all nodes respond
-6. Compute cluster_id and pool_id deterministically from sorted node_ids
+6. Compute cluster_id deterministically from sorted node_ids
 7. Build full member list, write complete volume.json
 8. Serve
 
 **Subsequent boot**:
 
 1. Read volume.json from each volume
-2. Validate all volumes agree on cluster_id, pool_id, node_id
+2. Validate all volumes agree on cluster_id, node_id
 3. If `--nodes` set: probe nodes for quorum confirmation
 4. Serve
 
@@ -148,7 +145,6 @@ On boot, the binary validates volume.json across all local volumes:
 | volume.json missing on all volumes, no nodes | Standalone first boot: auto-format |
 | volume.json missing on all volumes, nodes set | Cluster first boot: peer exchange |
 | cluster_id mismatch across local volumes | Corrupt or mixed cluster: refuse to start |
-| pool_id mismatch across local volumes | Corrupt or mixed pool: refuse to start |
 | node_id mismatch across local volumes | Volumes from different nodes mixed: refuse to start |
 | volume_id duplicated | Corrupt: refuse to start |
 | member list inconsistent across local volumes | Stale member list: warn, use newest |
@@ -239,7 +235,6 @@ ordered newest-first.
         "ftt": 2,
         "index": 0,
         "epoch_id": 7,
-        "pool_id": "e5f6a7b8-0000-0000-0000-000000000000",
         "volume_ids": ["aaaaaaaa-...", "cccccccc-...", "eeeeeeee-...", "gggggggg-..."]
       },
       "checksum": "abc123def456...",
@@ -268,7 +263,6 @@ healer and decoder can verify that a shard is on the correct disk by comparing
 | `erasure.ftt` | Failures to tolerate (parity shard count) |
 | `erasure.index` | Which shard this disk holds (0-based) |
 | `erasure.epoch_id` | Placement epoch recorded with the object |
-| `erasure.pool_id` | Placement pool identity recorded with the object |
 | `erasure.volume_ids` | Ordered volume identity for each shard |
 | `checksum` | SHA-256 hex of THIS shard's data (for bitrot detection) |
 | `user_metadata` | Custom `x-amz-meta-*` headers from the PUT request |
@@ -302,7 +296,7 @@ disk0/
 
 disk1/
   .abixio.sys/
-    volume.json                   # same cluster_id/pool_id/node_id, different volume_id
+    volume.json                   # same cluster_id/node_id, different volume_id
     cluster.json
     buckets/
       bucket-name/
