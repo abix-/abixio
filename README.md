@@ -10,14 +10,18 @@ Rust S3-compatible object storage where each object chooses its own fault tolera
 Start a single node on Windows with 2 disks.
 
 ```powershell
+$env:ABIXIO_ACCESS_KEY = "admin"
+$env:ABIXIO_SECRET_KEY = "supersecret"
 mkdir C:\data1, C:\data2
-abixio --volumes C:\data{1...2} --no-auth
+abixio --volumes C:\data{1...2}
 ```
 
 ```powershell
-curl -X PUT http://localhost:10000/mybucket
-curl -X PUT -d "hello world" http://localhost:10000/mybucket/hello.txt
-curl http://localhost:10000/mybucket/hello.txt
+aws configure set aws_access_key_id admin
+aws configure set aws_secret_access_key supersecret
+aws --endpoint-url http://localhost:10000 s3 mb s3://mybucket
+echo "hello world" | aws --endpoint-url http://localhost:10000 s3 cp - s3://mybucket/hello.txt
+aws --endpoint-url http://localhost:10000 s3 cp s3://mybucket/hello.txt -
 ```
 
 Any S3 client works. By default, each object tolerates 1 volume failure.
@@ -27,16 +31,17 @@ Now add a Linux node with 3 disks.
 **Linux node**:
 
 ```bash
+export ABIXIO_ACCESS_KEY=admin
+export ABIXIO_SECRET_KEY=supersecret
 mkdir -p /data3 /data4 /data5
 abixio --volumes /data{3...5} \
-  --nodes http://windows:10000,http://linux:10000 \
-  --no-auth
+  --nodes http://windows:10000,http://linux:10000
 ```
 
 **Windows node**. Restart it with `--nodes`:
 
 ```powershell
-abixio --volumes C:\data{1...2} --nodes http://windows:10000,http://linux:10000 --no-auth
+abixio --volumes C:\data{1...2} --nodes http://windows:10000,http://linux:10000
 ```
 
 Same `--nodes` on every node. Identity resolves automatically. You now have 5 volumes across 2 nodes and 2 operating systems. `{N...M}` expands sequential ranges in `--volumes` and `--nodes`. See [cluster docs](docs/cluster.md).
