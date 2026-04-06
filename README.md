@@ -16,15 +16,14 @@ mkdir C:\data1, C:\data2
 abixio --volumes C:\data{1...2}
 ```
 
-```powershell
-aws configure set aws_access_key_id admin
-aws configure set aws_secret_access_key supersecret
-aws --endpoint-url http://localhost:10000 s3 mb s3://mybucket
-echo "hello world" | aws --endpoint-url http://localhost:10000 s3 cp - s3://mybucket/hello.txt
-aws --endpoint-url http://localhost:10000 s3 cp s3://mybucket/hello.txt -
+```
+mc alias set abixio http://localhost:10000 admin supersecret
+mc mb abixio/mybucket
+mc cp hello.txt abixio/mybucket/
+mc cat abixio/mybucket/hello.txt
 ```
 
-Any S3 client works. By default, each object tolerates 1 volume failure.
+Any S3 client works (aws cli, mc, rclone, etc). By default, each object tolerates 1 volume failure.
 
 Now add a Linux node with 3 disks.
 
