@@ -10,8 +10,8 @@ Rust S3-compatible object storage where each object chooses its own fault tolera
 Start a single node on Windows with one disk.
 
 ```powershell
-mkdir C:\abixio\d1
-abixio --volumes C:\abixio\d1 --no-auth
+mkdir C:\data1
+abixio --volumes C:\data1 --no-auth
 ```
 
 ```powershell
@@ -27,8 +27,8 @@ Now add a Linux node with 2 disks. Nodes do not need to match.
 **Linux node** (192.168.1.20):
 
 ```bash
-mkdir -p /srv/abixio/{d1,d2}
-abixio --volumes /srv/abixio/d{1...2} \
+mkdir -p /data1 /data2
+abixio --volumes /data{1...2} \
   --nodes http://192.168.1.10:10000,http://192.168.1.20:10000 \
   --no-auth
 ```
@@ -36,7 +36,7 @@ abixio --volumes /srv/abixio/d{1...2} \
 **Windows node** (192.168.1.10). Restart it with `--nodes`:
 
 ```powershell
-abixio --volumes C:\abixio\d1 --nodes http://192.168.1.10:10000,http://192.168.1.20:10000 --no-auth
+abixio --volumes C:\data1 --nodes http://192.168.1.10:10000,http://192.168.1.20:10000 --no-auth
 ```
 
 Same `--nodes` on every node. Identity resolves automatically. You now have 3 volumes across 2 nodes, 2 operating systems, and different disk counts. FTT 1 tolerates 1 disk failure. See [cluster docs](docs/cluster.md).
