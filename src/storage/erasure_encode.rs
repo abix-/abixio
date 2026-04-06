@@ -130,11 +130,6 @@ fn encode_and_write_impl(
         .iter()
         .map(|shard| shard.backend_index)
         .collect::<Vec<_>>();
-    let node_ids = placement
-        .shards
-        .iter()
-        .map(|shard| shard.node_id.clone())
-        .collect::<Vec<_>>();
     let volume_ids = placement
         .shards
         .iter()
@@ -174,7 +169,6 @@ fn encode_and_write_impl(
                 index: shard_idx,
                 epoch_id: placement.epoch_id,
                 pool_id: placement.pool_id.clone(),
-                node_ids: node_ids.clone(),
                 volume_ids: volume_ids.clone(),
             },
             checksum,

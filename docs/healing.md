@@ -92,7 +92,7 @@ quorum-compatible if they match on all fields except the per-shard `index`
 and `checksum` (which are different for every shard by design).
 
 When placement-aware metadata is present, `quorum_eq()` also requires
-`epoch_id`, `pool_id`, `node_ids`, and `volume_ids` to match.
+`epoch_id`, `pool_id`, and `volume_ids` to match.
 
 Pick the group with the most members. This must have at least `data_n`
 members to be valid.

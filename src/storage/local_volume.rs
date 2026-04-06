@@ -484,12 +484,6 @@ mod tests {
                 index,
                 epoch_id: 1,
                 pool_id: "set-a".to_string(),
-                node_ids: vec![
-                    "node-1".to_string(),
-                    "node-2".to_string(),
-                    "node-3".to_string(),
-                    "node-4".to_string(),
-                ],
                 volume_ids: vec![
                     "vol-a".to_string(),
                     "vol-b".to_string(),

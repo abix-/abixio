@@ -240,7 +240,6 @@ ordered newest-first.
         "index": 0,
         "epoch_id": 7,
         "pool_id": "e5f6a7b8-0000-0000-0000-000000000000",
-        "node_ids": ["11111111-...", "22222222-...", "33333333-...", "44444444-..."],
         "volume_ids": ["aaaaaaaa-...", "cccccccc-...", "eeeeeeee-...", "gggggggg-..."]
       },
       "checksum": "abc123def456...",
@@ -254,9 +253,9 @@ ordered newest-first.
 }
 ```
 
-The `node_ids` and `volume_ids` in object metadata use the same UUIDs as
-volume.json. The healer and decoder can verify that a shard is on the correct
-disk by comparing `meta.json` volume_ids against `volume.json` volume_id.
+The `volume_ids` in object metadata use the same UUIDs as volume.json. The
+healer and decoder can verify that a shard is on the correct disk by comparing
+`meta.json` volume_ids against `volume.json` volume_id.
 
 ### Fields
 
@@ -270,8 +269,7 @@ disk by comparing `meta.json` volume_ids against `volume.json` volume_id.
 | `erasure.index` | Which shard this disk holds (0-based) |
 | `erasure.epoch_id` | Placement epoch recorded with the object |
 | `erasure.pool_id` | Placement pool identity recorded with the object |
-| `erasure.node_ids` | Ordered node identity for each shard |
-| `erasure.volume_ids` | Ordered disk identity for each shard |
+| `erasure.volume_ids` | Ordered volume identity for each shard |
 | `checksum` | SHA-256 hex of THIS shard's data (for bitrot detection) |
 | `user_metadata` | Custom `x-amz-meta-*` headers from the PUT request |
 | `tags` | Object tags (key-value pairs) |

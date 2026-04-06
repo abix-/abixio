@@ -269,7 +269,6 @@ impl AdminHandler {
                 shards[shard_idx] = Some(ShardInfo {
                     index: shard_idx,
                     disk: disk_idx,
-                    node_id: meta.erasure.node_ids.get(shard_idx).cloned().unwrap_or_else(|| "local".to_string()),
                     volume_id: meta.erasure.volume_ids.get(shard_idx).cloned().unwrap_or_else(|| format!("vol-{}", disk_idx)),
                     status,
                     checksum,
@@ -282,7 +281,6 @@ impl AdminHandler {
                 shards[shard_idx].take().unwrap_or(ShardInfo {
                     index: shard_idx,
                     disk: shard_idx,
-                    node_id: meta.erasure.node_ids.get(shard_idx).cloned().unwrap_or_else(|| "local".to_string()),
                     volume_id: meta.erasure.volume_ids.get(shard_idx).cloned().unwrap_or_else(|| format!("vol-{}", shard_idx)),
                     status: "missing",
                     checksum: None,
@@ -302,7 +300,6 @@ impl AdminHandler {
                 parity: meta.erasure.parity(),
                 epoch_id: meta.erasure.epoch_id,
                 pool_id: meta.erasure.pool_id.clone(),
-                node_ids: meta.erasure.node_ids.clone(),
                 volume_ids: meta.erasure.volume_ids.clone(),
             },
             shards,

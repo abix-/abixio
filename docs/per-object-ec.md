@@ -32,7 +32,6 @@ Placement-aware objects also record:
 
 - `epoch_id`
 - `pool_id`
-- `node_ids`
 - `volume_ids`
 
 Those fields identify where each shard belongs, in addition to the EC ratio

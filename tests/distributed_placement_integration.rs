@@ -58,11 +58,11 @@ async fn distributed_placement_exact_map_matches_raw_disk_state() {
 
     let shards = inspect["shards"].as_array().unwrap();
     assert_eq!(shards.len(), 8);
-    let distinct_nodes = shards
+    let distinct_volumes = shards
         .iter()
-        .map(|shard| shard["node_id"].as_str().unwrap())
+        .map(|shard| shard["volume_id"].as_str().unwrap())
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(distinct_nodes.len(), 4);
+    assert_eq!(distinct_volumes.len(), 8);
 
     for shard in shards {
         let volume_id = shard["volume_id"].as_str().unwrap();
