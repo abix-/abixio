@@ -1,34 +1,51 @@
 # AbixIO Server
 
-Rust S3-compatible object storage where each object chooses its own fault tolerance. Mix any disks, any nodes, one pool. Single machine or cluster.
+Rust S3-compatible object storage where each object chooses its own fault tolerance. Mix any OS, any disks, any nodes, one pool.
 
 > **Home lab use only.** Early development. Do not store business data on this.
 > For production, see [RustFS](https://github.com/rustfs/rustfs) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
 
-### Quick start
+### Quick start: single node on Windows
 
-```bash
+```powershell
 cargo build --release
-mkdir -p /tmp/abixio/{d1,d2,d3,d4}
+mkdir C:\abixio\d1
 
-./target/release/abixio --volumes /tmp/abixio/d{1...4} --no-auth
+.\target\release\abixio.exe --volumes C:\abixio\d1 --no-auth
 ```
 
-```bash
+```powershell
 curl -X PUT http://localhost:10000/mybucket
 curl -X PUT -d "hello world" http://localhost:10000/mybucket/hello.txt
 curl http://localhost:10000/mybucket/hello.txt
 ```
 
-Any S3 client works. 4 volumes = FTT 1 (tolerates 1 disk failure) by default.
+Any S3 client works. One node, one disk -- no redundancy, but fully functional.
 
-### Cluster
+### Quick start: mixed cluster
+
+Add a Linux node with 2 disks. The Windows node keeps its 1 disk. Nodes do not need to match.
+
+**Linux node** (192.168.1.20):
 
 ```bash
-abixio --volumes /data{1...2} --nodes http://node{1...3}:10000
+mkdir -p /srv/abixio/{d1,d2}
+
+./abixio \
+  --volumes /srv/abixio/d{1...2} \
+  --nodes http://192.168.1.10:10000,http://192.168.1.20:10000 \
+  --no-auth
 ```
 
-Same `--nodes` list on every node. Identity resolves automatically. See [cluster docs](docs/cluster.md).
+**Windows node** (192.168.1.10) -- restart with `--nodes`:
+
+```powershell
+.\abixio.exe --volumes C:\abixio\d1 --nodes http://192.168.1.10:10000,http://192.168.1.20:10000 --no-auth
+```
+
+Same `--nodes` list on every node. Identity resolves automatically.
+
+Result: 3 volumes across 2 nodes, 2 operating systems, different disk counts. FTT 1 works (tolerates 1 disk failure). See [cluster docs](docs/cluster.md).
 
 ### Current state
 
