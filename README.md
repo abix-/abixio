@@ -7,11 +7,11 @@ Rust S3-compatible object storage where each object chooses its own fault tolera
 
 ### Quick start
 
-Start a single node on Windows with one disk.
+Start a single node on Windows with 2 disks.
 
 ```powershell
-mkdir C:\data1
-abixio --volumes C:\data1 --no-auth
+mkdir C:\data1, C:\data2
+abixio --volumes C:\data{1...2} --no-auth
 ```
 
 ```powershell
@@ -20,9 +20,9 @@ curl -X PUT -d "hello world" http://localhost:10000/mybucket/hello.txt
 curl http://localhost:10000/mybucket/hello.txt
 ```
 
-Any S3 client works. One node and one disk means no redundancy, but everything works.
+Any S3 client works. By default, each object tolerates 1 volume failure.
 
-Now add a Linux node with 2 disks. Nodes do not need to match.
+Now add a Linux node with 2 more disks.
 
 **Linux node**:
 
@@ -36,12 +36,10 @@ abixio --volumes /data{1...2} \
 **Windows node**. Restart it with `--nodes`:
 
 ```powershell
-abixio --volumes C:\data1 --nodes http://windows:10000,http://linux:10000 --no-auth
+abixio --volumes C:\data{1...2} --nodes http://windows:10000,http://linux:10000 --no-auth
 ```
 
-`{N...M}` expands sequential ranges in `--volumes` and `--nodes`. For example `--nodes http://node{1...3}:10000` expands to node1, node2, node3.
-
-Same `--nodes` on every node. Identity resolves automatically. You now have 3 volumes across 2 nodes, 2 operating systems, and different disk counts. By default, each object tolerates 1 volume failure. See [cluster docs](docs/cluster.md).
+Same `--nodes` on every node. Identity resolves automatically. You now have 4 volumes across 2 nodes and 2 operating systems. `{N...M}` expands sequential ranges in `--volumes` and `--nodes`. See [cluster docs](docs/cluster.md).
 
 ### Current state
 
