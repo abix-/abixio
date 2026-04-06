@@ -34,13 +34,21 @@ impl HealStats {
     }
 
     pub fn scan_started(&self) {
-        *self.last_scan_started.lock().unwrap() = Some(Instant::now());
+        match self.last_scan_started.lock() {
+            Ok(mut guard) => *guard = Some(Instant::now()),
+            Err(e) => tracing::error!("poisoned mutex (scan_started): {}", e),
+        }
     }
 
     pub fn scan_finished(&self) {
-        if let Some(start) = *self.last_scan_started.lock().unwrap() {
-            self.last_scan_duration_secs
-                .store(start.elapsed().as_secs(), Ordering::Relaxed);
+        match self.last_scan_started.lock() {
+            Ok(guard) => {
+                if let Some(start) = *guard {
+                    self.last_scan_duration_secs
+                        .store(start.elapsed().as_secs(), Ordering::Relaxed);
+                }
+            }
+            Err(e) => tracing::error!("poisoned mutex (scan_finished): {}", e),
         }
     }
 
@@ -49,10 +57,13 @@ impl HealStats {
     }
 
     pub fn last_scan_started_secs_ago(&self) -> Option<u64> {
-        self.last_scan_started
-            .lock()
-            .unwrap()
-            .map(|s| s.elapsed().as_secs())
+        match self.last_scan_started.lock() {
+            Ok(guard) => guard.map(|s| s.elapsed().as_secs()),
+            Err(e) => {
+                tracing::error!("poisoned mutex (last_scan_started_secs_ago): {}", e);
+                None
+            }
+        }
     }
 
     pub fn uptime_secs(&self) -> u64 {

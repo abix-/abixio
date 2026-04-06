@@ -104,9 +104,9 @@ pub async fn resolve_identity(
     }
 
     // step 3: cluster -- already finalized from previous boot?
-    if formats[0].cluster_id.is_some() && formats[0].cluster.is_some() {
-        let cluster_id = formats[0].cluster_id.clone().unwrap();
-        let members = formats[0].cluster.as_ref().unwrap().members.clone();
+    if let (Some(cluster_id), Some(cluster)) = (&formats[0].cluster_id, &formats[0].cluster) {
+        let cluster_id = cluster_id.clone();
+        let members = cluster.members.clone();
         let node_volumes = build_node_volumes_from_members(
             &node_id,
             &advertise,

@@ -56,6 +56,25 @@ pub struct ClusterSummary {
     pub fenced_reason: Option<String>,
 }
 
+impl ClusterSummary {
+    pub fn fenced(reason: &str) -> Self {
+        Self {
+            enabled: false,
+            cluster_id: String::new(),
+            node_id: String::new(),
+            topology_hash: None,
+            state: ServiceState::Fenced,
+            epoch_id: 0,
+            leader_id: String::new(),
+            node_count: 0,
+            voter_count: 0,
+            reachable_voters: 0,
+            quorum: 0,
+            fenced_reason: Some(reason.to_string()),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClusterNodeStatus {
     pub node_id: String,
@@ -90,6 +109,23 @@ pub struct ClusterTopology {
     pub epoch: ClusterEpoch,
     pub nodes: Vec<ClusterNodeStatus>,
     pub volumes: Vec<ClusterVolumeStatus>,
+}
+
+impl Default for ClusterTopology {
+    fn default() -> Self {
+        Self {
+            cluster_id: String::new(),
+            epoch: ClusterEpoch {
+                epoch_id: 0,
+                leader_id: String::new(),
+                committed_at_unix_secs: 0,
+                voter_count: 0,
+                reachable_voters: 0,
+            },
+            nodes: Vec::new(),
+            volumes: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -180,31 +216,69 @@ impl ClusterManager {
     }
 
     pub fn summary(&self) -> ClusterSummary {
-        self.state.read().unwrap().summary.clone()
+        match self.state.read() {
+            Ok(guard) => guard.summary.clone(),
+            Err(e) => {
+                tracing::error!("poisoned rwlock (cluster summary): {}", e);
+                ClusterSummary::fenced("lock poisoned")
+            }
+        }
     }
 
     pub fn status_response(&self) -> ClusterStatusResponse {
-        let guard = self.state.read().unwrap();
-        ClusterStatusResponse {
-            summary: guard.summary.clone(),
-            topology: guard.topology.clone(),
+        match self.state.read() {
+            Ok(guard) => ClusterStatusResponse {
+                summary: guard.summary.clone(),
+                topology: guard.topology.clone(),
+            },
+            Err(e) => {
+                tracing::error!("poisoned rwlock (cluster status): {}", e);
+                ClusterStatusResponse {
+                    summary: ClusterSummary::fenced("lock poisoned"),
+                    topology: ClusterTopology::default(),
+                }
+            }
         }
     }
 
     pub fn nodes(&self) -> Vec<ClusterNodeStatus> {
-        self.state.read().unwrap().topology.nodes.clone()
+        match self.state.read() {
+            Ok(guard) => guard.topology.nodes.clone(),
+            Err(e) => {
+                tracing::error!("poisoned rwlock (cluster nodes): {}", e);
+                Vec::new()
+            }
+        }
     }
 
     pub fn topology(&self) -> ClusterTopology {
-        self.state.read().unwrap().topology.clone()
+        match self.state.read() {
+            Ok(guard) => guard.topology.clone(),
+            Err(e) => {
+                tracing::error!("poisoned rwlock (cluster topology): {}", e);
+                ClusterTopology::default()
+            }
+        }
     }
 
     pub fn epochs(&self) -> Vec<ClusterEpoch> {
-        self.state.read().unwrap().epochs.clone()
+        match self.state.read() {
+            Ok(guard) => guard.epochs.clone(),
+            Err(e) => {
+                tracing::error!("poisoned rwlock (cluster epochs): {}", e);
+                Vec::new()
+            }
+        }
     }
 
     pub fn force_fence(&self, reason: impl Into<String>) {
-        let mut guard = self.state.write().unwrap();
+        let mut guard = match self.state.write() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!("poisoned rwlock (force_fence): {}", e);
+                return;
+            }
+        };
         let reason = reason.into();
         guard.summary.state = ServiceState::Fenced;
         guard.summary.fenced_reason = Some(reason);
@@ -228,7 +302,13 @@ impl ClusterManager {
         volumes: Vec<ClusterVolumeStatus>,
     ) {
         let leader_id = leader_id.into();
-        let mut guard = self.state.write().unwrap();
+        let mut guard = match self.state.write() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!("poisoned rwlock (install_topology): {}", e);
+                return;
+            }
+        };
         let committed_at = unix_secs();
         let voter_count = nodes.iter().filter(|node| node.voter).count().max(1);
         let reachable_voters = nodes
@@ -362,7 +442,13 @@ impl ClusterManager {
         reachable_voters: usize,
         peer_summaries: Option<Vec<(String, ClusterSummary)>>,
     ) {
-        let mut guard = self.state.write().unwrap();
+        let mut guard = match self.state.write() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!("poisoned rwlock (mark_ready): {}", e);
+                return;
+            }
+        };
         let committed_at = unix_secs();
         let voter_count = self.config.nodes.len();
         let quorum = voter_count / 2 + 1;
@@ -409,7 +495,13 @@ impl ClusterManager {
         reachable_voters: usize,
         reason: Option<String>,
     ) {
-        let mut guard = self.state.write().unwrap();
+        let mut guard = match self.state.write() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!("poisoned rwlock (mark_fenced): {}", e);
+                return;
+            }
+        };
         let voter_count = self.config.nodes.len();
         let quorum = voter_count / 2 + 1;
         guard.summary.state = ServiceState::Fenced;
@@ -483,7 +575,13 @@ impl ClusterManager {
     }
 
     fn refresh_local_identity(&self) {
-        let mut guard = self.state.write().unwrap();
+        let mut guard = match self.state.write() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::error!("poisoned rwlock (refresh_local_identity): {}", e);
+                return;
+            }
+        };
         guard.summary.node_id = self.config.node_id.clone();
         guard.summary.cluster_id =
             cluster_id_for(&self.config.node_id, &self.config.nodes);
@@ -503,7 +601,10 @@ impl ClusterManager {
     }
 
     fn persist_state(&self) -> Result<()> {
-        let guard = self.state.read().unwrap();
+        let guard = self.state.read().map_err(|e| {
+            tracing::error!("poisoned rwlock (persist_state): {}", e);
+            anyhow::anyhow!("poisoned rwlock: {}", e)
+        })?;
         let bytes = serde_json::to_vec_pretty(&*guard).context("serialize cluster state")?;
         for disk in &self.config.disk_paths {
             let path = disk.join(CLUSTER_STATE_FILE);

@@ -19,7 +19,13 @@ impl ScanState {
     /// Returns true if this object should be scanned (not checked recently).
     pub fn should_scan(&self, bucket: &str, key: &str) -> bool {
         let obj_key = format!("{}/{}", bucket, key);
-        let map = self.last_checked.lock().unwrap();
+        let map = match self.last_checked.lock() {
+            Ok(guard) => guard,
+            Err(e) => {
+                tracing::error!("poisoned mutex (scanner should_scan): {}", e);
+                return true; // scan if uncertain
+            }
+        };
         match map.get(&obj_key) {
             Some(last) => last.elapsed() >= self.heal_interval,
             None => true,
@@ -29,8 +35,10 @@ impl ScanState {
     /// Mark an object as just checked.
     pub fn mark_checked(&self, bucket: &str, key: &str) {
         let obj_key = format!("{}/{}", bucket, key);
-        let mut map = self.last_checked.lock().unwrap();
-        map.insert(obj_key, Instant::now());
+        match self.last_checked.lock() {
+            Ok(mut map) => { map.insert(obj_key, Instant::now()); }
+            Err(e) => tracing::error!("poisoned mutex (scanner mark_checked): {}", e),
+        }
     }
 
     /// Mark an object as checked at a specific instant (for testing).
@@ -42,7 +50,13 @@ impl ScanState {
     }
 
     pub fn checked_count(&self) -> usize {
-        self.last_checked.lock().unwrap().len()
+        match self.last_checked.lock() {
+            Ok(guard) => guard.len(),
+            Err(e) => {
+                tracing::error!("poisoned mutex (scanner checked_count): {}", e);
+                0
+            }
+        }
     }
 }
 

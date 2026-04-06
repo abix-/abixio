@@ -32,12 +32,20 @@ pub struct S3Handler {
 
 type BoxBody = Full<Bytes>;
 
+fn build_response(builder: hyper::http::response::Builder, body: Bytes) -> Response<BoxBody> {
+    builder.body(Full::new(body)).unwrap_or_else(|e| {
+        tracing::error!("response builder failed: {}", e);
+        Response::new(Full::new(Bytes::from("internal error")))
+    })
+}
+
 fn ok_body(body: Vec<u8>) -> Response<BoxBody> {
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/xml")
-        .body(Full::new(Bytes::from(body)))
-        .unwrap()
+    build_response(
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/xml"),
+        Bytes::from(body),
+    )
 }
 
 fn error_response(err: &S3Error) -> Response<BoxBody> {
@@ -47,25 +55,22 @@ fn error_response(err: &S3Error) -> Response<BoxBody> {
 
 fn error_response_ctx(err: &S3Error, request_id: &str, resource: &str) -> Response<BoxBody> {
     let xml = error_to_xml(err, request_id, resource);
-    let mut resp = Response::builder()
-        .status(StatusCode::from_u16(err.http_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
-        .header("Content-Type", "application/xml")
-        .body(Full::new(Bytes::from(xml)))
-        .unwrap();
+    let mut resp = build_response(
+        Response::builder()
+            .status(StatusCode::from_u16(err.http_status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
+            .header("Content-Type", "application/xml"),
+        Bytes::from(xml),
+    );
     if !request_id.is_empty() {
-        resp.headers_mut().insert(
-            "x-amz-request-id",
-            request_id.parse().expect("valid header value"),
-        );
+        if let Ok(val) = request_id.parse() {
+            resp.headers_mut().insert("x-amz-request-id", val);
+        }
     }
     resp
 }
 
 fn empty_response(status: StatusCode) -> Response<BoxBody> {
-    Response::builder()
-        .status(status)
-        .body(Full::new(Bytes::new()))
-        .unwrap()
+    build_response(Response::builder().status(status), Bytes::new())
 }
 
 impl S3Handler {
@@ -116,7 +121,10 @@ impl S3Handler {
             let mut resp = resp;
             resp.headers_mut().insert(
                 "x-amz-request-id",
-                request_id.parse().expect("valid header value"),
+                request_id.parse().unwrap_or_else(|_| {
+                    tracing::error!("invalid request_id header value");
+                    hyper::header::HeaderValue::from_static("unknown")
+                }),
             );
             return resp;
         }
@@ -144,7 +152,10 @@ impl S3Handler {
             let mut resp = error_response(&ERR_SERVICE_UNAVAILABLE);
             resp.headers_mut().insert(
                 "x-amz-request-id",
-                request_id.parse().expect("valid header value"),
+                request_id.parse().unwrap_or_else(|_| {
+                    tracing::error!("invalid request_id header value");
+                    hyper::header::HeaderValue::from_static("unknown")
+                }),
             );
             return resp;
         }
@@ -253,7 +264,10 @@ impl S3Handler {
 
         resp.headers_mut().insert(
             "x-amz-request-id",
-            request_id.parse().expect("valid header value"),
+            request_id.parse().unwrap_or_else(|_| {
+                    tracing::error!("invalid request_id header value");
+                    hyper::header::HeaderValue::from_static("unknown")
+                }),
         );
         resp
     }
@@ -509,12 +523,13 @@ impl S3Handler {
 
             // write_versioned_shard already updated meta.json with the new version
 
-            Response::builder()
-                .status(StatusCode::OK)
-                .header("ETag", format!("\"{}\"", info.etag))
-                .header("x-amz-version-id", &version_id)
-                .body(Full::new(Bytes::new()))
-                .unwrap()
+            build_response(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("ETag", format!("\"{}\"", info.etag))
+                    .header("x-amz-version-id", &version_id),
+                Bytes::new(),
+            )
         } else {
             // unversioned or suspended: use "null" version per S3 spec
             match self.store.put_object(bucket, key, &body, opts) {
@@ -525,7 +540,7 @@ impl S3Handler {
                     if versioning_suspended {
                         builder = builder.header("x-amz-version-id", "null");
                     }
-                    builder.body(Full::new(Bytes::new())).unwrap()
+                    build_response(builder, Bytes::new())
                 }
                 Err(e) => error_response(&map_error(&e)),
             }
@@ -608,7 +623,7 @@ impl S3Handler {
             builder = builder.header(k.as_str(), v.as_str());
         }
 
-        builder.body(Full::new(Bytes::from(body_bytes))).unwrap()
+        build_response(builder, Bytes::from(body_bytes))
     }
 
     async fn head_object(
@@ -635,7 +650,7 @@ impl S3Handler {
                     builder = builder.header(k.as_str(), v.as_str());
                 }
 
-                builder.body(Full::new(Bytes::new())).unwrap()
+                build_response(builder, Bytes::new())
             }
             Err(e) => error_response(&map_error(&e)),
         }
@@ -651,7 +666,10 @@ impl S3Handler {
                 Ok(()) => {
                     let mut resp = empty_response(StatusCode::NO_CONTENT);
                     resp.headers_mut()
-                        .insert("x-amz-version-id", vid.parse().expect("valid header"));
+                        .insert("x-amz-version-id", vid.parse().unwrap_or_else(|_| {
+                            tracing::error!("invalid version-id header value");
+                            hyper::header::HeaderValue::from_static("unknown")
+                        }));
                     return resp;
                 }
                 Err(e) => return error_response(&map_error(&e)),
@@ -700,9 +718,15 @@ impl S3Handler {
             }
             let mut resp = empty_response(StatusCode::NO_CONTENT);
             resp.headers_mut()
-                .insert("x-amz-delete-marker", "true".parse().expect("valid header"));
+                .insert("x-amz-delete-marker", "true".parse().unwrap_or_else(|_| {
+                    tracing::error!("invalid delete-marker header value");
+                    hyper::header::HeaderValue::from_static("true")
+                }));
             resp.headers_mut()
-                .insert("x-amz-version-id", marker_id.parse().expect("valid header"));
+                .insert("x-amz-version-id", marker_id.parse().unwrap_or_else(|_| {
+                    tracing::error!("invalid version-id header value");
+                    hyper::header::HeaderValue::from_static("unknown")
+                }));
             resp
         } else {
             // unversioned: actually delete
@@ -1024,11 +1048,12 @@ impl S3Handler {
         match settings.policy {
             Some(policy) => {
                 let data = serde_json::to_vec(&policy).unwrap_or_default();
-                Response::builder()
-                    .status(StatusCode::OK)
-                    .header("Content-Type", "application/json")
-                    .body(Full::new(Bytes::from(data)))
-                    .unwrap()
+                build_response(
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("Content-Type", "application/json"),
+                    Bytes::from(data),
+                )
             }
             None => error_response(&super::errors::ERR_NO_SUCH_BUCKET_POLICY),
         }
@@ -1102,11 +1127,12 @@ impl S3Handler {
         }
         let settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
         match settings.lifecycle {
-            Some(xml) => Response::builder()
-                .status(StatusCode::OK)
-                .header("Content-Type", "application/xml")
-                .body(Full::new(Bytes::from(xml)))
-                .unwrap(),
+            Some(xml) => build_response(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/xml"),
+                Bytes::from(xml),
+            ),
             None => error_response(&super::errors::ERR_NO_SUCH_LIFECYCLE),
         }
     }
@@ -1227,11 +1253,12 @@ impl S3Handler {
             part_number,
             &body,
         ) {
-            Ok(part) => Response::builder()
-                .status(StatusCode::OK)
-                .header("ETag", format!("\"{}\"", part.etag))
-                .body(Full::new(Bytes::new()))
-                .unwrap(),
+            Ok(part) => build_response(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("ETag", format!("\"{}\"", part.etag)),
+                Bytes::new(),
+            ),
             Err(e) => error_response(&map_error(&e)),
         }
     }
@@ -1617,13 +1644,12 @@ fn check_preconditions(
     {
         let val = val.trim().trim_matches('"');
         if val == etag || val == quoted_etag || val == "*" {
-            return Some(
+            return Some(build_response(
                 Response::builder()
                     .status(StatusCode::NOT_MODIFIED)
-                    .header("ETag", &quoted_etag)
-                    .body(Full::new(Bytes::new()))
-                    .unwrap(),
-            );
+                    .header("ETag", &quoted_etag),
+                Bytes::new(),
+            ));
         }
     }
 
@@ -1635,13 +1661,12 @@ fn check_preconditions(
         if let Some(since) = parse_http_date(val) {
             // object is not modified if last_modified <= since (with 1s tolerance)
             if last_modified <= since {
-                return Some(
+                return Some(build_response(
                     Response::builder()
                         .status(StatusCode::NOT_MODIFIED)
-                        .header("ETag", &quoted_etag)
-                        .body(Full::new(Bytes::new()))
-                        .unwrap(),
-                );
+                        .header("ETag", &quoted_etag),
+                    Bytes::new(),
+                ));
             }
         }
     }

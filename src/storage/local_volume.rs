@@ -62,7 +62,9 @@ impl LocalVolume {
                     let rel = entry
                         .path()
                         .strip_prefix(base)
-                        .unwrap()
+                        .map_err(|_| StorageError::Internal(
+                            "object path not under base directory".into(),
+                        ))?
                         .to_string_lossy()
                         .replace('\\', "/");
                     if rel.starts_with(prefix) {

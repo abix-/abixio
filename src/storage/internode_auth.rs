@@ -11,11 +11,17 @@ struct Claims {
 const TOKEN_LIFETIME_SECS: u64 = 900; // 15 minutes
 const MAX_CLOCK_SKEW_SECS: u64 = 900; // 15 minutes
 
-pub fn sign_token(access_key: &str, secret_key: &str) -> Result<String, String> {
-    let now = std::time::SystemTime::now()
+fn unix_now() -> Result<std::time::Duration, String> {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+        .map_err(|e| {
+            tracing::error!("system clock before epoch: {}", e);
+            format!("system clock before epoch: {}", e)
+        })
+}
+
+pub fn sign_token(access_key: &str, secret_key: &str) -> Result<String, String> {
+    let now = unix_now()?.as_secs();
     let claims = Claims {
         access_key: access_key.to_string(),
         iat: now,
@@ -53,10 +59,7 @@ pub fn validate_token(
 
 pub fn validate_clock_skew(remote_nanos: &str) -> Result<(), String> {
     let remote: u64 = remote_nanos.parse().map_err(|_| "invalid timestamp")?;
-    let local = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
+    let local = unix_now()?.as_nanos() as u64;
     let diff = if remote > local {
         remote - local
     } else {
@@ -70,11 +73,13 @@ pub fn validate_clock_skew(remote_nanos: &str) -> Result<(), String> {
 }
 
 pub fn current_time_nanos() -> String {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .to_string()
+    match unix_now() {
+        Ok(d) => d.as_nanos().to_string(),
+        Err(e) => {
+            tracing::error!("cannot get current time: {}", e);
+            "0".to_string()
+        }
+    }
 }
 
 #[cfg(test)]

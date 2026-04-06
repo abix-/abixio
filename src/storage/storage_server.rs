@@ -149,11 +149,12 @@ impl StorageServer {
         match vol.read_shard(&bucket, &key) {
             Ok((data, meta)) => {
                 let meta_json = serde_json::to_string(&meta).unwrap_or_default();
-                Response::builder()
-                    .status(StatusCode::OK)
-                    .header("x-abixio-meta", &meta_json)
-                    .body(Full::new(Bytes::from(data)))
-                    .unwrap()
+                build_response(
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("x-abixio-meta", &meta_json),
+                    Bytes::from(data),
+                )
             }
             Err(e) => storage_error_response(e),
         }
@@ -353,11 +354,12 @@ impl StorageServer {
         match vol.read_versioned_shard(&bucket, &key, &version_id) {
             Ok((data, meta)) => {
                 let meta_json = serde_json::to_string(&meta).unwrap_or_default();
-                Response::builder()
-                    .status(StatusCode::OK)
-                    .header("x-abixio-meta", &meta_json)
-                    .body(Full::new(Bytes::from(data)))
-                    .unwrap()
+                build_response(
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header("x-abixio-meta", &meta_json),
+                    Bytes::from(data),
+                )
             }
             Err(e) => storage_error_response(e),
         }
@@ -410,29 +412,35 @@ impl StorageServer {
     }
 }
 
+fn build_response(builder: hyper::http::response::Builder, body: Bytes) -> Response<BoxBody> {
+    builder.body(Full::new(body)).unwrap_or_else(|e| {
+        tracing::error!("response builder failed: {}", e);
+        Response::new(Full::new(Bytes::from("internal error")))
+    })
+}
+
 fn json_response(body: &impl serde::Serialize) -> Response<BoxBody> {
     let json = serde_json::to_string(body).unwrap_or_else(|_| "{}".to_string());
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(json)))
-        .unwrap()
+    build_response(
+        Response::builder()
+            .status(StatusCode::OK)
+            .header("Content-Type", "application/json"),
+        Bytes::from(json),
+    )
 }
 
 fn error_response(status: StatusCode, msg: &str) -> Response<BoxBody> {
     let body = serde_json::json!({"error": msg});
-    Response::builder()
-        .status(status)
-        .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(body.to_string())))
-        .unwrap()
+    build_response(
+        Response::builder()
+            .status(status)
+            .header("Content-Type", "application/json"),
+        Bytes::from(body.to_string()),
+    )
 }
 
 fn ok_empty() -> Response<BoxBody> {
-    Response::builder()
-        .status(StatusCode::OK)
-        .body(Full::new(Bytes::new()))
-        .unwrap()
+    build_response(Response::builder().status(StatusCode::OK), Bytes::new())
 }
 
 fn storage_error_response(e: StorageError) -> Response<BoxBody> {

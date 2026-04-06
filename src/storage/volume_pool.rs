@@ -8,7 +8,7 @@ use super::metadata::{
     PutOptions, VersioningConfig,
 };
 use super::pathing;
-use super::{StorageError, Store};
+use super::{StorageError, Store, read_or_err, write_or_err};
 use crate::cluster::placement::{PlacementVolume, PlacementPlanner};
 use crate::heal::mrf::MrfQueue;
 
@@ -118,21 +118,21 @@ impl VolumePool {
                 disks.len()
             )));
         }
-        let mut guard = self.placement.write().unwrap();
+        let mut guard = write_or_err(&self.placement, "placement")?;
         guard.epoch_id = epoch_id;
         guard.cluster_id = cluster_id.into();
         guard.disks = disks;
         Ok(())
     }
 
-    pub fn placement_planner(&self) -> PlacementPlanner {
-        let guard = self.placement.read().unwrap();
-        PlacementPlanner::new(guard.epoch_id, guard.cluster_id.clone(), guard.disks.clone())
+    pub fn placement_planner(&self) -> Result<PlacementPlanner, StorageError> {
+        let guard = read_or_err(&self.placement, "placement")?;
+        Ok(PlacementPlanner::new(guard.epoch_id, guard.cluster_id.clone(), guard.disks.clone()))
     }
 
-    pub fn placement_snapshot(&self) -> (u64, String, Vec<PlacementVolume>) {
-        let guard = self.placement.read().unwrap();
-        (guard.epoch_id, guard.cluster_id.clone(), guard.disks.clone())
+    pub fn placement_snapshot(&self) -> Result<(u64, String, Vec<PlacementVolume>), StorageError> {
+        let guard = read_or_err(&self.placement, "placement")?;
+        Ok((guard.epoch_id, guard.cluster_id.clone(), guard.disks.clone()))
     }
 
     /// Resolve EC params for a write operation.
@@ -186,7 +186,7 @@ impl Store for VolumePool {
             return Err(StorageError::BucketNotFound);
         }
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts);
-        let planner = self.placement_planner();
+        let planner = self.placement_planner()?;
         encode_and_write_with_mrf(
             &self.disks,
             &planner,
@@ -473,7 +473,7 @@ impl Store for VolumePool {
             return Err(StorageError::BucketNotFound);
         }
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts);
-        let planner = self.placement_planner();
+        let planner = self.placement_planner()?;
         encode_and_write_versioned(
             &self.disks,
             &planner,

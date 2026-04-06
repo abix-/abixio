@@ -248,4 +248,40 @@ pub enum StorageError {
 
     #[error("invalid upload id: {0}")]
     InvalidUploadId(String),
+
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
+/// Lock a Mutex, returning StorageError::Internal on poison.
+pub fn lock_or_err<'a, T>(
+    m: &'a std::sync::Mutex<T>,
+    ctx: &str,
+) -> Result<std::sync::MutexGuard<'a, T>, StorageError> {
+    m.lock().map_err(|e| {
+        tracing::error!("poisoned mutex ({}): {}", ctx, e);
+        StorageError::Internal(format!("poisoned mutex: {}", ctx))
+    })
+}
+
+/// Read-lock an RwLock, returning StorageError::Internal on poison.
+pub fn read_or_err<'a, T>(
+    rw: &'a std::sync::RwLock<T>,
+    ctx: &str,
+) -> Result<std::sync::RwLockReadGuard<'a, T>, StorageError> {
+    rw.read().map_err(|e| {
+        tracing::error!("poisoned rwlock read ({}): {}", ctx, e);
+        StorageError::Internal(format!("poisoned rwlock: {}", ctx))
+    })
+}
+
+/// Write-lock an RwLock, returning StorageError::Internal on poison.
+pub fn write_or_err<'a, T>(
+    rw: &'a std::sync::RwLock<T>,
+    ctx: &str,
+) -> Result<std::sync::RwLockWriteGuard<'a, T>, StorageError> {
+    rw.write().map_err(|e| {
+        tracing::error!("poisoned rwlock write ({}): {}", ctx, e);
+        StorageError::Internal(format!("poisoned rwlock: {}", ctx))
+    })
 }

@@ -31,7 +31,10 @@ impl MrfQueue {
     /// Enqueue an entry for healing. Deduplicates: if the same (bucket, key)
     /// is already pending, this is a no-op.
     pub fn enqueue(&self, entry: MrfEntry) -> Result<(), String> {
-        let mut seen = self.seen.lock().unwrap();
+        let mut seen = self.seen.lock().map_err(|e| {
+            tracing::error!("poisoned mutex (mrf seen): {}", e);
+            format!("poisoned mutex: {}", e)
+        })?;
         if seen.contains(&entry) {
             return Ok(()); // already pending
         }
@@ -51,16 +54,31 @@ impl MrfQueue {
     /// Take the receiver half (for the worker to drain).
     /// Can only be called once.
     pub fn take_receiver(&self) -> Option<mpsc::Receiver<MrfEntry>> {
-        self.rx.lock().unwrap().take()
+        match self.rx.lock() {
+            Ok(mut guard) => guard.take(),
+            Err(e) => {
+                tracing::error!("poisoned mutex (mrf rx): {}", e);
+                None
+            }
+        }
     }
 
     /// Remove an entry from the seen set after it's been healed.
     pub fn mark_done(&self, entry: &MrfEntry) {
-        self.seen.lock().unwrap().remove(entry);
+        match self.seen.lock() {
+            Ok(mut guard) => { guard.remove(entry); }
+            Err(e) => tracing::error!("poisoned mutex (mrf mark_done): {}", e),
+        }
     }
 
     pub fn pending_count(&self) -> usize {
-        self.seen.lock().unwrap().len()
+        match self.seen.lock() {
+            Ok(guard) => guard.len(),
+            Err(e) => {
+                tracing::error!("poisoned mutex (mrf pending_count): {}", e);
+                0
+            }
+        }
     }
 }
 

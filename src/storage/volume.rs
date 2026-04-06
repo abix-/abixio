@@ -116,7 +116,7 @@ pub fn load_volumes(disk_paths: &[PathBuf]) -> Result<Option<Vec<VolumeFormat>>,
         }
     }
 
-    Ok(Some(formats.into_iter().map(|f| f.unwrap()).collect()))
+    Ok(Some(formats.into_iter().flatten().collect()))
 }
 
 /// Format fresh disks with generated identity. Returns the formats written.

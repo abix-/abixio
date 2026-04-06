@@ -18,12 +18,15 @@ impl RemoteVolume {
         access_key: String,
         secret_key: String,
         no_auth: bool,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .expect("build http client");
-        Self { endpoint, volume_path, client, access_key, secret_key, no_auth }
+            .map_err(|e| {
+                tracing::error!("failed to build http client: {}", e);
+                format!("build http client: {}", e)
+            })?;
+        Ok(Self { endpoint, volume_path, client, access_key, secret_key, no_auth })
     }
 
     fn url(&self, method: &str) -> String {

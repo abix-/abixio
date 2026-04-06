@@ -76,13 +76,20 @@ async fn main() {
         } else {
             // remote volumes
             for vp in &nv.volume_paths {
-                backends.push(Box::new(RemoteVolume::new(
+                let rv = match RemoteVolume::new(
                     nv.endpoint.clone(),
                     vp.clone(),
                     access_key.clone(),
                     secret_key.clone(),
                     cfg.no_auth,
-                )));
+                ) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        eprintln!("fatal: {}", e);
+                        std::process::exit(1);
+                    }
+                };
+                backends.push(Box::new(rv));
             }
         }
     }

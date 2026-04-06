@@ -188,6 +188,7 @@ pub fn map_error(err: &StorageError) -> S3Error {
         | StorageError::InvalidVersionId(_)
         | StorageError::InvalidUploadId(_) => ERR_INVALID_ARGUMENT,
         StorageError::Io(_) => ERR_INTERNAL,
+        StorageError::Internal(_) => ERR_INTERNAL,
     }
 }
 
