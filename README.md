@@ -20,7 +20,7 @@ curl -X PUT -d "hello world" http://localhost:10000/mybucket/hello.txt
 curl http://localhost:10000/mybucket/hello.txt
 ```
 
-Any S3 client works. One node, one disk -- no redundancy, but fully functional.
+Any S3 client works. One node and one disk means no redundancy, but everything works.
 
 ### Quick start: mixed cluster
 
@@ -37,7 +37,7 @@ mkdir -p /srv/abixio/{d1,d2}
   --no-auth
 ```
 
-**Windows node** (192.168.1.10) -- restart with `--nodes`:
+**Windows node** (192.168.1.10). Restart it with `--nodes`:
 
 ```powershell
 .\abixio.exe --volumes C:\abixio\d1 --nodes http://192.168.1.10:10000,http://192.168.1.20:10000 --no-auth
