@@ -207,7 +207,7 @@ pub trait Store: Send + Sync {
     ) -> Result<(), StorageError>;
 
     fn disk_count(&self) -> usize;
-    fn bucket_ec(&self, bucket: &str) -> (usize, usize);
+    async fn bucket_ec(&self, bucket: &str) -> (usize, usize);
 }
 
 #[derive(Debug, thiserror::Error)]
