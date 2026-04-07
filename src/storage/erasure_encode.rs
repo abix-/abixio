@@ -47,6 +47,23 @@ pub fn split_data(data: &[u8], count: usize) -> Vec<Vec<u8>> {
     shards
 }
 
+/// Split data into pre-allocated shard buffers. Zero allocation -- reuses existing Vecs.
+/// `buffers` must have at least `count` entries. Each buffer is cleared and filled.
+fn split_data_into(data: &[u8], count: usize, buffers: &mut [Vec<u8>]) {
+    let shard_size = data.len().div_ceil(count).max(1);
+    for (i, buf) in buffers.iter_mut().enumerate().take(count) {
+        buf.clear();
+        let start = i * shard_size;
+        if start >= data.len() {
+            buf.resize(shard_size, 0);
+        } else {
+            let end = (start + shard_size).min(data.len());
+            buf.extend_from_slice(&data[start..end]);
+            buf.resize(shard_size, 0);
+        }
+    }
+}
+
 /// Block size for streaming encode (1MB).
 const STREAM_BLOCK_SIZE: usize = 1024 * 1024;
 
@@ -122,6 +139,12 @@ where
         (0..total).map(|_| blake3::Hasher::new()).collect();
     let mut total_size: u64 = 0;
 
+    // pre-allocate shard buffers (reused across all blocks -- zero alloc per block)
+    let shard_capacity = STREAM_BLOCK_SIZE.div_ceil(data_n).max(1);
+    let mut shard_bufs: Vec<Vec<u8>> = (0..total)
+        .map(|_| Vec::with_capacity(shard_capacity))
+        .collect();
+
     // read body in blocks, encode, write through ShardWriters
     let mut block_buf = Vec::with_capacity(STREAM_BLOCK_SIZE * 2);
 
@@ -139,6 +162,7 @@ where
                 &rs,
                 &mut writers,
                 &mut shard_hashers,
+                &mut shard_bufs,
             )
             .await?;
             let remaining = block_buf.len() - STREAM_BLOCK_SIZE;
@@ -156,6 +180,7 @@ where
             &rs,
             &mut writers,
             &mut shard_hashers,
+            &mut shard_bufs,
         )
         .await?;
     }
@@ -269,10 +294,10 @@ pub async fn encode_and_write_bytes(
 }
 
 /// Write one RS-encoded block to all shard writers sequentially.
+/// Uses pre-allocated shard buffers (zero allocation per block).
 /// Parallel approaches (FuturesUnordered, channel-based tasks) were benchmarked
 /// and regressed at 10MB due to task/channel overhead exceeding the benefit
-/// when all shards write to the same physical disk. Parallel writes would only
-/// help with truly separate physical disks, which tmpdir benchmarks don't test.
+/// when all shards write to the same physical disk.
 async fn write_block(
     block: &[u8],
     data_n: usize,
@@ -280,20 +305,27 @@ async fn write_block(
     rs: &Option<ReedSolomon>,
     writers: &mut [Box<dyn ShardWriter>],
     shard_hashers: &mut [blake3::Hasher],
+    shard_bufs: &mut Vec<Vec<u8>>,
 ) -> Result<(), StorageError> {
-    let mut shards = split_data(block, data_n);
+    let total = data_n + parity_n;
+
+    // split data into pre-allocated buffers (zero alloc)
+    split_data_into(block, data_n, shard_bufs);
+
+    // zero parity buffers and RS encode
     if let Some(rs) = rs {
-        let shard_size = shards[0].len();
-        for _ in 0..parity_n {
-            shards.push(vec![0u8; shard_size]);
+        let shard_size = shard_bufs[0].len();
+        for buf in shard_bufs.iter_mut().skip(data_n).take(parity_n) {
+            buf.clear();
+            buf.resize(shard_size, 0);
         }
-        rs.encode(&mut shards)
+        rs.encode(&mut shard_bufs[..])
             .map_err(|e| StorageError::InvalidConfig(format!("reed-solomon encode: {}", e)))?;
     }
 
-    for (i, shard_data) in shards.iter().enumerate() {
-        shard_hashers[i].update(shard_data);
-        writers[i].write_chunk(shard_data).await?;
+    for i in 0..total {
+        shard_hashers[i].update(&shard_bufs[i]);
+        writers[i].write_chunk(&shard_bufs[i]).await?;
     }
 
     Ok(())
