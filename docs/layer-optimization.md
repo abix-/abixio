@@ -362,6 +362,60 @@ The L4 PUT gap (3.7x vs disk) is from inline hashing (MD5 at 703 MB/s is the
 floor) plus RS encode plus metadata writes. These are fundamental costs of
 erasure-coded storage, not inefficiencies.
 
+## Allocation audit
+
+Every allocation in the hot path is a potential throughput ceiling. The 1+0
+GET path is already zero-alloc (mmap -> Bytes::from_owner -> slice). The EC
+GET and PUT paths still allocate heavily. This section inventories every
+allocation, rates its impact, and identifies the fix.
+
+### EC GET hot path (`src/storage/erasure_decode.rs` read_and_decode_stream)
+
+Per 1GB object with 4-disk 3+1 EC (1024 encode blocks, 256 decode iterations):
+
+| Location | What | Count per 1GB | Impact | Fix |
+|----------|------|---------------|--------|-----|
+| line 158 | `Vec::with_capacity(iter_size)` -- 4MB output buffer | 256 | **high** | pre-alloc once, `clear()` + reuse. `Bytes::from(take(&mut buf))` per send |
+| line 166 | `vec![None; total]` -- shard slot array | 1024 | medium | pre-alloc once outside loop, reuse |
+| line 171 | `mmap[..].to_vec()` -- **copies mmap data into Vec per shard per block** | 1024 x 4 = 4096 | **critical** | fast path: when all data shards present, slice directly from mmap into output, skip Vec entirely. slow path: only alloc Vec when RS reconstruct needed |
+| line 191 | `Vec::with_capacity(block_size)` -- per-block reassembly buffer | 1024 | **high** | eliminate: write directly into iter_data in the fast path |
+
+**Total per 1GB**: ~5400 allocations. The mmap->Vec copy at line 171 is
+the single biggest offender -- it copies every byte of every shard even
+though we already have the data memory-mapped.
+
+**Fast path** (all shards healthy, common case): zero Vec allocations.
+Read data shards directly from mmap slices into the output buffer.
+
+**Slow path** (missing shards, needs RS reconstruct): allocate Vecs for
+shard slots, call `rs.reconstruct()`, then copy to output. This is rare
+and correctness matters more than speed.
+
+### PUT hot path (`src/storage/erasure_encode.rs` encode_and_write)
+
+Per 1GB object with 3+1 EC (1024 blocks):
+
+| Location | What | Count per 1GB | Impact | Fix |
+|----------|------|---------------|--------|-----|
+| line 126 | `Vec::with_capacity(STREAM_BLOCK_SIZE * 2)` block_buf | 1 | none | already reused across blocks |
+| line 34-41 | `split_data()` -- creates `data_n` new Vecs per block | 1024 x 3 = 3072 | **critical** | `split_data_into()`: pre-alloc shard buffers, write into them, reuse |
+| line 283-285 | parity Vec allocation per block | 1024 x 1 = 1024 | **high** | pre-alloc parity buffers, zero and reuse |
+| line 290-292 | `shard_hashers[i].update()` + `writers[i].write_chunk()` | per shard per block | none | no allocation (update is in-place, write is I/O) |
+
+**Total per 1GB**: ~4096 allocations from split_data + parity buffers.
+
+**Fix**: `split_data_into(data, count, &mut buffers)` writes into pre-allocated
+buffers. Parity buffers also pre-allocated. Both reused across all 1024 blocks.
+
+### Summary
+
+| Path | Allocations per 1GB (before) | Allocations per 1GB (after) | Reduction |
+|------|-----------------------------|-----------------------------|-----------|
+| 1+0 GET | 0 (mmap -> Bytes slices) | 0 | already done |
+| EC GET (healthy) | ~5400 | ~256 (one per 4MB send) | 95% |
+| EC GET (degraded) | ~5400 | ~5400 (reconstruct needs Vecs) | 0% (correctness path) |
+| PUT | ~4096 | ~1 (initial alloc, reused) | 99% |
+
 ## Future optimization candidates
 
 - **Multi-disk benchmark on separate physical devices**: parallel shard writes
