@@ -7,11 +7,11 @@ use hyper::{Request, Response};
 use crate::admin::handlers::AdminHandler;
 use crate::storage::storage_server::StorageServer;
 
-type BoxBody = Full<Bytes>;
+type BoxBody = http_body_util::combinators::BoxBody<Bytes, Box<dyn std::error::Error + Send + Sync>>;
 
 /// Dispatch layer that handles non-S3 paths before s3s routing.
 /// Intercepts _admin/* and _storage/v1/* requests; passes everything else
-/// to the s3s service.
+/// to the s3s service. S3 response bodies stream through without collection.
 pub struct AbixioDispatch {
     admin: Option<Arc<AdminHandler>>,
     storage_server: Option<Arc<StorageServer>>,
@@ -39,7 +39,7 @@ impl AbixioDispatch {
         // internode storage RPC (JWT auth, not S3 auth)
         if trimmed.starts_with("_storage/v1/") {
             if let Some(server) = &self.storage_server {
-                return server.dispatch(req).await;
+                return wrap_full(server.dispatch(req).await);
             }
             return error_response(hyper::StatusCode::NOT_FOUND, "no storage server");
         }
@@ -54,15 +54,15 @@ impl AbixioDispatch {
                 } else {
                     &trimmed["_admin/".len()..]
                 };
-                return admin.dispatch(admin_path, &method, &query).await;
+                return wrap_full(admin.dispatch(admin_path, &method, &query).await);
             }
             return error_response(hyper::StatusCode::NOT_FOUND, "no admin handler");
         }
 
-        // everything else goes to s3s
+        // S3: pass s3s::Body through directly (streaming, no collection)
         let resp = hyper::service::Service::call(&self.s3_service, req).await;
         let mut resp = match resp {
-            Ok(resp) => convert_s3_response(resp).await,
+            Ok(resp) => wrap_s3s(resp),
             Err(e) => {
                 tracing::error!("s3s http error: {:?}", e);
                 error_response(
@@ -72,7 +72,6 @@ impl AbixioDispatch {
             }
         };
 
-        // add request-id to all s3s responses
         if let Ok(val) = request_id.parse() {
             resp.headers_mut().insert("x-amz-request-id", val);
         }
@@ -80,21 +79,33 @@ impl AbixioDispatch {
     }
 }
 
-async fn convert_s3_response(resp: s3s::HttpResponse) -> Response<BoxBody> {
+fn wrap_s3s(resp: s3s::HttpResponse) -> Response<BoxBody> {
     use http_body_util::BodyExt;
     let (parts, body) = resp.into_parts();
-    let body_bytes = match body.collect().await {
-        Ok(collected) => collected.to_bytes(),
-        Err(_) => Bytes::new(),
-    };
-    Response::from_parts(parts, Full::new(body_bytes))
+    Response::from_parts(parts, body.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { e }).boxed())
+}
+
+fn wrap_full(resp: Response<Full<Bytes>>) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
+    let (parts, body) = resp.into_parts();
+    Response::from_parts(parts, body.map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) }).boxed())
 }
 
 fn error_response(status: hyper::StatusCode, msg: &str) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
     let body = serde_json::json!({"error": msg});
+    let full = Full::new(Bytes::from(body.to_string()))
+        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
+        .boxed();
     Response::builder()
         .status(status)
         .header("Content-Type", "application/json")
-        .body(Full::new(Bytes::from(body.to_string())))
-        .unwrap_or_else(|_| Response::new(Full::new(Bytes::from("internal error"))))
+        .body(full)
+        .unwrap_or_else(|_| {
+            Response::new(
+                Full::new(Bytes::from("internal error"))
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })
+                    .boxed(),
+            )
+        })
 }
