@@ -31,18 +31,15 @@ Standard AWS IAM bucket policy JSON:
 
 ### Validation on PUT
 
-- Body must be valid JSON
-- `Version` field must exist and be non-empty
-- Max body size: 20KiB
+The s3s protocol layer delivers the raw policy body as a string. The current
+implementation stores it without validation. Policy JSON format and Version
+field validation are not enforced.
 
 ### Error cases
 
 | Case | Response |
 |---|---|
 | No policy set | 404 `NoSuchBucketPolicy` |
-| Invalid JSON | 400 `MalformedXML` |
-| Missing/empty Version | 400 `MalformedXML` |
-| Body > 20KiB | 400 `PolicyTooLarge` |
 | Bucket not found | 404 `NoSuchBucket` |
 
 ## Storage

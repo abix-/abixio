@@ -7,9 +7,9 @@ server.
 
 This is intentionally a control-plane-first design. The current implementation
 adds node-based identity exchange, persisted cluster metadata, self-describing
-volumes, node monitoring, admin visibility, hard fencing, and deterministic
-node-aware placement metadata. It does **not** yet add internode shard RPC or
-consensus-backed topology reconfiguration.
+volumes, node monitoring, admin visibility, hard fencing, deterministic
+node-aware placement metadata, and internode shard RPC over HTTP. It does
+**not** yet add consensus-backed topology reconfiguration.
 
 ## Goals
 

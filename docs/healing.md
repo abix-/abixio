@@ -68,7 +68,7 @@ Scanner wakes up
 - Cooldown per object: won't re-check within `--heal-interval` (default 24h)
 - Catches anything MRF missed (queue overflow, objects degraded by external
   causes like manual file deletion or bitrot)
-- Runs as one blocking scan cycle per interval in the current implementation
+- Runs as one async scan cycle per interval
 
 ## The heal_object() Function
 

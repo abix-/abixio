@@ -19,12 +19,14 @@ node-level resilience, not product support.
 !!! warning "Early development"
     AbixIO is not production-ready yet.
 
-Current reality as of 2026-04-05:
+Current reality as of 2026-04-06:
 
 - first commit: 2026-04-04
 - no releases, packaging, or production deployments
-- 316 automated tests
+- 171 passing automated tests (lib + integration + admin)
 - 41 of 72 S3 API operations implemented
+- protocol layer powered by s3s (SigV4 chunked auth, smithy XML, presigned URLs)
+- fully async storage layer (tokio)
 - core storage engine works with real S3 clients, but important gaps remain
 
 ## What AbixIO Is Good At
@@ -53,8 +55,8 @@ Current reality as of 2026-04-05:
 ## What Is Still Missing Or Rough
 
 - No production field time, benchmarks, load testing, or failure-injection testing
-- Object tagging returns errors in the latest build
-- Chunked transfer encoding is not properly stripped in relay paths
+- Conditional requests (If-Match, If-None-Match) not yet wired through s3s
+- Versioning response headers (x-amz-version-id) not yet wired through s3s
 - Bucket delete fails when versioned objects exist
 - No encryption at rest
 - No live topology changes or rebalance

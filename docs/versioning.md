@@ -92,12 +92,15 @@ directory (`key/<uuid>/`) is deleted. This is a permanent delete.
 
 ## Response headers
 
-| Header | When |
-|---|---|
-| `x-amz-version-id` | On PUT (versioned), GET, DELETE responses |
-| `x-amz-delete-marker: true` | On DELETE when a delete marker is created |
+| Header | When | Status |
+|---|---|---|
+| `x-amz-version-id` | On PUT (versioned), GET, DELETE responses | **Not yet wired** through s3s DTOs |
+| `x-amz-delete-marker: true` | On DELETE when a delete marker is created | **Not yet wired** through s3s DTOs |
 
-In suspended mode, PUT returns `x-amz-version-id: null`.
+> **Known gap:** version-id and delete-marker response headers are not yet
+> returned by the s3s integration layer. The storage layer tracks versions
+> correctly, but `s3_service.rs` does not yet set these headers on the s3s
+> output DTOs. Tracked in docs/todo.md.
 
 ## ListObjectVersions response
 
