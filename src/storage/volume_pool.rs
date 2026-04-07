@@ -179,13 +179,23 @@ impl Store for VolumePool {
         data: &[u8],
         opts: PutOptions,
     ) -> Result<ObjectInfo, StorageError> {
+        let t0 = std::time::Instant::now();
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
+        let t_head = t0.elapsed();
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
+        let t_ec = t0.elapsed();
         let planner = self.placement_planner()?;
+        if data.len() >= 1024 * 1024 {
+            tracing::info!(
+                head_ms = t_head.as_secs_f64() * 1000.0,
+                resolve_ec_ms = (t_ec - t_head).as_secs_f64() * 1000.0,
+                "put_object preamble"
+            );
+        }
         encode_and_write_with_mrf(
             &self.disks,
             &planner,
@@ -1325,5 +1335,112 @@ mod tests {
             ..Default::default()
         };
         assert!(set.put_object("test", "key", b"data", opts).await.is_err());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn timing_put_10mb() {
+        let (_base, paths) = make_disk_dirs(4);
+        let set = make_set(&paths);
+        set.make_bucket("bench").await.unwrap();
+
+        let payload = vec![0x42u8; 10 * 1024 * 1024];
+
+        // warmup
+        for i in 0..3 {
+            let opts = PutOptions { content_type: "application/octet-stream".to_string(), ..Default::default() };
+            set.put_object("bench", &format!("warmup/{i}"), &payload, opts).await.unwrap();
+        }
+
+        // timed run
+        let iters = 5;
+        let mut timings = Vec::new();
+        for i in 0..iters {
+            let opts = PutOptions { content_type: "application/octet-stream".to_string(), ..Default::default() };
+            let t = std::time::Instant::now();
+            set.put_object("bench", &format!("obj/{i}"), &payload, opts).await.unwrap();
+            let elapsed = t.elapsed();
+            timings.push(elapsed);
+            eprintln!("  put 10MB #{}: {:.1}ms", i, elapsed.as_secs_f64() * 1000.0);
+        }
+        timings.sort();
+        let avg: std::time::Duration = timings.iter().sum::<std::time::Duration>() / iters as u32;
+        let p50 = timings[iters / 2];
+        eprintln!("  avg={:.1}ms  p50={:.1}ms  throughput={:.1} MB/s",
+            avg.as_secs_f64() * 1000.0,
+            p50.as_secs_f64() * 1000.0,
+            (10.0 * iters as f64) / timings.iter().sum::<std::time::Duration>().as_secs_f64()
+        );
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn timing_breakdown_put_10mb() {
+        let (_base, paths) = make_disk_dirs(1);
+        let set = make_set(&paths);
+        set.make_bucket("bench").await.unwrap();
+
+        let payload = vec![0x42u8; 10 * 1024 * 1024];
+        let opts = PutOptions { content_type: "application/octet-stream".to_string(), ..Default::default() };
+        // warmup
+        set.put_object("bench", "warmup", &payload, opts).await.unwrap();
+
+        // breakdown: head_bucket
+        let t = std::time::Instant::now();
+        let _ = set.head_bucket("bench").await;
+        eprintln!("  head_bucket: {:.3}ms", t.elapsed().as_secs_f64() * 1000.0);
+
+        // breakdown: resolve_ec
+        let opts2 = PutOptions { content_type: "application/octet-stream".to_string(), ..Default::default() };
+        let t = std::time::Instant::now();
+        let _ = set.resolve_ec("bench", &opts2).await;
+        eprintln!("  resolve_ec: {:.3}ms", t.elapsed().as_secs_f64() * 1000.0);
+
+        // breakdown: md5
+        let t = std::time::Instant::now();
+        let _ = crate::storage::bitrot::md5_hex(&payload);
+        eprintln!("  md5 10MB: {:.3}ms", t.elapsed().as_secs_f64() * 1000.0);
+
+        // breakdown: sha256
+        let t = std::time::Instant::now();
+        let _ = crate::storage::bitrot::sha256_hex(&payload);
+        eprintln!("  sha256 10MB: {:.3}ms", t.elapsed().as_secs_f64() * 1000.0);
+
+        // breakdown: split_data
+        let t = std::time::Instant::now();
+        let shards = crate::storage::erasure_encode::split_data(&payload, 1);
+        eprintln!("  split_data: {:.3}ms", t.elapsed().as_secs_f64() * 1000.0);
+
+        // breakdown: raw tokio::fs::write 10MB
+        let t = std::time::Instant::now();
+        let path = paths[0].join("bench").join("raw_test");
+        tokio::fs::create_dir_all(&path).await.unwrap();
+        tokio::fs::write(path.join("shard.dat"), &shards[0]).await.unwrap();
+        eprintln!("  tokio::fs::write 10MB: {:.3}ms", t.elapsed().as_secs_f64() * 1000.0);
+
+        // breakdown: write_shard (shard.dat + meta.json via Backend)
+        let meta = crate::storage::metadata::ObjectMeta {
+            size: payload.len() as u64,
+            etag: "test".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            created_at: 0,
+            erasure: crate::storage::metadata::ErasureMeta { ftt: 0, index: 0, epoch_id: 0, volume_ids: vec![] },
+            checksum: "test".to_string(),
+            user_metadata: std::collections::HashMap::new(),
+            tags: std::collections::HashMap::new(),
+            version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+        };
+        let t = std::time::Instant::now();
+        set.disks[0].write_shard("bench", "timing_test", &shards[0], &meta).await.unwrap();
+        eprintln!("  write_shard (data+meta): {:.3}ms", t.elapsed().as_secs_f64() * 1000.0);
+
+        // breakdown: full put_object
+        let opts3 = PutOptions { content_type: "application/octet-stream".to_string(), ..Default::default() };
+        let t = std::time::Instant::now();
+        set.put_object("bench", "timing_full", &payload, opts3).await.unwrap();
+        eprintln!("  full put_object 10MB: {:.3}ms", t.elapsed().as_secs_f64() * 1000.0);
     }
 }

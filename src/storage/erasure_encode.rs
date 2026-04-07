@@ -113,8 +113,11 @@ async fn encode_and_write_impl(
     mrf: Option<&Arc<MrfQueue>>,
     version_id: Option<&str>,
 ) -> Result<ObjectInfo, StorageError> {
+    let t0 = std::time::Instant::now();
     let total = data_n + parity_n;
     let etag = md5_hex(data);
+    let t_md5 = t0.elapsed();
+
     let created_at = unix_timestamp_secs();
     let content_type = if opts.content_type.is_empty() {
         "application/octet-stream".to_string()
@@ -137,6 +140,7 @@ async fn encode_and_write_impl(
         .collect::<Vec<_>>();
 
     // split data into data_n shards
+    let t1 = std::time::Instant::now();
     let mut shards = split_data(data, data_n);
 
     if parity_n > 0 {
@@ -151,17 +155,26 @@ async fn encode_and_write_impl(
         rs.encode(&mut shards)
             .map_err(|e| StorageError::InvalidConfig(format!("reed-solomon encode: {}", e)))?;
     }
+    let t_ec = t1.elapsed();
 
     // write shards to disks in parallel
+    let t2 = std::time::Instant::now();
     let data_size = data.len() as u64;
     let vid_str = version_id.unwrap_or("").to_string();
+
+    let t_sha_start = std::time::Instant::now();
+    let checksums: Vec<String> = shards.iter().map(|s| sha256_hex(s)).collect();
+    let t_sha = t_sha_start.elapsed();
+    if data.len() >= 1024 * 1024 {
+        tracing::info!(sha256_ms = t_sha.as_secs_f64() * 1000.0, shards = total, "shard checksums");
+    }
 
     let write_futs: Vec<_> = shards
         .iter()
         .enumerate()
         .map(|(shard_idx, shard_data)| {
             let disk_idx = distribution[shard_idx];
-            let checksum = sha256_hex(shard_data);
+            let checksum = checksums[shard_idx].clone();
             let meta = ObjectMeta {
                 size: data_size,
                 etag: etag.clone(),
@@ -195,6 +208,20 @@ async fn encode_and_write_impl(
         .collect();
 
     let write_results = futures::future::join_all(write_futs).await;
+    let t_write = t2.elapsed();
+
+    let t_total = t0.elapsed();
+    if data.len() >= 1024 * 1024 {
+        tracing::info!(
+            size = data.len(),
+            disks = total,
+            md5_ms = t_md5.as_secs_f64() * 1000.0,
+            ec_ms = t_ec.as_secs_f64() * 1000.0,
+            write_ms = t_write.as_secs_f64() * 1000.0,
+            total_ms = t_total.as_secs_f64() * 1000.0,
+            "encode_and_write timing"
+        );
+    }
 
     let mut errs: Vec<Option<StorageError>> = (0..total).map(|_| None).collect();
     for (shard_idx, result) in write_results {
