@@ -108,13 +108,13 @@ impl AdminHandler {
         }
     }
 
-    pub fn dispatch(&self, path: &str, method: &hyper::Method, query: &str) -> Response<BoxBody> {
+    pub async fn dispatch(&self, path: &str, method: &hyper::Method, query: &str) -> Response<BoxBody> {
         match (path, method) {
             ("status", &hyper::Method::GET) => self.status(),
-            ("disks", &hyper::Method::GET) => self.disks(),
+            ("disks", &hyper::Method::GET) => self.disks().await,
             ("heal", &hyper::Method::GET) => self.heal_status(),
-            ("heal", &hyper::Method::POST) => self.heal_object_handler(query),
-            ("object", &hyper::Method::GET) => self.inspect_object(query),
+            ("heal", &hyper::Method::POST) => self.heal_object_handler(query).await,
+            ("object", &hyper::Method::GET) => self.inspect_object(query).await,
             ("cluster/status", &hyper::Method::GET) => self.cluster_status(),
             ("cluster/nodes", &hyper::Method::GET) => self.cluster_nodes(),
             ("cluster/epochs", &hyper::Method::GET) => self.cluster_epochs(),
@@ -122,8 +122,8 @@ impl AdminHandler {
             _ if path.starts_with("bucket/") && path.ends_with("/ftt") => {
                 let bucket = &path["bucket/".len()..path.len() - "/ftt".len()];
                 match *method {
-                    hyper::Method::GET => self.get_bucket_ftt(bucket),
-                    hyper::Method::PUT => self.set_bucket_ftt(bucket, query),
+                    hyper::Method::GET => self.get_bucket_ftt(bucket).await,
+                    hyper::Method::PUT => self.set_bucket_ftt(bucket, query).await,
                     _ => error_json(StatusCode::METHOD_NOT_ALLOWED, "method not allowed"),
                 }
             }
@@ -169,14 +169,14 @@ impl AdminHandler {
         })
     }
 
-    fn disks(&self) -> Response<BoxBody> {
+    async fn disks(&self) -> Response<BoxBody> {
         let mut disks = Vec::new();
         for (i, disk) in self.store.disks().iter().enumerate() {
             let backend_info = disk.info();
             let online = backend_info.total_bytes.is_some();
 
             let (bucket_count, object_count) = if online {
-                count_buckets_and_objects(disk.as_ref())
+                count_buckets_and_objects(disk.as_ref()).await
             } else {
                 (0, 0)
             };
@@ -217,7 +217,7 @@ impl AdminHandler {
         })
     }
 
-    fn inspect_object(&self, query: &str) -> Response<BoxBody> {
+    async fn inspect_object(&self, query: &str) -> Response<BoxBody> {
         let params = parse_query(query);
         let bucket = match params.get("bucket") {
             Some(b) => b.as_str(),
@@ -240,7 +240,7 @@ impl AdminHandler {
         let mut all_reads: Vec<Option<(Vec<u8>, crate::storage::metadata::ObjectMeta)>> =
             Vec::new();
         for disk in disks {
-            match disk.read_shard(bucket, key) {
+            match disk.read_shard(bucket, key).await {
                 Ok(pair) => all_reads.push(Some(pair)),
                 Err(_) => all_reads.push(None),
             }
@@ -314,11 +314,11 @@ impl AdminHandler {
         })
     }
 
-    fn get_bucket_ftt(&self, bucket: &str) -> Response<BoxBody> {
+    async fn get_bucket_ftt(&self, bucket: &str) -> Response<BoxBody> {
         if let Err(e) = pathing::validate_bucket_name(bucket) {
             return error_json(StatusCode::BAD_REQUEST, &e.to_string());
         }
-        match self.store.get_ftt(bucket) {
+        match self.store.get_ftt(bucket).await {
             Ok(Some(ftt)) => json_response(&serde_json::json!({ "ftt": ftt })),
             Ok(None) => {
                 let ftt = crate::storage::volume_pool::default_ftt(self.store.disk_count());
@@ -328,7 +328,7 @@ impl AdminHandler {
         }
     }
 
-    fn set_bucket_ftt(&self, bucket: &str, query: &str) -> Response<BoxBody> {
+    async fn set_bucket_ftt(&self, bucket: &str, query: &str) -> Response<BoxBody> {
         if let Err(e) = pathing::validate_bucket_name(bucket) {
             return error_json(StatusCode::BAD_REQUEST, &e.to_string());
         }
@@ -343,13 +343,13 @@ impl AdminHandler {
         if let Err(e) = crate::storage::volume_pool::ftt_to_ec(ftt, self.store.disk_count()) {
             return error_json(StatusCode::BAD_REQUEST, &e.to_string());
         }
-        match self.store.set_ftt(bucket, ftt) {
+        match self.store.set_ftt(bucket, ftt).await {
             Ok(()) => json_response(&serde_json::json!({ "ftt": ftt })),
             Err(e) => error_json(StatusCode::BAD_REQUEST, &e.to_string()),
         }
     }
 
-    fn heal_object_handler(&self, query: &str) -> Response<BoxBody> {
+    async fn heal_object_handler(&self, query: &str) -> Response<BoxBody> {
         if !self.cluster.allows_mutation() {
             return error_json(StatusCode::SERVICE_UNAVAILABLE, "cluster is fenced");
         }
@@ -373,7 +373,7 @@ impl AdminHandler {
             &self.heal_disks,
             &bucket,
             &key,
-        ) {
+        ).await {
             Ok(HealResult::Healthy) => json_response(&HealResponse {
                 result: "healthy".to_string(),
                 shards_fixed: None,
@@ -411,8 +411,8 @@ fn map_storage_status(err: &crate::storage::StorageError) -> StatusCode {
 }
 
 /// Get total and free bytes for a filesystem path.
-fn count_buckets_and_objects(disk: &dyn Backend) -> (usize, usize) {
-    let buckets = match disk.list_buckets() {
+async fn count_buckets_and_objects(disk: &dyn Backend) -> (usize, usize) {
+    let buckets = match disk.list_buckets().await {
         Ok(b) => b,
         Err(_) => return (0, 0),
     };
@@ -420,7 +420,7 @@ fn count_buckets_and_objects(disk: &dyn Backend) -> (usize, usize) {
     let bucket_count = buckets.len();
     let mut object_count = 0;
     for bucket in &buckets {
-        if let Ok(keys) = disk.list_objects(bucket, "") {
+        if let Ok(keys) = disk.list_objects(bucket, "").await {
             object_count += keys.len();
         }
     }

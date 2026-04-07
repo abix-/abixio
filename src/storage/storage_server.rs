@@ -63,24 +63,24 @@ impl StorageServer {
         let method = path.strip_prefix("/_storage/v1").unwrap_or(&path);
 
         match method {
-            "/info" => self.handle_info(&req),
+            "/info" => self.handle_info(&req).await,
             "/write-shard" => self.handle_write_shard(req).await,
-            "/read-shard" => self.handle_read_shard(&req),
-            "/delete-object" => self.handle_delete_object(&req),
-            "/stat-object" => self.handle_stat_object(&req),
-            "/list-objects" => self.handle_list_objects(&req),
-            "/list-buckets" => self.handle_list_buckets(&req),
-            "/make-bucket" => self.handle_make_bucket(&req),
-            "/delete-bucket" => self.handle_delete_bucket(&req),
-            "/bucket-exists" => self.handle_bucket_exists(&req),
-            "/bucket-created-at" => self.handle_bucket_created_at(&req),
+            "/read-shard" => self.handle_read_shard(&req).await,
+            "/delete-object" => self.handle_delete_object(&req).await,
+            "/stat-object" => self.handle_stat_object(&req).await,
+            "/list-objects" => self.handle_list_objects(&req).await,
+            "/list-buckets" => self.handle_list_buckets(&req).await,
+            "/make-bucket" => self.handle_make_bucket(&req).await,
+            "/delete-bucket" => self.handle_delete_bucket(&req).await,
+            "/bucket-exists" => self.handle_bucket_exists(&req).await,
+            "/bucket-created-at" => self.handle_bucket_created_at(&req).await,
             "/update-meta" => self.handle_update_meta(req).await,
-            "/read-meta-versions" => self.handle_read_meta_versions(&req),
+            "/read-meta-versions" => self.handle_read_meta_versions(&req).await,
             "/write-meta-versions" => self.handle_write_meta_versions(req).await,
             "/write-versioned-shard" => self.handle_write_versioned_shard(req).await,
-            "/read-versioned-shard" => self.handle_read_versioned_shard(&req),
-            "/delete-version-data" => self.handle_delete_version_data(&req),
-            "/read-bucket-settings" => self.handle_read_bucket_settings(&req),
+            "/read-versioned-shard" => self.handle_read_versioned_shard(&req).await,
+            "/delete-version-data" => self.handle_delete_version_data(&req).await,
+            "/read-bucket-settings" => self.handle_read_bucket_settings(&req).await,
             "/write-bucket-settings" => self.handle_write_bucket_settings(req).await,
             _ => error_response(StatusCode::NOT_FOUND, "unknown storage endpoint"),
         }
@@ -106,7 +106,7 @@ impl StorageServer {
         pathing::validate_version_id(version_id).map_err(|e| storage_error_response(e))
     }
 
-    fn handle_info(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_info(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -132,13 +132,13 @@ impl StorageServer {
             Ok(b) => b,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
-        match vol.write_shard(&bucket, &key, &body, &meta) {
+        match vol.write_shard(&bucket, &key, &body, &meta).await {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
         }
     }
 
-    fn handle_read_shard(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_read_shard(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -146,7 +146,7 @@ impl StorageServer {
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         let key = Self::query_param(req, "key").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
-        match vol.read_shard(&bucket, &key) {
+        match vol.read_shard(&bucket, &key).await {
             Ok((data, meta)) => {
                 let meta_json = serde_json::to_string(&meta).unwrap_or_default();
                 build_response(
@@ -160,7 +160,7 @@ impl StorageServer {
         }
     }
 
-    fn handle_delete_object(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_delete_object(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -168,13 +168,13 @@ impl StorageServer {
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         let key = Self::query_param(req, "key").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
-        match vol.delete_object(&bucket, &key) {
+        match vol.delete_object(&bucket, &key).await {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
         }
     }
 
-    fn handle_stat_object(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_stat_object(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -182,13 +182,13 @@ impl StorageServer {
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         let key = Self::query_param(req, "key").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
-        match vol.stat_object(&bucket, &key) {
+        match vol.stat_object(&bucket, &key).await {
             Ok(meta) => json_response(&meta),
             Err(e) => storage_error_response(e),
         }
     }
 
-    fn handle_list_objects(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_list_objects(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -197,50 +197,50 @@ impl StorageServer {
         let prefix = Self::query_param(req, "prefix").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
         if let Err(e) = pathing::validate_object_prefix(&prefix) { return storage_error_response(e); }
-        match vol.list_objects(&bucket, &prefix) {
+        match vol.list_objects(&bucket, &prefix).await {
             Ok(keys) => json_response(&keys),
             Err(e) => storage_error_response(e),
         }
     }
 
-    fn handle_list_buckets(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_list_buckets(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
-        match vol.list_buckets() {
+        match vol.list_buckets().await {
             Ok(buckets) => json_response(&buckets),
             Err(e) => storage_error_response(e),
         }
     }
 
-    fn handle_make_bucket(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_make_bucket(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
-        match vol.make_bucket(&bucket) {
+        match vol.make_bucket(&bucket).await {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
         }
     }
 
-    fn handle_delete_bucket(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_delete_bucket(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
-        match vol.delete_bucket(&bucket) {
+        match vol.delete_bucket(&bucket).await {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
         }
     }
 
-    fn handle_bucket_exists(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_bucket_exists(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -250,7 +250,7 @@ impl StorageServer {
         json_response(&vol.bucket_exists(&bucket))
     }
 
-    fn handle_bucket_created_at(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_bucket_created_at(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -276,13 +276,13 @@ impl StorageServer {
             Ok(m) => m,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("bad meta: {}", e)),
         };
-        match vol.update_meta(&bucket, &key, &meta) {
+        match vol.update_meta(&bucket, &key, &meta).await {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
         }
     }
 
-    fn handle_read_meta_versions(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_read_meta_versions(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -290,7 +290,7 @@ impl StorageServer {
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         let key = Self::query_param(req, "key").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
-        match vol.read_meta_versions(&bucket, &key) {
+        match vol.read_meta_versions(&bucket, &key).await {
             Ok(versions) => json_response(&versions),
             Err(e) => storage_error_response(e),
         }
@@ -312,7 +312,7 @@ impl StorageServer {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("bad versions: {}", e)),
         };
-        match vol.write_meta_versions(&bucket, &key, &versions) {
+        match vol.write_meta_versions(&bucket, &key, &versions).await {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
         }
@@ -336,13 +336,13 @@ impl StorageServer {
             Ok(b) => b,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
-        match vol.write_versioned_shard(&bucket, &key, &version_id, &body, &meta) {
+        match vol.write_versioned_shard(&bucket, &key, &version_id, &body, &meta).await {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
         }
     }
 
-    fn handle_read_versioned_shard(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_read_versioned_shard(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -351,7 +351,7 @@ impl StorageServer {
         let key = Self::query_param(req, "key").unwrap_or_default();
         let version_id = Self::query_param(req, "version_id").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket_key_version(&bucket, &key, &version_id) { return resp; }
-        match vol.read_versioned_shard(&bucket, &key, &version_id) {
+        match vol.read_versioned_shard(&bucket, &key, &version_id).await {
             Ok((data, meta)) => {
                 let meta_json = serde_json::to_string(&meta).unwrap_or_default();
                 build_response(
@@ -365,7 +365,7 @@ impl StorageServer {
         }
     }
 
-    fn handle_delete_version_data(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_delete_version_data(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
@@ -374,20 +374,20 @@ impl StorageServer {
         let key = Self::query_param(req, "key").unwrap_or_default();
         let version_id = Self::query_param(req, "version_id").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket_key_version(&bucket, &key, &version_id) { return resp; }
-        match vol.delete_version_data(&bucket, &key, &version_id) {
+        match vol.delete_version_data(&bucket, &key, &version_id).await {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
         }
     }
 
-    fn handle_read_bucket_settings(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+    async fn handle_read_bucket_settings(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let vol = match self.resolve_volume(req) {
             Ok(v) => v,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
-        json_response(&vol.read_bucket_settings(&bucket))
+        json_response(&vol.read_bucket_settings(&bucket).await)
     }
 
     async fn handle_write_bucket_settings(&self, req: Request<hyper::body::Incoming>) -> Response<BoxBody> {
@@ -405,7 +405,7 @@ impl StorageServer {
             Ok(s) => s,
             Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("bad settings: {}", e)),
         };
-        match vol.write_bucket_settings(&bucket, &settings) {
+        match vol.write_bucket_settings(&bucket, &settings).await {
             Ok(()) => ok_empty(),
             Err(e) => storage_error_response(e),
         }

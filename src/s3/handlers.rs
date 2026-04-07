@@ -110,7 +110,7 @@ impl S3Handler {
                     "cluster/status",
                     req.method(),
                     req.uri().query().unwrap_or(""),
-                );
+                ).await;
             }
         }
 
@@ -137,14 +137,14 @@ impl S3Handler {
         // admin API: /_admin/<endpoint>
         if let Some(admin_path) = path.strip_prefix("_admin/") {
             if let Some(admin) = &self.admin {
-                return admin.dispatch(admin_path, &method, &query);
+                return admin.dispatch(admin_path, &method, &query).await;
             } else {
                 return error_response(&ERR_METHOD_NOT_ALLOWED);
             }
         }
         if path == "_admin" {
             if let Some(admin) = &self.admin {
-                return admin.dispatch("status", &method, &query);
+                return admin.dispatch("status", &method, &query).await;
             }
         }
 
@@ -347,7 +347,7 @@ impl S3Handler {
     }
 
     async fn list_buckets(&self) -> Response<BoxBody> {
-        match self.store.list_buckets() {
+        match self.store.list_buckets().await {
             Ok(buckets) => {
                 let result = ListAllMyBucketsResult {
                     xmlns: S3_XMLNS.to_string(),
@@ -372,14 +372,14 @@ impl S3Handler {
     }
 
     async fn create_bucket(&self, bucket: &str) -> Response<BoxBody> {
-        match self.store.make_bucket(bucket) {
+        match self.store.make_bucket(bucket).await {
             Ok(()) => empty_response(StatusCode::OK),
             Err(e) => error_response(&map_error(&e)),
         }
     }
 
     async fn head_bucket(&self, bucket: &str) -> Response<BoxBody> {
-        match self.store.head_bucket(bucket) {
+        match self.store.head_bucket(bucket).await {
             Ok(true) => empty_response(StatusCode::OK),
             Ok(false) => error_response(&super::errors::ERR_NO_SUCH_BUCKET),
             Err(e) => error_response(&map_error(&e)),
@@ -407,7 +407,7 @@ impl S3Handler {
             ..Default::default()
         };
 
-        match self.store.list_objects(bucket, opts) {
+        match self.store.list_objects(bucket, opts).await {
             Ok(result) => {
                 let xml_result = ListBucketResultV2 {
                     xmlns: S3_XMLNS.to_string(),
@@ -499,7 +499,7 @@ impl S3Handler {
         };
 
         // check if versioning is enabled for this bucket
-        let versioning = self.store.get_versioning_config(bucket).ok().flatten();
+        let versioning = self.store.get_versioning_config(bucket).await.ok().flatten();
         let versioning_enabled = versioning
             .as_ref()
             .map(|c| c.status == "Enabled")
@@ -516,6 +516,7 @@ impl S3Handler {
             let info = match self
                 .store
                 .put_object_versioned(bucket, key, &body, opts, &version_id)
+                .await
             {
                 Ok(i) => i,
                 Err(e) => return error_response(&map_error(&e)),
@@ -532,7 +533,7 @@ impl S3Handler {
             )
         } else {
             // unversioned or suspended: use "null" version per S3 spec
-            match self.store.put_object(bucket, key, &body, opts) {
+            match self.store.put_object(bucket, key, &body, opts).await {
                 Ok(info) => {
                     let mut builder = Response::builder()
                         .status(StatusCode::OK)
@@ -559,21 +560,21 @@ impl S3Handler {
         let version_id = params.get("versionId").cloned();
 
         let (data, info) = if let Some(vid) = &version_id {
-            match self.store.get_object_version(bucket, key, vid) {
+            match self.store.get_object_version(bucket, key, vid).await {
                 Ok(r) => r,
                 Err(e) => return error_response(&map_error(&e)),
             }
         } else {
             // check if versioned -- find latest non-delete-marker from version index
-            let latest_vid = self.find_latest_version(bucket, key);
+            let latest_vid = self.find_latest_version(bucket, key).await;
             if let Some(vid) = latest_vid {
-                match self.store.get_object_version(bucket, key, &vid) {
+                match self.store.get_object_version(bucket, key, &vid).await {
                     Ok(r) => r,
                     Err(e) => return error_response(&map_error(&e)),
                 }
             } else {
                 // unversioned or no versions.json
-                match self.store.get_object(bucket, key) {
+                match self.store.get_object(bucket, key).await {
                     Ok(r) => r,
                     Err(e) => return error_response(&map_error(&e)),
                 }
@@ -632,7 +633,7 @@ impl S3Handler {
         key: &str,
         req: &Request<Incoming>,
     ) -> Response<BoxBody> {
-        match self.store.head_object(bucket, key) {
+        match self.store.head_object(bucket, key).await {
             Ok(info) => {
                 if let Some(resp) = check_preconditions(req.headers(), &info.etag, info.created_at)
                 {
@@ -662,7 +663,7 @@ impl S3Handler {
 
         // if versionId specified, permanently delete that version
         if let Some(vid) = version_id {
-            match self.store.delete_object_version(bucket, key, &vid) {
+            match self.store.delete_object_version(bucket, key, &vid).await {
                 Ok(()) => {
                     let mut resp = empty_response(StatusCode::NO_CONTENT);
                     resp.headers_mut()
@@ -677,7 +678,7 @@ impl S3Handler {
         }
 
         // check if versioning is enabled
-        let versioning = self.store.get_versioning_config(bucket).ok().flatten();
+        let versioning = self.store.get_versioning_config(bucket).await.ok().flatten();
         let versioned = versioning
             .as_ref()
             .map(|c| c.status == "Enabled" || c.status == "Suspended")
@@ -688,7 +689,7 @@ impl S3Handler {
             let marker_id = uuid::Uuid::new_v4().to_string();
             let now = crate::storage::metadata::unix_timestamp_secs();
             for disk in self.store.disks() {
-                let mut versions = disk.read_meta_versions(bucket, key).unwrap_or_default();
+                let mut versions = disk.read_meta_versions(bucket, key).await.unwrap_or_default();
                 for v in &mut versions {
                     v.is_latest = false;
                 }
@@ -730,7 +731,7 @@ impl S3Handler {
             resp
         } else {
             // unversioned: actually delete
-            match self.store.delete_object(bucket, key) {
+            match self.store.delete_object(bucket, key).await {
                 Ok(()) => empty_response(StatusCode::NO_CONTENT),
                 Err(e) => error_response(&map_error(&e)),
             }
@@ -738,7 +739,7 @@ impl S3Handler {
     }
 
     async fn delete_bucket_handler(&self, bucket: &str) -> Response<BoxBody> {
-        match self.store.delete_bucket(bucket) {
+        match self.store.delete_bucket(bucket).await {
             Ok(()) => empty_response(StatusCode::NO_CONTENT),
             Err(e) => error_response(&map_error(&e)),
         }
@@ -763,7 +764,7 @@ impl S3Handler {
         let mut errors = Vec::new();
 
         for obj in &delete_req.objects {
-            match self.store.delete_object(bucket, &obj.key) {
+            match self.store.delete_object(bucket, &obj.key).await {
                 Ok(()) => deleted.push(DeletedXml {
                     key: obj.key.clone(),
                 }),
@@ -792,7 +793,7 @@ impl S3Handler {
     // -- object tagging --
 
     async fn get_object_tagging(&self, bucket: &str, key: &str) -> Response<BoxBody> {
-        match self.store.get_object_tags(bucket, key) {
+        match self.store.get_object_tags(bucket, key).await {
             Ok(tags) => {
                 let xml_tags: Vec<TagXml> = tags
                     .into_iter()
@@ -835,14 +836,14 @@ impl S3Handler {
             .into_iter()
             .map(|t| (t.key, t.value))
             .collect();
-        match self.store.put_object_tags(bucket, key, tags) {
+        match self.store.put_object_tags(bucket, key, tags).await {
             Ok(()) => empty_response(StatusCode::OK),
             Err(e) => error_response(&map_error(&e)),
         }
     }
 
     async fn delete_object_tagging(&self, bucket: &str, key: &str) -> Response<BoxBody> {
-        match self.store.delete_object_tags(bucket, key) {
+        match self.store.delete_object_tags(bucket, key).await {
             Ok(()) => empty_response(StatusCode::NO_CONTENT),
             Err(e) => error_response(&map_error(&e)),
         }
@@ -851,7 +852,7 @@ impl S3Handler {
     // -- bucket tagging --
 
     async fn get_bucket_tagging(&self, bucket: &str) -> Response<BoxBody> {
-        let tags = match self.store.get_bucket_settings(bucket) {
+        let tags = match self.store.get_bucket_settings(bucket).await {
             Ok(settings) => settings.tags.unwrap_or_default(),
             Err(_) => HashMap::new(),
         };
@@ -870,7 +871,7 @@ impl S3Handler {
     }
 
     async fn put_bucket_tagging(&self, bucket: &str, req: Request<Incoming>) -> Response<BoxBody> {
-        match self.store.head_bucket(bucket) {
+        match self.store.head_bucket(bucket).await {
             Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
             Ok(true) => {}
         }
@@ -892,26 +893,26 @@ impl S3Handler {
             .into_iter()
             .map(|t| (t.key, t.value))
             .collect();
-        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        let mut settings = self.store.get_bucket_settings(bucket).await.unwrap_or_default();
         settings.tags = Some(tags);
-        match self.store.set_bucket_settings(bucket, &settings) {
+        match self.store.set_bucket_settings(bucket, &settings).await {
             Ok(()) => empty_response(StatusCode::OK),
             Err(_) => error_response(&super::errors::ERR_INTERNAL),
         }
     }
 
     async fn delete_bucket_tagging(&self, bucket: &str) -> Response<BoxBody> {
-        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        let mut settings = self.store.get_bucket_settings(bucket).await.unwrap_or_default();
         settings.tags = None;
-        let _ = self.store.set_bucket_settings(bucket, &settings);
+        let _ = self.store.set_bucket_settings(bucket, &settings).await;
         empty_response(StatusCode::NO_CONTENT)
     }
 
     /// Find the latest non-delete-marker version ID from meta.json.
     /// Returns None if object has no versioned entries.
-    fn find_latest_version(&self, bucket: &str, key: &str) -> Option<String> {
+    async fn find_latest_version(&self, bucket: &str, key: &str) -> Option<String> {
         for disk in self.store.disks() {
-            let versions = disk.read_meta_versions(bucket, key).unwrap_or_default();
+            let versions = disk.read_meta_versions(bucket, key).await.unwrap_or_default();
             if versions.is_empty() {
                 continue;
             }
@@ -928,7 +929,7 @@ impl S3Handler {
     // -- bucket versioning --
 
     async fn get_bucket_versioning(&self, bucket: &str) -> Response<BoxBody> {
-        match self.store.get_versioning_config(bucket) {
+        match self.store.get_versioning_config(bucket).await {
             Ok(config) => {
                 let status = config.map(|c| c.status);
                 let xml_config = VersioningConfigXml {
@@ -968,7 +969,7 @@ impl S3Handler {
         let vc = crate::storage::metadata::VersioningConfig {
             status: status.clone(),
         };
-        match self.store.set_versioning_config(bucket, &vc) {
+        match self.store.set_versioning_config(bucket, &vc).await {
             Ok(()) => empty_response(StatusCode::OK),
             Err(e) => error_response(&map_error(&e)),
         }
@@ -991,7 +992,7 @@ impl S3Handler {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1000);
 
-        match self.store.list_object_versions(bucket, &prefix) {
+        match self.store.list_object_versions(bucket, &prefix).await {
             Ok(entries) => {
                 let mut versions = Vec::new();
                 let mut delete_markers = Vec::new();
@@ -1040,11 +1041,11 @@ impl S3Handler {
     // -- bucket policy --
 
     async fn get_bucket_policy(&self, bucket: &str) -> Response<BoxBody> {
-        match self.store.head_bucket(bucket) {
+        match self.store.head_bucket(bucket).await {
             Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
             Ok(true) => {}
         }
-        let settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        let settings = self.store.get_bucket_settings(bucket).await.unwrap_or_default();
         match settings.policy {
             Some(policy) => {
                 let data = serde_json::to_vec(&policy).unwrap_or_default();
@@ -1060,7 +1061,7 @@ impl S3Handler {
     }
 
     async fn put_bucket_policy(&self, bucket: &str, req: Request<Incoming>) -> Response<BoxBody> {
-        match self.store.head_bucket(bucket) {
+        match self.store.head_bucket(bucket).await {
             Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
             Ok(true) => {}
         }
@@ -1082,18 +1083,18 @@ impl S3Handler {
             Some(v) if !v.is_empty() => {}
             _ => return error_response(&ERR_MALFORMED_XML),
         }
-        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        let mut settings = self.store.get_bucket_settings(bucket).await.unwrap_or_default();
         settings.policy = Some(policy);
-        match self.store.set_bucket_settings(bucket, &settings) {
+        match self.store.set_bucket_settings(bucket, &settings).await {
             Ok(()) => empty_response(StatusCode::NO_CONTENT),
             Err(_) => error_response(&super::errors::ERR_INTERNAL),
         }
     }
 
     async fn delete_bucket_policy(&self, bucket: &str) -> Response<BoxBody> {
-        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        let mut settings = self.store.get_bucket_settings(bucket).await.unwrap_or_default();
         settings.policy = None;
-        let _ = self.store.set_bucket_settings(bucket, &settings);
+        let _ = self.store.set_bucket_settings(bucket, &settings).await;
         empty_response(StatusCode::NO_CONTENT)
     }
 
@@ -1121,11 +1122,11 @@ impl S3Handler {
     // -- bucket lifecycle --
 
     async fn get_bucket_lifecycle(&self, bucket: &str) -> Response<BoxBody> {
-        match self.store.head_bucket(bucket) {
+        match self.store.head_bucket(bucket).await {
             Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
             Ok(true) => {}
         }
-        let settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        let settings = self.store.get_bucket_settings(bucket).await.unwrap_or_default();
         match settings.lifecycle {
             Some(xml) => build_response(
                 Response::builder()
@@ -1142,7 +1143,7 @@ impl S3Handler {
         bucket: &str,
         req: Request<Incoming>,
     ) -> Response<BoxBody> {
-        match self.store.head_bucket(bucket) {
+        match self.store.head_bucket(bucket).await {
             Ok(false) | Err(_) => return error_response(&super::errors::ERR_NO_SUCH_BUCKET),
             Ok(true) => {}
         }
@@ -1157,18 +1158,18 @@ impl S3Handler {
         if !body_str.contains("LifecycleConfiguration") {
             return error_response(&ERR_MALFORMED_XML);
         }
-        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        let mut settings = self.store.get_bucket_settings(bucket).await.unwrap_or_default();
         settings.lifecycle = Some(body_str.to_string());
-        match self.store.set_bucket_settings(bucket, &settings) {
+        match self.store.set_bucket_settings(bucket, &settings).await {
             Ok(()) => empty_response(StatusCode::OK),
             Err(_) => error_response(&super::errors::ERR_INTERNAL),
         }
     }
 
     async fn delete_bucket_lifecycle(&self, bucket: &str) -> Response<BoxBody> {
-        let mut settings = self.store.get_bucket_settings(bucket).unwrap_or_default();
+        let mut settings = self.store.get_bucket_settings(bucket).await.unwrap_or_default();
         settings.lifecycle = None;
-        let _ = self.store.set_bucket_settings(bucket, &settings);
+        let _ = self.store.set_bucket_settings(bucket, &settings).await;
         empty_response(StatusCode::NO_CONTENT)
     }
 
@@ -1242,7 +1243,7 @@ impl S3Handler {
             Err(_) => return error_response(&super::errors::ERR_INCOMPLETE_BODY),
         };
 
-        let (data_n, parity_n) = self.store.bucket_ec(bucket);
+        let (data_n, parity_n) = self.store.bucket_ec(bucket).await;
         match crate::multipart::put_part(
             self.store.disks(),
             data_n,
@@ -1296,7 +1297,7 @@ impl S3Handler {
             .map(|p| (p.part_number, p.etag.clone()))
             .collect();
 
-        let (data_n, parity_n) = self.store.bucket_ec(bucket);
+        let (data_n, parity_n) = self.store.bucket_ec(bucket).await;
         match crate::multipart::complete_upload(
             self.store.disks(),
             data_n,
@@ -1410,7 +1411,7 @@ impl S3Handler {
         };
 
         // read source object
-        let (data, src_info) = match self.store.get_object(src_bucket, src_key) {
+        let (data, src_info) = match self.store.get_object(src_bucket, src_key).await {
             Ok(r) => r,
             Err(e) => return error_response(&map_error(&e)),
         };
@@ -1422,7 +1423,7 @@ impl S3Handler {
             tags: src_info.tags,
             ..Default::default()
         };
-        let dst_info = match self.store.put_object(dst_bucket, dst_key, &data, opts) {
+        let dst_info = match self.store.put_object(dst_bucket, dst_key, &data, opts).await {
             Ok(info) => info,
             Err(e) => return error_response(&map_error(&e)),
         };

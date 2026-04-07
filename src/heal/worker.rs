@@ -35,7 +35,7 @@ enum ShardStatus {
 /// Heal a single object by reading all disks, finding consensus metadata,
 /// and reconstructing any missing or corrupt shards via Reed-Solomon.
 /// EC params are derived from the object's stored metadata (per-object EC).
-pub fn heal_object(
+pub async fn heal_object(
     disks: &[Box<dyn Backend>],
     bucket: &str,
     key: &str,
@@ -45,7 +45,7 @@ pub fn heal_object(
     // step 1: read meta + shard from every disk
     let mut reads: Vec<Option<(Vec<u8>, ObjectMeta)>> = Vec::with_capacity(disks.len());
     for disk in disks.iter() {
-        match disk.read_shard(bucket, key) {
+        match disk.read_shard(bucket, key).await {
             Ok(pair) => reads.push(Some(pair)),
             Err(_) => reads.push(None),
         }
@@ -135,7 +135,7 @@ pub fn heal_object(
                 ..consensus_meta.clone()
             };
             if disks[disk_idx]
-                .write_shard(bucket, key, data, &meta)
+                .write_shard(bucket, key, data, &meta).await
                 .is_ok()
             {
                 shards_fixed += 1;
@@ -187,16 +187,10 @@ pub async fn mrf_drain_worker(
     loop {
         tokio::select! {
             Some(entry) = rx.recv() => {
-                let result = tokio::task::spawn_blocking({
-                    let disks = Arc::clone(&disks);
-                    let bucket = entry.bucket.clone();
-                    let key = entry.key.clone();
-                    move || heal_object(&disks, &bucket, &key)
-                })
-                .await;
+                let result = heal_object(&disks, &entry.bucket, &entry.key).await;
 
                 match result {
-                    Ok(Ok(HealResult::Repaired { shards_fixed })) => {
+                    Ok(HealResult::Repaired { shards_fixed }) => {
                         tracing::info!(
                             bucket = entry.bucket,
                             key = entry.key,
@@ -204,24 +198,21 @@ pub async fn mrf_drain_worker(
                             "healed object"
                         );
                     }
-                    Ok(Ok(HealResult::Healthy)) => {}
-                    Ok(Ok(HealResult::Unrecoverable)) => {
+                    Ok(HealResult::Healthy) => {}
+                    Ok(HealResult::Unrecoverable) => {
                         tracing::warn!(
                             bucket = entry.bucket,
                             key = entry.key,
                             "object unrecoverable, not enough healthy shards"
                         );
                     }
-                    Ok(Err(e)) => {
+                    Err(e) => {
                         tracing::warn!(
                             bucket = entry.bucket,
                             key = entry.key,
                             error = %e,
                             "heal failed"
                         );
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "heal task panicked");
                     }
                 }
 
@@ -244,15 +235,7 @@ pub async fn scanner_loop(
     mut shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
-        // run one scan cycle
-        let scan_disks = Arc::clone(&disks);
-        let scan_mrf = Arc::clone(&mrf);
-        let scan_state2 = Arc::clone(&scan_state);
-
-        let _ = tokio::task::spawn_blocking(move || {
-            run_scan_cycle(&scan_disks, &scan_mrf, &scan_state2);
-        })
-        .await;
+        run_scan_cycle(&disks, &mrf, &scan_state).await;
 
         // wait for next interval or shutdown
         tokio::select! {
@@ -265,20 +248,26 @@ pub async fn scanner_loop(
 }
 
 /// Single scan cycle: enumerate all buckets/objects, check integrity.
-fn run_scan_cycle(
+async fn run_scan_cycle(
     disks: &[Box<dyn Backend>],
     mrf: &MrfQueue,
     scan_state: &ScanState,
 ) {
     // list buckets from first responsive disk
-    let buckets = match disks.first().and_then(|d| d.list_buckets().ok()) {
-        Some(b) => b,
+    let buckets = match disks.first() {
+        Some(d) => match d.list_buckets().await {
+            Ok(b) => b,
+            Err(_) => return,
+        },
         None => return,
     };
 
     for bucket in &buckets {
-        let keys = match disks.first().and_then(|d| d.list_objects(bucket, "").ok()) {
-            Some(k) => k,
+        let keys = match disks.first() {
+            Some(d) => match d.list_objects(bucket, "").await {
+                Ok(k) => k,
+                Err(_) => continue,
+            },
             None => continue,
         };
 
@@ -288,7 +277,7 @@ fn run_scan_cycle(
             }
 
             // check shard health across all disks
-            if object_needs_healing(disks, bucket, key) {
+            if object_needs_healing(disks, bucket, key).await {
                 let _ = mrf.enqueue(MrfEntry {
                     bucket: bucket.clone(),
                     key: key.clone(),
@@ -302,7 +291,7 @@ fn run_scan_cycle(
 
 /// Check if an object has any missing or corrupt shards.
 /// EC params are read from the object's stored metadata.
-fn object_needs_healing(
+async fn object_needs_healing(
     disks: &[Box<dyn Backend>],
     bucket: &str,
     key: &str,
@@ -310,7 +299,7 @@ fn object_needs_healing(
     // read meta from first available disk to get EC params
     let mut first_meta: Option<ObjectMeta> = None;
     for disk in disks.iter() {
-        if let Ok(meta) = disk.stat_object(bucket, key) {
+        if let Ok(meta) = disk.stat_object(bucket, key).await {
             first_meta = Some(meta);
             break;
         }
@@ -324,7 +313,7 @@ fn object_needs_healing(
     let mut good = 0;
 
     for disk in disks.iter() {
-        if let Ok((data, disk_meta)) = disk.read_shard(bucket, key) {
+        if let Ok((data, disk_meta)) = disk.read_shard(bucket, key).await {
             if disk_meta.erasure.index < total
                 && disk_meta.quorum_eq(&meta)
                 && sha256_hex(&data) == disk_meta.checksum

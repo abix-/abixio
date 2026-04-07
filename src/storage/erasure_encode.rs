@@ -45,7 +45,7 @@ pub fn split_data(data: &[u8], count: usize) -> Vec<Vec<u8>> {
     shards
 }
 
-pub fn encode_and_write(
+pub async fn encode_and_write(
     disks: &[Box<dyn Backend>],
     planner: &PlacementPlanner,
     data_n: usize,
@@ -55,11 +55,11 @@ pub fn encode_and_write(
     data: &[u8],
     opts: PutOptions,
 ) -> Result<ObjectInfo, StorageError> {
-    encode_and_write_with_mrf(disks, planner, data_n, parity_n, bucket, key, data, opts, None)
+    encode_and_write_with_mrf(disks, planner, data_n, parity_n, bucket, key, data, opts, None).await
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn encode_and_write_with_mrf(
+pub async fn encode_and_write_with_mrf(
     disks: &[Box<dyn Backend>],
     planner: &PlacementPlanner,
     data_n: usize,
@@ -70,11 +70,11 @@ pub fn encode_and_write_with_mrf(
     opts: PutOptions,
     mrf: Option<&Arc<MrfQueue>>,
 ) -> Result<ObjectInfo, StorageError> {
-    encode_and_write_impl(disks, planner, data_n, parity_n, bucket, key, data, opts, mrf, None)
+    encode_and_write_impl(disks, planner, data_n, parity_n, bucket, key, data, opts, mrf, None).await
 }
 
 #[allow(clippy::too_many_arguments)]
-pub fn encode_and_write_versioned(
+pub async fn encode_and_write_versioned(
     disks: &[Box<dyn Backend>],
     planner: &PlacementPlanner,
     data_n: usize,
@@ -97,11 +97,11 @@ pub fn encode_and_write_versioned(
         opts,
         mrf,
         Some(version_id),
-    )
+    ).await
 }
 
 #[allow(clippy::too_many_arguments)]
-fn encode_and_write_impl(
+async fn encode_and_write_impl(
     disks: &[Box<dyn Backend>],
     planner: &PlacementPlanner,
     data_n: usize,
@@ -179,9 +179,9 @@ fn encode_and_write_impl(
             parts: Vec::new(),
         };
         let write_result = if let Some(vid) = version_id {
-            disks[disk_idx].write_versioned_shard(bucket, key, vid, shard_data, &meta)
+            disks[disk_idx].write_versioned_shard(bucket, key, vid, shard_data, &meta).await
         } else {
-            disks[disk_idx].write_shard(bucket, key, shard_data, &meta)
+            disks[disk_idx].write_shard(bucket, key, shard_data, &meta).await
         };
         if let Err(e) = write_result {
             errs[shard_idx] = Some(e);
@@ -197,7 +197,7 @@ fn encode_and_write_impl(
         for (shard_idx, err) in errs.iter().enumerate() {
             if err.is_none() {
                 let disk_idx = distribution[shard_idx];
-                let _ = disks[disk_idx].delete_object(bucket, key);
+                let _ = disks[disk_idx].delete_object(bucket, key).await;
             }
         }
         return Err(StorageError::WriteQuorum);

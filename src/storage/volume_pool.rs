@@ -87,14 +87,13 @@ impl VolumePool {
 
     /// Read bucket FTT from settings and compute (data, parity).
     /// Falls back to default FTT if bucket has no config (legacy buckets).
-    pub fn bucket_ec(&self, bucket: &str) -> (usize, usize) {
-        if let Some(ftt) = self
-            .disks
-            .iter()
-            .find_map(|d| d.read_bucket_settings(bucket).ftt)
-        {
-            if let Ok((d, p)) = ftt_to_ec(ftt, self.disks.len()) {
-                return (d, p);
+    pub async fn bucket_ec(&self, bucket: &str) -> (usize, usize) {
+        for d in &self.disks {
+            let settings = d.read_bucket_settings(bucket).await;
+            if let Some(ftt) = settings.ftt {
+                if let Ok((d, p)) = ftt_to_ec(ftt, self.disks.len()) {
+                    return (d, p);
+                }
             }
         }
         let ftt = default_ftt(self.disks.len());
@@ -137,19 +136,19 @@ impl VolumePool {
 
     /// Resolve EC params for a write operation.
     /// Precedence: per-object FTT > bucket FTT.
-    fn resolve_ec(&self, bucket: &str, opts: &PutOptions) -> (usize, usize) {
+    async fn resolve_ec(&self, bucket: &str, opts: &PutOptions) -> (usize, usize) {
         if let Some(ftt) = opts.ec_ftt {
             if let Ok((d, p)) = ftt_to_ec(ftt, self.disks.len()) {
                 return (d, p);
             }
         }
-        self.bucket_ec(bucket)
+        self.bucket_ec(bucket).await
     }
 
     /// Read meta from any available disk to get the object's stored EC params.
-    fn read_ec_from_meta(&self, bucket: &str, key: &str) -> Option<(usize, usize)> {
+    pub async fn read_ec_from_meta(&self, bucket: &str, key: &str) -> Option<(usize, usize)> {
         for disk in &self.disks {
-            if let Ok(meta) = disk.stat_object(bucket, key) {
+            if let Ok(meta) = disk.stat_object(bucket, key).await {
                 return Some((meta.erasure.data(), meta.erasure.parity()));
             }
         }
@@ -172,8 +171,9 @@ impl VolumePool {
     }
 }
 
+#[async_trait::async_trait]
 impl Store for VolumePool {
-    fn put_object(
+    async fn put_object(
         &self,
         bucket: &str,
         key: &str,
@@ -182,10 +182,10 @@ impl Store for VolumePool {
     ) -> Result<ObjectInfo, StorageError> {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
-        let (data_n, parity_n) = self.resolve_ec(bucket, &opts);
+        let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await;
         let planner = self.placement_planner()?;
         encode_and_write_with_mrf(
             &self.disks,
@@ -197,21 +197,21 @@ impl Store for VolumePool {
             data,
             opts,
             self.mrf.as_ref(),
-        )
+        ).await
     }
 
-    fn get_object(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectInfo), StorageError> {
+    async fn get_object(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectInfo), StorageError> {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
 
         // check if object is multipart by reading meta from any disk
         for disk in &self.disks {
-            if let Ok(meta) = disk.stat_object(bucket, key) {
+            if let Ok(meta) = disk.stat_object(bucket, key).await {
                 if meta.is_multipart() {
-                    let data = read_and_decode_multipart(&self.disks, bucket, key, &meta)?;
+                    let data = read_and_decode_multipart(&self.disks, bucket, key, &meta).await?;
                     return Ok((data, Self::meta_to_info(bucket, key, &meta)));
                 }
                 break;
@@ -219,39 +219,41 @@ impl Store for VolumePool {
         }
 
         // non-multipart: standard shard decode
-        let (data_n, parity_n) = self
-            .read_ec_from_meta(bucket, key)
-            .unwrap_or_else(|| self.bucket_ec(bucket));
-        let (data, meta) = read_and_decode(&self.disks, data_n, parity_n, bucket, key)?;
+        let (data_n, parity_n) = match self.read_ec_from_meta(bucket, key).await {
+            Some(ec) => ec,
+            None => self.bucket_ec(bucket).await,
+        };
+        let (data, meta) = read_and_decode(&self.disks, data_n, parity_n, bucket, key).await?;
         Ok((data, Self::meta_to_info(bucket, key, &meta)))
     }
 
-    fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo, StorageError> {
+    async fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo, StorageError> {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         for disk in &self.disks {
-            if let Ok(meta) = disk.stat_object(bucket, key) {
+            if let Ok(meta) = disk.stat_object(bucket, key).await {
                 return Ok(Self::meta_to_info(bucket, key, &meta));
             }
         }
         Err(StorageError::ObjectNotFound)
     }
 
-    fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+    async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
         // get stored EC params for quorum calculation
-        let (data_n, parity_n) = self
-            .read_ec_from_meta(bucket, key)
-            .unwrap_or_else(|| self.bucket_ec(bucket));
+        let (data_n, parity_n) = match self.read_ec_from_meta(bucket, key).await {
+            Some(ec) => ec,
+            None => self.bucket_ec(bucket).await,
+        };
 
         let mut successes = 0;
         let mut found = false;
         for disk in &self.disks {
-            match disk.delete_object(bucket, key) {
+            match disk.delete_object(bucket, key).await {
                 Ok(()) => {
                     successes += 1;
                     found = true;
@@ -272,14 +274,14 @@ impl Store for VolumePool {
         Ok(())
     }
 
-    fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+    async fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
         pathing::validate_bucket_name(bucket)?;
         if self.disks.iter().any(|d| d.bucket_exists(bucket)) {
             return Err(StorageError::BucketExists);
         }
         let mut successes = 0;
         for disk in &self.disks {
-            if disk.make_bucket(bucket).is_ok() {
+            if disk.make_bucket(bucket).await.is_ok() {
                 successes += 1;
             }
         }
@@ -287,29 +289,29 @@ impl Store for VolumePool {
             return Err(StorageError::WriteQuorum);
         }
         // auto-assign default FTT to new bucket
-        let _ = self.set_ftt(bucket, default_ftt(self.disks.len()));
+        let _ = self.set_ftt(bucket, default_ftt(self.disks.len())).await;
         Ok(())
     }
 
-    fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+    async fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
         pathing::validate_bucket_name(bucket)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         for disk in &self.disks {
-            if let Ok(keys) = disk.list_objects(bucket, "")
-                && !keys.is_empty()
-            {
-                return Err(StorageError::BucketNotEmpty);
+            if let Ok(keys) = disk.list_objects(bucket, "").await {
+                if !keys.is_empty() {
+                    return Err(StorageError::BucketNotEmpty);
+                }
             }
         }
         for disk in &self.disks {
-            let _ = disk.delete_bucket(bucket);
+            let _ = disk.delete_bucket(bucket).await;
         }
         Ok(())
     }
 
-    fn head_bucket(&self, bucket: &str) -> Result<bool, StorageError> {
+    async fn head_bucket(&self, bucket: &str) -> Result<bool, StorageError> {
         pathing::validate_bucket_name(bucket)?;
         let count = self
             .disks
@@ -320,17 +322,16 @@ impl Store for VolumePool {
         Ok(count >= 1)
     }
 
-    fn list_buckets(&self) -> Result<Vec<BucketInfo>, StorageError> {
+    async fn list_buckets(&self) -> Result<Vec<BucketInfo>, StorageError> {
         for disk in &self.disks {
-            match disk.list_buckets() {
+            match disk.list_buckets().await {
                 Ok(names) => {
-                    return Ok(names
-                        .into_iter()
-                        .map(|name| {
-                            let created_at = disk.bucket_created_at(&name);
-                            BucketInfo { name, created_at }
-                        })
-                        .collect());
+                    let mut buckets = Vec::with_capacity(names.len());
+                    for name in names {
+                        let created_at = disk.bucket_created_at(&name);
+                        buckets.push(BucketInfo { name, created_at });
+                    }
+                    return Ok(buckets);
                 }
                 Err(_) => continue,
             }
@@ -338,16 +339,16 @@ impl Store for VolumePool {
         Ok(Vec::new())
     }
 
-    fn list_objects(&self, bucket: &str, opts: ListOptions) -> Result<ListResult, StorageError> {
+    async fn list_objects(&self, bucket: &str, opts: ListOptions) -> Result<ListResult, StorageError> {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_prefix(&opts.prefix)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
 
         let mut keys = Vec::new();
         for disk in &self.disks {
-            match disk.list_objects(bucket, &opts.prefix) {
+            match disk.list_objects(bucket, &opts.prefix).await {
                 Ok(k) => {
                     keys = k;
                     break;
@@ -361,7 +362,7 @@ impl Store for VolumePool {
 
         if opts.delimiter.is_empty() {
             for key in &keys {
-                if let Ok(info) = self.head_object(bucket, key) {
+                if let Ok(info) = self.head_object(bucket, key).await {
                     objects.push(info);
                 }
             }
@@ -374,7 +375,7 @@ impl Store for VolumePool {
                     if seen_prefixes.insert(cp.clone()) {
                         common_prefixes.push(cp);
                     }
-                } else if let Ok(info) = self.head_object(bucket, key) {
+                } else if let Ok(info) = self.head_object(bucket, key).await {
                     objects.push(info);
                 }
             }
@@ -395,18 +396,18 @@ impl Store for VolumePool {
         })
     }
 
-    fn get_object_tags(
+    async fn get_object_tags(
         &self,
         bucket: &str,
         key: &str,
     ) -> Result<std::collections::HashMap<String, String>, StorageError> {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         for disk in &self.disks {
-            match disk.stat_object(bucket, key) {
+            match disk.stat_object(bucket, key).await {
                 Ok(meta) => return Ok(meta.tags),
                 Err(_) => continue,
             }
@@ -414,7 +415,7 @@ impl Store for VolumePool {
         Err(StorageError::ObjectNotFound)
     }
 
-    fn put_object_tags(
+    async fn put_object_tags(
         &self,
         bucket: &str,
         key: &str,
@@ -422,22 +423,23 @@ impl Store for VolumePool {
     ) -> Result<(), StorageError> {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
 
-        let (data_n, parity_n) = self
-            .read_ec_from_meta(bucket, key)
-            .unwrap_or_else(|| self.bucket_ec(bucket));
+        let (data_n, parity_n) = match self.read_ec_from_meta(bucket, key).await {
+            Some(ec) => ec,
+            None => self.bucket_ec(bucket).await,
+        };
 
         let mut successes = 0;
         let mut found = false;
         for disk in &self.disks {
-            let mut versions = disk.read_meta_versions(bucket, key).unwrap_or_default();
+            let mut versions = disk.read_meta_versions(bucket, key).await.unwrap_or_default();
             if let Some(latest) = versions.iter_mut().find(|v| !v.is_delete_marker) {
                 found = true;
                 latest.tags = tags.clone();
-                if disk.write_meta_versions(bucket, key, &versions).is_ok() {
+                if disk.write_meta_versions(bucket, key, &versions).await.is_ok() {
                     successes += 1;
                 }
             }
@@ -452,13 +454,13 @@ impl Store for VolumePool {
         Ok(())
     }
 
-    fn delete_object_tags(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
-        self.put_object_tags(bucket, key, std::collections::HashMap::new())
+    async fn delete_object_tags(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+        self.put_object_tags(bucket, key, std::collections::HashMap::new()).await
     }
 
     // -- versioning --
 
-    fn put_object_versioned(
+    async fn put_object_versioned(
         &self,
         bucket: &str,
         key: &str,
@@ -469,10 +471,10 @@ impl Store for VolumePool {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
         pathing::validate_version_id(version_id)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
-        let (data_n, parity_n) = self.resolve_ec(bucket, &opts);
+        let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await;
         let planner = self.placement_planner()?;
         encode_and_write_versioned(
             &self.disks,
@@ -485,19 +487,19 @@ impl Store for VolumePool {
             opts,
             self.mrf.as_ref(),
             version_id,
-        )
+        ).await
     }
 
-    fn get_versioning_config(
+    async fn get_versioning_config(
         &self,
         bucket: &str,
     ) -> Result<Option<VersioningConfig>, StorageError> {
         pathing::validate_bucket_name(bucket)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         for disk in &self.disks {
-            let settings = disk.read_bucket_settings(bucket);
+            let settings = disk.read_bucket_settings(bucket).await;
             if let Some(status) = settings.versioning {
                 return Ok(Some(VersioningConfig { status }));
             }
@@ -505,20 +507,20 @@ impl Store for VolumePool {
         Ok(None)
     }
 
-    fn set_versioning_config(
+    async fn set_versioning_config(
         &self,
         bucket: &str,
         config: &VersioningConfig,
     ) -> Result<(), StorageError> {
         pathing::validate_bucket_name(bucket)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         let mut successes = 0;
         for disk in &self.disks {
-            let mut settings = disk.read_bucket_settings(bucket);
+            let mut settings = disk.read_bucket_settings(bucket).await;
             settings.versioning = Some(config.status.clone());
-            if disk.write_bucket_settings(bucket, &settings).is_ok() {
+            if disk.write_bucket_settings(bucket, &settings).await.is_ok() {
                 successes += 1;
             }
         }
@@ -528,7 +530,7 @@ impl Store for VolumePool {
         Ok(())
     }
 
-    fn get_object_version(
+    async fn get_object_version(
         &self,
         bucket: &str,
         key: &str,
@@ -537,19 +539,20 @@ impl Store for VolumePool {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
         pathing::validate_version_id(version_id)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         // for versioned reads, get EC from meta (may differ from defaults)
-        let (data_n, parity_n) = self
-            .read_ec_from_meta(bucket, key)
-            .unwrap_or_else(|| self.bucket_ec(bucket));
+        let (data_n, parity_n) = match self.read_ec_from_meta(bucket, key).await {
+            Some(ec) => ec,
+            None => self.bucket_ec(bucket).await,
+        };
         let (data, meta) =
-            read_and_decode_versioned(&self.disks, data_n, parity_n, bucket, key, version_id)?;
+            read_and_decode_versioned(&self.disks, data_n, parity_n, bucket, key, version_id).await?;
         Ok((data, Self::meta_to_info(bucket, key, &meta)))
     }
 
-    fn delete_object_version(
+    async fn delete_object_version(
         &self,
         bucket: &str,
         key: &str,
@@ -558,28 +561,28 @@ impl Store for VolumePool {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
         pathing::validate_version_id(version_id)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         for disk in &self.disks {
-            let _ = disk.delete_version_data(bucket, key, version_id);
+            let _ = disk.delete_version_data(bucket, key, version_id).await;
         }
         Ok(())
     }
 
-    fn list_object_versions(
+    async fn list_object_versions(
         &self,
         bucket: &str,
         prefix: &str,
     ) -> Result<Vec<(String, Vec<ObjectMeta>)>, StorageError> {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_prefix(prefix)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         let mut keys = Vec::new();
         for disk in &self.disks {
-            match disk.list_objects(bucket, prefix) {
+            match disk.list_objects(bucket, prefix).await {
                 Ok(k) => {
                     keys = k;
                     break;
@@ -590,7 +593,7 @@ impl Store for VolumePool {
         let mut result = Vec::new();
         for key in &keys {
             for disk in &self.disks {
-                let versions = disk.read_meta_versions(bucket, key).unwrap_or_default();
+                let versions = disk.read_meta_versions(bucket, key).await.unwrap_or_default();
                 if !versions.is_empty() {
                     result.push((key.clone(), versions));
                     break;
@@ -602,13 +605,13 @@ impl Store for VolumePool {
 
     // -- per-bucket FTT --
 
-    fn get_ftt(&self, bucket: &str) -> Result<Option<usize>, StorageError> {
+    async fn get_ftt(&self, bucket: &str) -> Result<Option<usize>, StorageError> {
         pathing::validate_bucket_name(bucket)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         for disk in &self.disks {
-            let settings = disk.read_bucket_settings(bucket);
+            let settings = disk.read_bucket_settings(bucket).await;
             if settings.ftt.is_some() {
                 return Ok(settings.ftt);
             }
@@ -616,17 +619,17 @@ impl Store for VolumePool {
         Ok(None)
     }
 
-    fn set_ftt(&self, bucket: &str, ftt: usize) -> Result<(), StorageError> {
+    async fn set_ftt(&self, bucket: &str, ftt: usize) -> Result<(), StorageError> {
         pathing::validate_bucket_name(bucket)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         ftt_to_ec(ftt, self.disks.len())?;
         let mut successes = 0;
         for disk in &self.disks {
-            let mut settings = disk.read_bucket_settings(bucket);
+            let mut settings = disk.read_bucket_settings(bucket).await;
             settings.ftt = Some(ftt);
-            if disk.write_bucket_settings(bucket, &settings).is_ok() {
+            if disk.write_bucket_settings(bucket, &settings).await.is_ok() {
                 successes += 1;
             }
         }
@@ -636,17 +639,17 @@ impl Store for VolumePool {
         Ok(())
     }
 
-    fn get_bucket_settings(
+    async fn get_bucket_settings(
         &self,
         bucket: &str,
     ) -> Result<BucketSettings, StorageError> {
         pathing::validate_bucket_name(bucket)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         // read from first available disk
         for disk in &self.disks {
-            let settings = disk.read_bucket_settings(bucket);
+            let settings = disk.read_bucket_settings(bucket).await;
             if settings != BucketSettings::default() {
                 return Ok(settings);
             }
@@ -654,18 +657,18 @@ impl Store for VolumePool {
         Ok(BucketSettings::default())
     }
 
-    fn set_bucket_settings(
+    async fn set_bucket_settings(
         &self,
         bucket: &str,
         settings: &BucketSettings,
     ) -> Result<(), StorageError> {
         pathing::validate_bucket_name(bucket)?;
-        if !self.head_bucket(bucket)? {
+        if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
         let mut successes = 0;
         for disk in &self.disks {
-            if disk.write_bucket_settings(bucket, settings).is_ok() {
+            if disk.write_bucket_settings(bucket, settings).await.is_ok() {
                 successes += 1;
             }
         }
@@ -679,8 +682,8 @@ impl Store for VolumePool {
         self.disks.len()
     }
 
-    fn bucket_ec(&self, bucket: &str) -> (usize, usize) {
-        VolumePool::bucket_ec(self, bucket)
+    async fn bucket_ec(&self, bucket: &str) -> (usize, usize) {
+        VolumePool::bucket_ec(self, bucket).await
     }
 }
 

@@ -5,7 +5,7 @@ use super::StorageError;
 use super::bitrot::sha256_hex;
 use super::metadata::ObjectMeta;
 
-pub fn read_and_decode(
+pub async fn read_and_decode(
     disks: &[Box<dyn Backend>],
     data_n: usize,
     parity_n: usize,
@@ -17,7 +17,7 @@ pub fn read_and_decode(
     // read meta + shard from all disks
     let mut raw_reads: Vec<Option<(Vec<u8>, ObjectMeta)>> = Vec::with_capacity(total);
     for disk in disks.iter() {
-        match disk.read_shard(bucket, key) {
+        match disk.read_shard(bucket, key).await {
             Ok(pair) => raw_reads.push(Some(pair)),
             Err(_) => raw_reads.push(None),
         }
@@ -79,7 +79,7 @@ pub fn read_and_decode(
 
 /// Decode a multipart object by reading and decoding each part's shards
 /// independently, then concatenating the results.
-pub fn read_and_decode_multipart(
+pub async fn read_and_decode_multipart(
     disks: &[Box<dyn Backend>],
     bucket: &str,
     key: &str,
@@ -109,7 +109,7 @@ pub fn read_and_decode_multipart(
             // read part meta to get shard index for this disk
             let meta_file = format!("part.{}.meta", part.number);
             let meta_path = obj_dir.join(&meta_file);
-            let shard_idx = if let Ok(meta_data) = std::fs::read(&meta_path) {
+            let shard_idx = if let Ok(meta_data) = tokio::fs::read(&meta_path).await {
                 if let Ok(pm) = serde_json::from_slice::<crate::multipart::PartFileMeta>(&meta_data) {
                     pm.erasure.index
                 } else {
@@ -119,7 +119,7 @@ pub fn read_and_decode_multipart(
                 continue;
             };
             let part_path = obj_dir.join(&part_file);
-            if let Ok(data) = std::fs::read(&part_path) {
+            if let Ok(data) = tokio::fs::read(&part_path).await {
                 if shard_idx < total {
                     shard_slots[shard_idx] = Some(data);
                 }
@@ -149,7 +149,7 @@ pub fn read_and_decode_multipart(
     Ok(result)
 }
 
-pub fn read_and_decode_versioned(
+pub async fn read_and_decode_versioned(
     disks: &[Box<dyn Backend>],
     data_n: usize,
     parity_n: usize,
@@ -161,7 +161,7 @@ pub fn read_and_decode_versioned(
 
     let mut raw_reads: Vec<Option<(Vec<u8>, ObjectMeta)>> = Vec::with_capacity(total);
     for disk in disks.iter() {
-        match disk.read_versioned_shard(bucket, key, version_id) {
+        match disk.read_versioned_shard(bucket, key, version_id).await {
             Ok(pair) => raw_reads.push(Some(pair)),
             Err(_) => raw_reads.push(None),
         }
