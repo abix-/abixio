@@ -2,7 +2,7 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 
 use super::Backend;
 use super::StorageError;
-use super::bitrot::sha256_hex;
+use super::bitrot::verify_shard_checksum;
 use super::metadata::ObjectMeta;
 
 pub async fn read_and_decode(
@@ -35,7 +35,7 @@ pub async fn read_and_decode(
     for read in raw_reads.iter_mut() {
         if let Some((data, meta)) = read.take() {
             // bitrot check
-            if sha256_hex(&data) != meta.checksum {
+            if !verify_shard_checksum(&data, &meta.checksum) {
                 continue; // treat as missing
             }
             let shard_idx = meta.erasure.index;
@@ -178,7 +178,7 @@ pub async fn read_and_decode_versioned(
 
     for read in raw_reads.iter_mut() {
         if let Some((data, meta)) = read.take() {
-            if sha256_hex(&data) != meta.checksum {
+            if !verify_shard_checksum(&data, &meta.checksum) {
                 continue;
             }
             let shard_idx = meta.erasure.index;

@@ -13,7 +13,7 @@ use crate::heal::worker::{HealResult, heal_object};
 use crate::query::parse_query;
 use crate::storage::Backend;
 use crate::storage::Store;
-use crate::storage::bitrot::sha256_hex;
+use crate::storage::bitrot::verify_shard_checksum;
 use crate::storage::volume_pool::VolumePool;
 use crate::storage::pathing;
 
@@ -266,7 +266,7 @@ impl AdminHandler {
                     continue;
                 }
                 let (status, checksum) =
-                    if disk_meta.quorum_eq(&meta) && sha256_hex(data) == disk_meta.checksum {
+                    if disk_meta.quorum_eq(&meta) && verify_shard_checksum(data, &disk_meta.checksum) {
                         ("ok", Some(disk_meta.checksum.clone()))
                     } else {
                         ("corrupt", Some(disk_meta.checksum.clone()))

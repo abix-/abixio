@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::storage::Backend;
 use crate::storage::StorageError;
-use crate::storage::bitrot::{md5_hex, sha256_hex};
+use crate::storage::bitrot::{blake3_hex, md5_hex};
 use crate::storage::metadata::{ErasureMeta, ObjectInfo};
 use crate::storage::pathing;
 
@@ -132,7 +132,7 @@ pub async fn put_part(
                     epoch_id: 1,
                     volume_ids: (0..total).map(|i| format!("vol-{}", i)).collect(),
                 },
-                checksum: sha256_hex(shard_data),
+                checksum: blake3_hex(shard_data),
             };
             let meta_json = serde_json::to_vec(&pm).unwrap_or_default();
             let meta_file = format!("part.{}.meta", part_number);

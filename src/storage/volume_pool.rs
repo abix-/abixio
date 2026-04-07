@@ -1406,6 +1406,11 @@ mod tests {
         let _ = crate::storage::bitrot::sha256_hex(&payload);
         eprintln!("  sha256 10MB: {:.3}ms", t.elapsed().as_secs_f64() * 1000.0);
 
+        // breakdown: blake3
+        let t = std::time::Instant::now();
+        let _ = crate::storage::bitrot::blake3_hex(&payload);
+        eprintln!("  blake3 10MB: {:.3}ms", t.elapsed().as_secs_f64() * 1000.0);
+
         // breakdown: split_data
         let t = std::time::Instant::now();
         let shards = crate::storage::erasure_encode::split_data(&payload, 1);

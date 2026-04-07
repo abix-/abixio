@@ -5,7 +5,7 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 
 use crate::storage::Backend;
 use crate::storage::StorageError;
-use crate::storage::bitrot::sha256_hex;
+use crate::storage::bitrot::{blake3_hex, verify_shard_checksum};
 use crate::storage::metadata::ObjectMeta;
 use crate::storage::pathing;
 
@@ -79,7 +79,7 @@ pub async fn heal_object(
             if shard_idx >= total {
                 continue;
             }
-            if meta.quorum_eq(&consensus_meta) && sha256_hex(data) == meta.checksum {
+            if meta.quorum_eq(&consensus_meta) && verify_shard_checksum(data, &meta.checksum) {
                 statuses[shard_idx] = ShardStatus::Good;
                 shard_data[shard_idx] = Some(data.clone());
             }
@@ -125,7 +125,7 @@ pub async fn heal_object(
             continue;
         }
         if let Some(data) = &shard_data[shard_idx] {
-            let checksum = sha256_hex(data);
+            let checksum = blake3_hex(data);
             let meta = ObjectMeta {
                 erasure: crate::storage::metadata::ErasureMeta {
                     index: shard_idx,
@@ -316,7 +316,7 @@ async fn object_needs_healing(
         if let Ok((data, disk_meta)) = disk.read_shard(bucket, key).await {
             if disk_meta.erasure.index < total
                 && disk_meta.quorum_eq(&meta)
-                && sha256_hex(&data) == disk_meta.checksum
+                && verify_shard_checksum(&data, &disk_meta.checksum)
             {
                 good += 1;
             }

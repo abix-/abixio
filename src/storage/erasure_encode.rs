@@ -4,7 +4,7 @@ use reed_solomon_erasure::galois_8::ReedSolomon;
 
 use super::Backend;
 use super::StorageError;
-use super::bitrot::{md5_hex, sha256_hex};
+use super::bitrot::{blake3_hex, md5_hex};
 use super::metadata::{ErasureMeta, ObjectInfo, ObjectMeta, PutOptions, unix_timestamp_secs};
 use crate::cluster::placement::PlacementPlanner;
 use crate::heal::mrf::{MrfEntry, MrfQueue};
@@ -163,10 +163,10 @@ async fn encode_and_write_impl(
     let vid_str = version_id.unwrap_or("").to_string();
 
     let t_sha_start = std::time::Instant::now();
-    let checksums: Vec<String> = shards.iter().map(|s| sha256_hex(s)).collect();
+    let checksums: Vec<String> = shards.iter().map(|s| blake3_hex(s)).collect();
     let t_sha = t_sha_start.elapsed();
     if data.len() >= 1024 * 1024 {
-        tracing::info!(sha256_ms = t_sha.as_secs_f64() * 1000.0, shards = total, "shard checksums");
+        tracing::info!(blake3_ms = t_sha.as_secs_f64() * 1000.0, shards = total, "shard checksums");
     }
 
     let write_futs: Vec<_> = shards

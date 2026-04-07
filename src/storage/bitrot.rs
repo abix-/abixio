@@ -13,6 +13,16 @@ pub fn md5_hex(data: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+pub fn blake3_hex(data: &[u8]) -> String {
+    blake3::hash(data).to_hex().to_string()
+}
+
+/// Verify a shard checksum. Tries blake3 first (new format), falls back to SHA256
+/// (legacy format) for backward compatibility with existing on-disk data.
+pub fn verify_shard_checksum(data: &[u8], stored_checksum: &str) -> bool {
+    blake3_hex(data) == stored_checksum || sha256_hex(data) == stored_checksum
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
