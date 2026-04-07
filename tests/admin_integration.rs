@@ -5,8 +5,7 @@ use abixio::admin::HealStats;
 use abixio::admin::handlers::{AdminConfig, AdminHandler};
 use abixio::cluster::{ClusterConfig, ClusterManager};
 use abixio::heal::mrf::MrfQueue;
-use abixio::s3::auth::AuthConfig;
-use abixio::s3::handlers::S3Handler;
+use abixio::s3_route::AbixioDispatch;
 use abixio::storage::Backend;
 use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::volume_pool::VolumePool;
@@ -90,14 +89,11 @@ async fn start_server_with_cluster(
         Arc::clone(&cluster),
     ));
 
-    let auth = AuthConfig {
-        access_key: String::new(),
-        secret_key: String::new(),
-        no_auth: true,
-    };
-    let mut handler = S3Handler::new(set, auth, Arc::clone(&cluster));
-    handler.set_admin(admin);
-    let handler = Arc::new(handler);
+    let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&set), Arc::clone(&cluster));
+    let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+    builder.set_validation(abixio::s3_service::RelaxedNameValidation);
+    let s3_service = builder.build();
+    let dispatch = Arc::new(AbixioDispatch::new(s3_service, Some(admin), None));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -106,11 +102,11 @@ async fn start_server_with_cluster(
         loop {
             let (stream, _) = listener.accept().await.unwrap();
             let io = hyper_util::rt::TokioIo::new(stream);
-            let handler = handler.clone();
+            let dispatch = dispatch.clone();
             tokio::spawn(async move {
                 let service = hyper::service::service_fn(move |req| {
-                    let handler = handler.clone();
-                    async move { Ok::<_, hyper::Error>(handler.dispatch(req).await) }
+                    let dispatch = dispatch.clone();
+                    async move { Ok::<_, hyper::Error>(dispatch.dispatch(req).await) }
                 });
                 let _ = hyper::server::conn::http1::Builder::new()
                     .serve_connection(io, service)
@@ -180,14 +176,11 @@ async fn start_server_pool(
         Arc::clone(&cluster),
     ));
 
-    let auth = AuthConfig {
-        access_key: String::new(),
-        secret_key: String::new(),
-        no_auth: true,
-    };
-    let mut handler = S3Handler::new(set, auth, cluster);
-    handler.set_admin(admin);
-    let handler = Arc::new(handler);
+    let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&set), Arc::clone(&cluster));
+    let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+    builder.set_validation(abixio::s3_service::RelaxedNameValidation);
+    let s3_service = builder.build();
+    let dispatch = Arc::new(AbixioDispatch::new(s3_service, Some(admin), None));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -196,11 +189,11 @@ async fn start_server_pool(
         loop {
             let (stream, _) = listener.accept().await.unwrap();
             let io = hyper_util::rt::TokioIo::new(stream);
-            let handler = handler.clone();
+            let dispatch = dispatch.clone();
             tokio::spawn(async move {
                 let service = hyper::service::service_fn(move |req| {
-                    let handler = handler.clone();
-                    async move { Ok::<_, hyper::Error>(handler.dispatch(req).await) }
+                    let dispatch = dispatch.clone();
+                    async move { Ok::<_, hyper::Error>(dispatch.dispatch(req).await) }
                 });
                 let _ = hyper::server::conn::http1::Builder::new()
                     .serve_connection(io, service)

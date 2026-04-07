@@ -4,7 +4,6 @@ pub mod config;
 pub mod heal;
 pub mod multipart;
 pub(crate) mod query;
-pub mod s3;
 pub mod s3_access;
 pub mod s3_auth;
 pub mod s3_route;
