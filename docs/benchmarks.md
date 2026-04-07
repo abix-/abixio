@@ -8,9 +8,11 @@ Windows 10, single machine, NTFS tmpdir, sequential requests, page-cache writes.
 ```mermaid
 xychart-beta horizontal
     title "PUT throughput (MB/s, higher is better)"
-    x-axis ["AbixIO 10MB", "RustFS 10MB", "MinIO 10MB", "AbixIO 1GB", "RustFS 1GB", "MinIO 1GB"]
+    x-axis ["10MB", "1GB"]
     y-axis "MB/s" 0 --> 600
-    bar [147, 77, 88, 353, 464, 537]
+    bar "AbixIO" [147, 353]
+    bar "RustFS" [77, 464]
+    bar "MinIO" [88, 537]
 ```
 
 At 10MB, AbixIO PUT is 1.9x RustFS and 1.7x MinIO.
@@ -21,9 +23,11 @@ At 1GB, AbixIO trails -- the storage layer does 468 MB/s but HTTP/s3s overhead r
 ```mermaid
 xychart-beta horizontal
     title "GET throughput (MB/s, higher is better)"
-    x-axis ["AbixIO 10MB", "RustFS 10MB", "MinIO 10MB", "AbixIO 1GB", "RustFS 1GB", "MinIO 1GB"]
+    x-axis ["10MB", "1GB"]
     y-axis "MB/s" 0 --> 900
-    bar [143, 99, 124, 372, 576, 849]
+    bar "AbixIO" [143, 372]
+    bar "RustFS" [99, 576]
+    bar "MinIO" [124, 849]
 ```
 
 Metadata ops (HEAD, LIST, DELETE) are 63-66ms across all three -- dominated by mc process startup.
