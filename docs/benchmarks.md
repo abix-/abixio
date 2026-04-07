@@ -31,6 +31,20 @@ VolumePool -> erasure encode -> LocalVolume -> tokio::fs -> disk.
 | LIST (100 objects) | 25ms | 37ms |
 | DELETE | 2.9ms | 4.8ms |
 
+## Raw disk baseline
+
+Single `tokio::fs` write/read to tmpdir. No abixio, no HTTP, no encoding.
+This is the ceiling -- OS page cache, not real disk speed.
+
+| Operation | 1KB | 1MB | 10MB |
+|---|---|---|---|
+| WRITE | 2.6 MB/s (372us) | 593 MB/s (1.7ms) | 1,474 MB/s (6.8ms) |
+| READ | 12.3 MB/s (80us) | 2,032 MB/s (492us) | 2,330 MB/s (4.3ms) |
+
+AbixIO PUT 10MB at 147 MB/s vs raw write at 1,474 MB/s = 10x overhead from
+erasure coding, checksums, metadata, and HTTP protocol. GET at 249 MB/s vs
+raw read at 2,330 MB/s = 9x overhead.
+
 ## Where the time goes
 
 Layer isolation benchmark (`tests/layer_bench.rs`), 10MB, 1 disk:
