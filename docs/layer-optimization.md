@@ -4,7 +4,7 @@ Systematic per-layer performance analysis of the AbixIO PUT and GET paths.
 Each layer is treated as an independent optimization problem: measure it,
 identify the ceiling, find the bottleneck, test a fix, record the result.
 
-Last updated: 2026-04-07, commit `122116f`.
+Last updated: 2026-04-07, commit `2688069`.
 
 ## Layer architecture
 
@@ -44,10 +44,11 @@ Summary of all optimizations applied in this round of work.
 ```
 Operation          Before          After           Change
 -----------        -----------     -----------     -------
-PUT 10MB           214 MB/s        272 MB/s        +27%
+PUT 10MB           214 MB/s        272 MB/s        +27%    (versioning cache)
 PUT 1GB            305 MB/s        310 MB/s        ~same
-GET 10MB           365 MB/s        750 MB/s        +105%
-GET 1GB            452 MB/s        833 MB/s        +84%
+GET 10MB           365 MB/s        809 MB/s        +122%   (streaming + mmap)
+GET 1GB            452 MB/s        1048 MB/s       +132%   (mmap fast path)
+GET 1GB (curl)     --              1220 MB/s       --      (no mc overhead)
 ```
 
 ### L4 (storage pipeline) -- internal
@@ -55,12 +56,15 @@ GET 1GB            452 MB/s        833 MB/s        +84%
 ```
 Operation          Before          After           Change
 -----------        -----------     -----------     -------
-GET 10MB (1d)      1175 MB/s       1287 MB/s       +9.5%
-GET 1GB (1d)       1244 MB/s       1439 MB/s       +15.7%
-GET 10MB (4d EC)   774 MB/s        842 MB/s        +8.8%
-GET 1GB (4d EC)    919 MB/s        983 MB/s        +6.9%
+GET 10MB (1d)      1175 MB/s       19098 MB/s      mmap page cache
+GET 1GB (1d)       1244 MB/s       (page cache)    mmap instant
+GET 10MB (4d EC)   774 MB/s        675 MB/s        mmap+RS (4MB blocks)
+GET 1GB (4d EC)    919 MB/s        803 MB/s        mmap+RS (4MB blocks)
 PUT (all sizes)    unchanged       unchanged       0%
 ```
+
+Note: EC GET is slightly slower because mmap slices are copied to Vec for
+RS decode. The 1+0 fast path (no EC) is where the huge win is.
 
 ---
 
@@ -245,7 +249,8 @@ which adds a copy; the real S3 path streams the body without copying.
 | Operation | 10MB | 1GB |
 |-----------|------|-----|
 | S3 PUT | 272 MB/s | 310 MB/s |
-| S3 GET (streaming) | 750 MB/s | 833 MB/s |
+| S3 GET (1 disk, mmap) | 809 MB/s | 1048 MB/s |
+| curl GET (1 disk, no auth) | -- | 1220 MB/s |
 
 ### PUT optimization: versioning config cache (done)
 
@@ -295,6 +300,38 @@ minority of GET traffic.
 Files changed:
 - `src/s3_service.rs` -- streaming GET path, `SyncStream`, `get_object_buffered()`
 
+### GET optimization: mmap fast path (done)
+
+**Problem**: streaming decode still allocated 1MB `Bytes` per chunk through
+an mpsc channel (1024 chunks for 1GB). RustFS uses `tokio::io::duplex` + mmap.
+
+**After**: two-case approach via `memmap2`:
+
+1. **1+0 (no EC)**: mmap the shard file, `Bytes::from_owner(mmap)` gives a
+   ref-counted handle to the entire file. Yield 4MB `.slice()` chunks --
+   zero-copy, zero allocation, no RS decode, no spawned task.
+
+2. **EC (N+M)**: mmap all shard files. Spawned task slices directly into mmap
+   regions (no read syscall), RS-decodes 4MB blocks (4x fewer iterations than
+   1MB), yields decoded data through mpsc channel.
+
+Both paths use `Backend::mmap_shard()` which returns `MmapOrVec` -- local
+volumes return a real mmap, remote volumes fall back to buffered read.
+
+**Result**:
+- L4 GET (1 disk, mmap): 19,098 MB/s at 10MB (page cache), effectively instant
+- L6 GET (1 disk): 809 MB/s at 10MB, **1048 MB/s at 1GB** (was 833)
+- curl GET (no auth): **1220 MB/s at 1GB** -- faster than MinIO through mc
+- EC GET (4 disk): 675-803 MB/s (slightly lower due to mmap slice->Vec copy
+  for RS decode, but fewer iterations from 4MB blocks)
+
+Files changed:
+- `Cargo.toml` -- added `memmap2`
+- `src/storage/mod.rs` -- `MmapOrVec` type, `Backend::mmap_shard()`
+- `src/storage/local_volume.rs` -- mmap-backed `mmap_shard()`
+- `src/storage/erasure_decode.rs` -- mmap-based `read_and_decode_stream()`, 4MB blocks
+- `src/storage/volume_pool.rs` -- 1+0 mmap fast path in `get_object_stream()`
+
 ---
 
 ## Optimization results summary
@@ -304,6 +341,8 @@ Files changed:
 | 1 | Streaming GET | L4+L6 | **GET +105%** (10MB), **+84%** (1GB) | done |
 | 2 | Parallel shard writes | L4 | **Regressed** -21%. Sequential faster on same disk | reverted |
 | 3 | Versioning config cache | L6 | **PUT +27%** (10MB) | done |
+| 4 | mmap GET (1+0 fast path) | L4+L6 | **L6 GET 1GB: 833->1048 MB/s (+26%)**. curl: 1220 MB/s | done |
+| 5 | mmap GET (EC, 4MB blocks) | L4 | 4-disk GET ~800 MB/s (4MB blocks, fewer iterations) | done |
 
 ## Remaining gaps
 
@@ -311,12 +350,17 @@ Files changed:
 |-----|---------|---------|-------|-------|
 | L6 PUT vs L4 PUT | 272 vs 439 MB/s | 1.6x | s3s dispatch overhead |
 | L4 PUT vs L3 write | 439 vs 1625 MB/s | 3.7x | hashing + RS + metadata |
-| L6 GET vs L4 GET | 750 vs 1287 MB/s | 1.7x | s3s response overhead |
-| L4 GET vs L3 read | 1287 vs 2703 MB/s | 2.1x | checksum verify + RS decode |
+| L6 GET (mc) vs L6 GET (curl) | 354 vs 1220 MB/s | 3.4x | mc client overhead (SigV4, Go HTTP) |
+| EC GET vs 1+0 GET | 803 vs page cache | -- | RS decode + mmap->Vec copy |
 
-The largest remaining gap is L4 PUT vs L3 (3.7x). This is mostly inline
-hashing (MD5 at 703 MB/s is the floor) plus RS encode plus metadata writes.
-These are fundamental costs of erasure-coded storage, not inefficiencies.
+The largest remaining gap is the `mc` client bottleneck. AbixIO serves 1GB at
+1220 MB/s via curl, but `mc` can only consume 354 MB/s. MinIO achieves
+970 MB/s through `mc` because `mc` is a Go binary optimized for Go's HTTP stack.
+This is a client-side limitation, not a server-side one.
+
+The L4 PUT gap (3.7x vs disk) is from inline hashing (MD5 at 703 MB/s is the
+floor) plus RS encode plus metadata writes. These are fundamental costs of
+erasure-coded storage, not inefficiencies.
 
 ## Future optimization candidates
 

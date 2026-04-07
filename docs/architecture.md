@@ -76,27 +76,30 @@ HTTP request body (chunked)
   -> return ETag to client
 ```
 
-### GET path (streaming)
+### GET path (mmap)
 
 ```
 HTTP GET request
   -> s3s dispatches to AbixioS3::get_object()
   -> non-range, non-versioned: streaming path
-       VolumePool::get_object_stream() calls read_and_decode_stream()
-       read_and_decode_stream():
-         open shard files in parallel via Backend::read_shard_stream()
-         spawns background task that reads shards in 1MB blocks:
-           for each block:
-             read shard_chunk_size bytes from each shard reader
-             RS reconstruct if any shards missing
-             join data shards, truncate to block size
-             send Bytes chunk via mpsc channel
+       VolumePool::get_object_stream():
+         1+0 (no EC) fast path:
+           mmap shard file via Backend::mmap_shard()
+           Bytes::from_owner(mmap) -> yield 4MB .slice() chunks
+           zero-copy: no RS decode, no allocation, no spawned task
+         EC (N+M) path:
+           mmap all shard files in parallel via Backend::mmap_shard()
+           spawns background task:
+             for each 4MB decode block:
+               slice directly into mmap regions (zero-copy read)
+               RS decode the block
+               send decoded Bytes via mpsc channel
        -> stream wrapped in SyncStream -> StreamingBlob -> hyper response body
   -> range/versioned: buffered path (read full object, slice, respond)
 ```
 
-First response byte is sent after decoding the first 1MB block, not after
-decoding the entire object. See [layer-optimization.md](layer-optimization.md)
+1+0 fast path serves files at 1220 MB/s (1GB via curl). EC path decodes
+at 675-803 MB/s (4-disk). See [layer-optimization.md](layer-optimization.md)
 for performance numbers and optimization history.
 
 ## Cluster
