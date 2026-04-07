@@ -56,6 +56,49 @@ cluster-control direction.
     must fail closed. A node that cannot confirm safe cluster state stops
     serving instead of risking stale writes or split-brain.
 
+## Data flow
+
+### PUT path (streaming)
+
+```
+HTTP request body (chunked)
+  -> s3s parses headers, extracts body as Stream<Bytes>
+  -> AbixioS3::put_object() checks versioning config (cached in memory)
+  -> VolumePool::put_object_stream() opens ShardWriters in parallel
+  -> encode_and_write() reads body in 1MB blocks:
+       for each block:
+         MD5 hasher updates (inline, for ETag)
+         split_data() divides block into data_n shards
+         RS encode adds parity_n shards
+         blake3 hasher updates per shard (inline, for integrity)
+         write_chunk() to each ShardWriter (sequential -- see layer-optimization.md)
+  -> finalize() writes meta.json on each disk
+  -> return ETag to client
+```
+
+### GET path (streaming)
+
+```
+HTTP GET request
+  -> s3s dispatches to AbixioS3::get_object()
+  -> non-range, non-versioned: streaming path
+       VolumePool::get_object_stream() calls read_and_decode_stream()
+       read_and_decode_stream():
+         open shard files in parallel via Backend::read_shard_stream()
+         spawns background task that reads shards in 1MB blocks:
+           for each block:
+             read shard_chunk_size bytes from each shard reader
+             RS reconstruct if any shards missing
+             join data shards, truncate to block size
+             send Bytes chunk via mpsc channel
+       -> stream wrapped in SyncStream -> StreamingBlob -> hyper response body
+  -> range/versioned: buffered path (read full object, slice, respond)
+```
+
+First response byte is sent after decoding the first 1MB block, not after
+decoding the entire object. See [layer-optimization.md](layer-optimization.md)
+for performance numbers and optimization history.
+
 ## Cluster
 
 See [cluster.md](cluster.md).
@@ -86,9 +129,9 @@ src/
     internode_auth.rs     # JWT sign/validate for internode RPC
     volume_pool.rs        # VolumePool: volume pool with per-object FTT resolution
     erasure_encode.rs     # unified streaming encode: encode_and_write via ShardWriter trait
-    erasure_decode.rs     # read from backends + bitrot check + reconstruct
+    erasure_decode.rs     # read + decode: buffered (read_and_decode) and streaming (read_and_decode_stream)
     volume.rs             # VolumeFormat: read/write .abixio.sys/volume.json
-  s3_service.rs           # impl S3 for AbixioS3: thin adapter to VolumePool (s3s)
+  s3_service.rs           # impl S3 for AbixioS3: streaming GET, versioning cache, thin adapter (s3s)
   s3_auth.rs              # impl S3Auth: SigV4 credential lookup (s3s)
   s3_access.rs            # impl S3Access: cluster fencing check (s3s)
   s3_route.rs             # AbixioDispatch: admin + storage RPC bypass, s3s passthrough

@@ -319,7 +319,7 @@ Specific upstream claims this page is anchored to:
 | Weakness | Reality today |
 |---|---|
 | Production credibility | None yet |
-| Benchmarks | [Published](benchmarks.md#vs-rustfs-vs-minio): 1.9x faster PUT at 10MB, slower at 1GB (sequential shard writes) |
+| Benchmarks | [Published](benchmarks.md): competitive at 10MB, slower at 1GB PUT (sequential shard writes). GET streaming path doubled throughput (750 MB/s at 10MB). See [layer-optimization.md](layer-optimization.md) for per-layer analysis |
 | Failure injection / long-haul testing | Not there yet |
 | Packaging / deployment story | Not there yet |
 | S3 surface completeness | Incomplete |

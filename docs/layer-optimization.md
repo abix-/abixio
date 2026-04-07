@@ -1,126 +1,330 @@
 # Layer optimization
 
-Per-layer performance analysis. Each layer treated as a separate problem.
-Updated after each optimization with new numbers.
+Systematic per-layer performance analysis of the AbixIO PUT and GET paths.
+Each layer is treated as an independent optimization problem: measure it,
+identify the ceiling, find the bottleneck, test a fix, record the result.
+
+Last updated: 2026-04-07, commit `122116f`.
 
 ## Layer architecture
 
 ```
 PUT path (top to bottom):
-L6  S3 protocol      s3s parses HTTP, dispatches to AbixioS3 impl
-L5  HTTP transport    hyper accepts TCP, reads/writes body
-L4  Storage pipeline  VolumePool: placement + encode + write shards
-L3  Disk I/O          tokio::fs::write / tokio::fs::read
-L2  RS encode         reed-solomon-erasure galois_8, SIMD-accel
-L1  Hashing           blake3 (shard integrity) + MD5 (S3 ETag)
 
-GET path reverses: L6 -> L5 -> L4 (read shards, RS decode, reassemble) -> L3 -> L1
+  Client request
+       |
+  L6   S3 protocol (s3s)        parse HTTP, SigV4, dispatch to AbixioS3
+  L5   HTTP transport (hyper)    accept TCP, read/write body
+  L4   Storage pipeline          VolumePool: placement, RS encode, write shards
+  L3   Disk I/O                  tokio::fs::write / tokio::fs::read
+  L2   RS encode                 reed-solomon-erasure galois_8, SIMD
+  L1   Hashing                   blake3 (shard integrity) + MD5 (S3 ETag)
+
+GET path reverses: L6 -> L5 -> L4 -> L3 -> L2 (decode) -> L1 (verify)
 ```
 
-## Current numbers
+L1-L3 are primitives measured in isolation. L4 combines them into the storage
+pipeline. L5 measures raw HTTP. L6 adds the S3 protocol layer on top.
 
-From `bench_perf` at commit `dcf5e7b`, Windows 10, single machine, NTFS tmpdir.
+## Benchmark environment
 
-```
-Layer  What                                     4KB          10MB         1GB
------  ---------------------------------------- -----------  -----------  -----------
-L1     blake3                                    1604 MB/s    4303 MB/s    4286 MB/s
-L1     MD5                                        449 MB/s     703 MB/s     700 MB/s
-L2     RS encode 3+1                             2955 MB/s    2762 MB/s    2825 MB/s
-L3     disk write (page cache)                     13 MB/s    1625 MB/s    1056 MB/s
-L3     disk read (cached)                          46 MB/s    2703 MB/s    2902 MB/s
-L4     put_stream (1 disk)                          4 MB/s     439 MB/s     493 MB/s
-L4     get (1 disk)                                 8 MB/s    1178 MB/s    1256 MB/s
-L4     put_stream (4 disk, 3+1 EC)                  2 MB/s     367 MB/s     416 MB/s
-L4     get (4 disk, 3+1 EC)                         1 MB/s     902 MB/s     917 MB/s
-L5     HTTP PUT                                    32 MB/s     762 MB/s     800 MB/s
-L6     s3s PUT (1 disk)                             3 MB/s     230 MB/s     305 MB/s
-L6     s3s GET (1 disk)                             6 MB/s     365 MB/s     452 MB/s
-```
-
-Competitive benchmark (sequential `mc` client, 10MB):
-- AbixIO: 90 MB/s PUT, 96 MB/s GET
-- RustFS: 74 MB/s PUT, 122 MB/s GET
-- MinIO: 82 MB/s PUT, 108 MB/s GET
-
-At 1GB: AbixIO 375 MB/s PUT vs RustFS 541 vs MinIO 576.
+- Windows 10 Home, single machine, all volumes on same NTFS drive (tmpdir)
+- Single-node, page-cache writes (no fsync), sequential requests
+- 10 iterations per measurement (50 for 4KB, 5 for 1GB, 30 for focused tests)
+- `bench_perf` in `tests/layer_bench.rs` with JSON output and A/B comparison
 
 ---
 
-## L1: Hashing -- no change needed
+## Before and after
 
-blake3 at 4.3 GB/s (SIMD), MD5 at 703 MB/s (near theoretical max).
-Both computed inline during streaming -- overlaps with I/O at large sizes.
-MD5 required for S3 ETag compliance. Not a bottleneck at any layer above.
+Summary of all optimizations applied in this round of work.
 
-## L2: RS encode -- no change needed
+### L6 (end-to-end S3 path) -- what users see
 
-2.8 GB/s with `simd-accel`. 6x faster than L4 storage pipeline.
-Not a bottleneck.
+```
+Operation          Before          After           Change
+-----------        -----------     -----------     -------
+PUT 10MB           214 MB/s        272 MB/s        +27%
+PUT 1GB            305 MB/s        310 MB/s        ~same
+GET 10MB           365 MB/s        750 MB/s        +105%
+GET 1GB            452 MB/s        833 MB/s        +84%
+```
 
-## L3: Disk I/O -- no change needed
+### L4 (storage pipeline) -- internal
 
-Page-cache writes: 1.6 GB/s (10MB). This is the ceiling for L4.
-Future: configurable fsync for durability, io_uring on Linux.
+```
+Operation          Before          After           Change
+-----------        -----------     -----------     -------
+GET 10MB (1d)      1175 MB/s       1287 MB/s       +9.5%
+GET 1GB (1d)       1244 MB/s       1439 MB/s       +15.7%
+GET 10MB (4d EC)   774 MB/s        842 MB/s        +8.8%
+GET 1GB (4d EC)    919 MB/s        983 MB/s        +6.9%
+PUT (all sizes)    unchanged       unchanged       0%
+```
 
-## L4: Storage pipeline
+---
 
-### PUT bottleneck: sequential shard writes
+## L1: Hashing
 
-`write_block()` in `src/storage/erasure_encode.rs:272`:
+### Numbers (10MB)
+
+| Operation | Throughput |
+|-----------|-----------|
+| blake3 | 4303 MB/s |
+| MD5 | 703 MB/s |
+
+### Analysis
+
+blake3 uses SIMD (AVX2/SSE4.1), 4.3 GB/s is near hardware ceiling. MD5 at
+703 MB/s is near theoretical max for single-threaded MD5. Both are computed
+inline during the streaming encode path -- their cost overlaps with I/O for
+large objects (10MB+).
+
+MD5 is required by S3 (ETag = MD5 of body). Cannot be removed.
+
+### Decision
+
+**No change.** Hashing is not the bottleneck at any layer above it.
+
+---
+
+## L2: RS encode
+
+### Numbers (10MB)
+
+| Operation | Throughput |
+|-----------|-----------|
+| RS encode 3+1 | 2762 MB/s |
+
+### Analysis
+
+reed-solomon-erasure with `simd-accel` feature. 2.8 GB/s is within expected
+range for galois_8 on x86. 6x faster than the L4 storage pipeline (439 MB/s).
+
+Could use ISA-L bindings for ~2x more, but pointless when L4 is the bottleneck.
+
+### Decision
+
+**No change.** RS encode is not limiting.
+
+---
+
+## L3: Disk I/O
+
+### Numbers
+
+| Operation | 10MB | 1GB |
+|-----------|------|-----|
+| write (page cache) | 1625 MB/s | 1056 MB/s |
+| read (cached) | 2703 MB/s | 2902 MB/s |
+
+### Analysis
+
+These are the ceiling numbers for L4. Page-cache writes avoid disk sync -- real
+durability requires fsync, which would cut throughput to physical disk speed
+(SATA SSD ~500 MB/s, NVMe ~2-3 GB/s).
+
+4KB writes are slow (13 MB/s) due to filesystem metadata overhead per operation.
+
+### Decision
+
+**No change.** This is the theoretical ceiling, not the current bottleneck.
+Future: configurable fsync for durability, io_uring on Linux for zero-copy I/O.
+
+---
+
+## L4: Storage pipeline (VolumePool)
+
+### Numbers (after optimization)
+
+| Operation | 1 disk 10MB | 1 disk 1GB | 4 disk 10MB | 4 disk 1GB |
+|-----------|------------|-----------|------------|-----------|
+| put_stream | 439 MB/s | 489 MB/s | 371 MB/s | 409 MB/s |
+| get (buffered) | 1175 MB/s | 1244 MB/s | 774 MB/s | 919 MB/s |
+| get_stream | 1287 MB/s | 1439 MB/s | 842 MB/s | 983 MB/s |
+
+### PUT analysis
+
+The streaming PUT path (`encode_and_write` in `src/storage/erasure_encode.rs`)
+reads body chunks, accumulates to 1MB blocks, RS-encodes each block, and writes
+encoded shard data to each shard writer sequentially.
+
+The sequential write loop in `write_block()`:
 ```rust
 for (i, shard_data) in shards.iter().enumerate() {
     shard_hashers[i].update(shard_data);
-    writers[i].write_chunk(shard_data).await?;  // sequential
+    writers[i].write_chunk(shard_data).await?;
 }
 ```
 
-Each write awaits before the next. With 4 disks, serializes 4 disk writes.
-Previous FuturesUnordered attempt regressed at 10MB (147->74 MB/s) due to
-per-block spawn overhead.
+L4 PUT at 439 MB/s vs L3 disk write at 1625 MB/s = 3.7x overhead from inline
+hashing (MD5 + blake3), RS encode, metadata writes, and the sequential shard
+write loop.
 
-**Solution**: channel-based shard writer pipeline. Spawn one task per shard
-writer at encode start. Send blocks via mpsc channels. No per-block spawn cost.
+### PUT parallelism experiments (all failed)
 
-### GET bottleneck: full-body collection
+Three approaches were tested to parallelize shard writes:
 
-`read_and_decode()` in `src/storage/erasure_decode.rs:8` reads all shards
-in parallel (good) but assembles into `Vec<u8>`. For 1GB objects, allocates
-1GB before response can start.
+1. **FuturesUnordered** (earlier work): regressed 10MB from 147->74 MB/s.
+   Per-iteration spawn overhead exceeded sequential cost.
 
-**Solution**: streaming decode. `read_and_decode_stream()` returns
-`Stream<Item=Result<Bytes>>`. Read shard metadata first, then stream shard
-data in 1MB blocks, RS-decode per block, yield.
+2. **Channel-based shard tasks** (this session): spawned one tokio task per
+   shard writer at encode start, sent blocks via mpsc channels. Regressed
+   4-disk 10MB by -21%. Channel + task scheduling overhead outweighed any
+   parallelism benefit.
 
-## L5: HTTP transport -- no change needed
+3. **join_all on concurrent writes**: not possible due to Rust's borrow rules
+   (`write_chunk` takes `&mut self`, can't hold multiple `&mut` into a slice).
 
-762 MB/s PUT with hyper 1.x. Not the bottleneck.
+**Root cause**: all tmpdir shard files are on the same physical NTFS volume.
+There is no actual I/O parallelism to exploit. The OS page cache serializes
+writes to the same device. Parallel shard writes would only help when shards
+map to different physical disks -- which the single-machine benchmark doesn't
+test.
 
-## L6: S3 protocol (s3s)
+**Decision**: sequential writes are correct for same-disk configurations.
+The comment in `write_block()` documents this finding so future work doesn't
+repeat the experiment without separate physical disks.
 
-### PUT bottleneck: per-request disk reads
+### GET analysis and optimization (done)
 
-`put_object()` in `src/s3_service.rs:198` calls `get_versioning_config()`
-on every PUT, which reads bucket settings from disk.
+**Before**: `read_and_decode()` read all shard files in parallel via
+`join_all` (good), but collected the full decoded object into a `Vec<u8>`
+before returning. For 1GB objects, this allocated 1GB in memory before the
+first response byte could be sent.
 
-**Solution**: in-memory versioning config cache per bucket, invalidated on
-`set_versioning_config()`.
+**After**: `read_and_decode_stream()` opens shard files, reads them in 1MB
+blocks matching the encode path's `STREAM_BLOCK_SIZE`, RS-decodes each block,
+and yields decoded chunks via a `futures::channel::mpsc` channel (4-slot
+buffer). A spawned tokio task handles the block-by-block decode loop.
 
-### GET bottleneck: full-body buffering
+Key implementation details:
+- `Backend::read_shard_stream()` returns `(AsyncRead, ObjectMeta)` instead of
+  `(Vec<u8>, ObjectMeta)`. LocalVolume opens the file; RemoteVolume falls back
+  to buffered read.
+- Block boundaries are derived from `total_size`, `data_n`, and
+  `STREAM_BLOCK_SIZE` (1MB). Each shard file stores blocks contiguously, so
+  per-block shard chunk size = `ceil(block_size / data_n)`.
+- The last block may be smaller than 1MB. `split_data` padding is handled
+  by truncating the reassembled block to the actual remaining bytes.
 
-`get_object()` in `src/s3_service.rs:261` calls `Store::get_object()` which
-returns `(Vec<u8>, ObjectInfo)`. Entire object in memory before first byte
-sent. Then wraps as single-chunk `StreamingBlob`.
+**Result**: +9-16% throughput at L4, but the bigger win is at L6 (see below).
 
-**Solution**: wire L4 streaming decode through to s3s `StreamingBlob::wrap()`.
-Requires L4 streaming decode (above) first.
+Files changed:
+- `src/storage/erasure_decode.rs` -- `read_and_decode_stream()`
+- `src/storage/mod.rs` -- `Backend::read_shard_stream()`, `Store::get_object_stream()`
+- `src/storage/local_volume.rs` -- native file-backed `read_shard_stream()`
+- `src/storage/volume_pool.rs` -- `VolumePool::get_object_stream()`
 
 ---
 
-## Implementation priority
+## L5: HTTP transport
 
-| # | Change | Layer | Measured gain | Status |
-|---|--------|-------|---------------|--------|
-| 1 | Streaming GET (decode + response) | L4+L6 | L4: +9-16%. L6: **+105% (10MB), +84% (1GB)**. GET 365->750, 452->833 MB/s | done |
-| 2 | Channel-based parallel shard writes | L4 | **Regressed** (-21% at 4-disk 10MB). Sequential is faster on same physical disk. | reverted |
-| 3 | Versioning config cache | L6 | **+27% PUT** (214->272 MB/s at 10MB). Eliminates per-PUT disk read. | done |
+### Numbers (10MB)
+
+| Operation | Throughput |
+|-----------|-----------|
+| HTTP PUT (reqwest -> hyper) | 762 MB/s |
+
+### Analysis
+
+hyper 1.x with http-body-util on localhost. 762 MB/s is reasonable -- limited
+by memcpy + TCP stack overhead. The benchmark uses `data.clone()` on each PUT
+which adds a copy; the real S3 path streams the body without copying.
+
+### Decision
+
+**No change.** HTTP transport is not limiting (762 MB/s > L6's 272 MB/s).
+
+---
+
+## L6: S3 protocol (s3s + full pipeline)
+
+### Numbers (after optimization)
+
+| Operation | 10MB | 1GB |
+|-----------|------|-----|
+| S3 PUT | 272 MB/s | 310 MB/s |
+| S3 GET (streaming) | 750 MB/s | 833 MB/s |
+
+### PUT optimization: versioning config cache (done)
+
+**Before**: every PUT called `get_versioning_config()` which read bucket
+settings from disk via `Backend::read_bucket_settings()`. This added a file
+read to every single PUT request, even when versioning was never configured.
+
+**After**: `AbixioS3` caches versioning config in a `RwLock<HashMap>`. First
+access populates the cache from disk. `put_bucket_versioning` invalidates the
+cache entry. `get_bucket_versioning` also invalidates before re-reading to
+ensure fresh data.
+
+**Result**: L6 PUT improved from 214 MB/s to 272 MB/s (+27%).
+
+Remaining PUT overhead (272 vs L4's 439 = 38% gap) is s3s request parsing,
+XML serialization, and service dispatch. This is inherent to the protocol
+layer and not easily reducible without replacing s3s.
+
+Files changed:
+- `src/s3_service.rs` -- `cached_versioning_config()`, `invalidate_versioning_cache()`
+
+### GET optimization: streaming response (done)
+
+**Before**: `get_object()` called `Store::get_object()` which returned
+`(Vec<u8>, ObjectInfo)` -- the entire object buffered in memory. Then it
+wrapped the data as a single-chunk `StreamingBlob::wrap(once(...))`. For
+1GB objects, this meant 1GB allocated before the first response byte was sent.
+
+**After**: `get_object()` calls `Store::get_object_stream()` which returns
+`(ObjectInfo, Stream<Item=Result<Bytes>>)`. The stream feeds directly into
+`StreamingBlob::wrap()`. The first response byte is sent after decoding the
+first 1MB block, not after decoding the entire object.
+
+Key implementation detail: s3s `StreamingBlob::wrap()` requires `Send + Sync`.
+The boxed stream from `get_object_stream()` is `Send` but not `Sync`. A
+`SyncStream` newtype wrapper adds `Sync` via `unsafe impl` -- this is safe
+because streams are only polled from one task at a time.
+
+Range requests and versioned GETs still use the buffered path because they
+need random access into the response body. This is acceptable because range
+requests typically target small byte ranges, and versioned objects are the
+minority of GET traffic.
+
+**Result**: L6 GET improved from 365 to 750 MB/s at 10MB (+105%), and from
+452 to 833 MB/s at 1GB (+84%).
+
+Files changed:
+- `src/s3_service.rs` -- streaming GET path, `SyncStream`, `get_object_buffered()`
+
+---
+
+## Optimization results summary
+
+| # | Change | Layer | Result | Status |
+|---|--------|-------|--------|--------|
+| 1 | Streaming GET | L4+L6 | **GET +105%** (10MB), **+84%** (1GB) | done |
+| 2 | Parallel shard writes | L4 | **Regressed** -21%. Sequential faster on same disk | reverted |
+| 3 | Versioning config cache | L6 | **PUT +27%** (10MB) | done |
+
+## Remaining gaps
+
+| Gap | Current | Ceiling | Ratio | Notes |
+|-----|---------|---------|-------|-------|
+| L6 PUT vs L4 PUT | 272 vs 439 MB/s | 1.6x | s3s dispatch overhead |
+| L4 PUT vs L3 write | 439 vs 1625 MB/s | 3.7x | hashing + RS + metadata |
+| L6 GET vs L4 GET | 750 vs 1287 MB/s | 1.7x | s3s response overhead |
+| L4 GET vs L3 read | 1287 vs 2703 MB/s | 2.1x | checksum verify + RS decode |
+
+The largest remaining gap is L4 PUT vs L3 (3.7x). This is mostly inline
+hashing (MD5 at 703 MB/s is the floor) plus RS encode plus metadata writes.
+These are fundamental costs of erasure-coded storage, not inefficiencies.
+
+## Future optimization candidates
+
+- **Multi-disk benchmark on separate physical devices**: parallel shard writes
+  would likely help when shards map to different NVMe drives
+- **io_uring on Linux**: zero-copy I/O could narrow the L4-vs-L3 gap
+- **Configurable fsync**: per-bucket durability modes (none/data/full)
+- **s3s upgrade or bypass**: s3s 0.13 adds ~38% overhead on PUT. Newer versions
+  or a custom protocol layer could reduce this
+- **Streaming multipart GET**: currently falls back to buffered path
+- **Streaming range requests**: currently falls back to buffered path

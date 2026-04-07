@@ -3,11 +3,15 @@
 ## Setup
 
 - Windows 10, single machine, all volumes on same NTFS drive (tmpdir)
-- Single-node, 1 disk, no erasure coding (1+0)
+- Single-node, 1 disk, no erasure coding (1+0) unless noted
 - Sequential requests, no concurrency, page-cache writes (no fsync)
 - 10 iterations per measurement (50 for 4KB, 5 for 1GB)
-- `mc` client with UNSIGNED-PAYLOAD over HTTP
-- AbixIO `037106f`, RustFS 1.0.0-alpha.90, MinIO RELEASE.2026-04-07
+- Per-layer numbers from `bench_perf` at commit `122116f`
+- Competitive numbers from `mc` client with UNSIGNED-PAYLOAD over HTTP
+  against AbixIO `037106f`, RustFS 1.0.0-alpha.90, MinIO RELEASE.2026-04-07
+
+For per-layer optimization details, methodology, and failed experiments,
+see [layer-optimization.md](layer-optimization.md).
 
 ## PUT throughput
 
