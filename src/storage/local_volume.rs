@@ -6,7 +6,7 @@ use super::metadata::{
     BucketSettings, ObjectMeta, ObjectMetaFile, read_meta_file, write_meta_file,
 };
 use super::pathing;
-use super::{Backend, BackendInfo, ShardWriter, StorageError};
+use super::{Backend, BackendInfo, MmapOrVec, ShardWriter, StorageError};
 
 pub struct LocalVolume {
     root: PathBuf,
@@ -276,6 +276,34 @@ impl Backend for LocalVolume {
         };
         let file = tokio::fs::File::open(&shard_path).await.map_err(|_| StorageError::ObjectNotFound)?;
         Ok((Box::pin(file), version.clone()))
+    }
+
+    async fn mmap_shard(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(MmapOrVec, super::metadata::ObjectMeta), StorageError> {
+        let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
+        if !obj_dir.is_dir() {
+            return Err(StorageError::ObjectNotFound);
+        }
+        let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await
+            .map_err(|_| StorageError::ObjectNotFound)?;
+        let version = mf
+            .versions
+            .iter()
+            .find(|v| !v.is_delete_marker)
+            .ok_or(StorageError::ObjectNotFound)?;
+        let shard_path = if version.version_id.is_empty() {
+            pathing::object_shard_path(&self.root, bucket, key)?
+        } else {
+            pathing::version_shard_path(&self.root, bucket, key, &version.version_id)?
+        };
+        let file = std::fs::File::open(&shard_path).map_err(|_| StorageError::ObjectNotFound)?;
+        // SAFETY: file is opened read-only, not modified while mapped
+        let mmap = unsafe { memmap2::Mmap::map(&file) }
+            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        Ok((MmapOrVec::Mmap(mmap), version.clone()))
     }
 
     async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {

@@ -27,6 +27,7 @@ async-trait = "0.1"
 futures = "0.3"
 s3s = "0.13"
 form_urlencoded = "1"
+memmap2 = "0.9"
 hostname = "0.4.2"
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
 

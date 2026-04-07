@@ -11,6 +11,7 @@ pub mod pathing;
 pub mod volume;
 
 use std::io;
+use std::ops::Deref;
 use std::pin::Pin;
 
 use std::collections::HashMap;
@@ -19,6 +20,33 @@ use metadata::{
     BucketInfo, BucketSettings, ListOptions, ListResult, ObjectInfo, ObjectMeta, PutOptions,
     VersioningConfig,
 };
+
+/// Either a memory-mapped file or a Vec<u8> buffer. Derefs to &[u8].
+/// Used by mmap_shard to avoid forcing all backends to support mmap.
+pub enum MmapOrVec {
+    Mmap(memmap2::Mmap),
+    Vec(Vec<u8>),
+}
+
+impl Deref for MmapOrVec {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            MmapOrVec::Mmap(m) => m,
+            MmapOrVec::Vec(v) => v,
+        }
+    }
+}
+
+impl AsRef<[u8]> for MmapOrVec {
+    fn as_ref(&self) -> &[u8] {
+        self
+    }
+}
+
+// SAFETY: Mmap is Send (backed by OS mapping). Vec<u8> is Send.
+unsafe impl Send for MmapOrVec {}
+unsafe impl Sync for MmapOrVec {}
 
 /// Streaming shard writer. Backends return this from open_shard_writer.
 /// Write chunks of encoded shard data, then finalize with metadata.
@@ -52,6 +80,17 @@ pub trait Backend: Send + Sync {
     ) -> Result<(), StorageError>;
 
     async fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError>;
+
+    /// Memory-map the shard file. Returns the mapping + metadata.
+    /// Default falls back to read_shard (loads into memory, wraps as pseudo-mmap).
+    async fn mmap_shard(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(MmapOrVec, ObjectMeta), StorageError> {
+        let (data, meta) = self.read_shard(bucket, key).await?;
+        Ok((MmapOrVec::Vec(data), meta))
+    }
 
     /// Open shard for streaming read. Returns an async reader + metadata.
     /// Default falls back to read_shard (loads full shard into memory).

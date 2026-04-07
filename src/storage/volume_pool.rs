@@ -296,6 +296,26 @@ impl Store for VolumePool {
             Some(ec) => ec,
             None => self.bucket_ec(bucket).await,
         };
+
+        // 1+0 fast path: mmap shard file, serve slices directly (no RS decode)
+        if data_n == 1 && parity_n == 0 {
+            for disk in &self.disks {
+                if let Ok((mmap, meta)) = disk.mmap_shard(bucket, key).await {
+                    let info = Self::meta_to_info(bucket, key, &meta);
+                    let size = info.size as usize;
+                    // Bytes::from_owner owns the mmap, slices are zero-copy
+                    let owned = bytes::Bytes::from_owner(mmap);
+                    let chunk_size = 4 * 1024 * 1024; // 4MB chunks
+                    let stream = futures::stream::iter((0..size).step_by(chunk_size).map(move |offset| {
+                        let end = (offset + chunk_size).min(size);
+                        Ok::<bytes::Bytes, StorageError>(owned.slice(offset..end))
+                    }));
+                    return Ok((info, Box::pin(stream)));
+                }
+            }
+            return Err(StorageError::ObjectNotFound);
+        }
+
         let (meta, rx) = read_and_decode_stream(&self.disks, data_n, parity_n, bucket, key).await?;
         let info = Self::meta_to_info(bucket, key, &meta);
         Ok((info, Box::pin(rx)))
