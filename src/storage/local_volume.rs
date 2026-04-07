@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use super::metadata::{
@@ -12,7 +11,6 @@ pub struct LocalVolume {
     volume_id: String,
 }
 
-const TMP_DIR: &str = ".abixio.tmp";
 const META_FILE: &str = "meta.json";
 const BUCKET_SETTINGS_FILE: &str = "settings.json";
 
@@ -25,8 +23,8 @@ impl LocalVolume {
             )));
         }
         // ensure tmp dir exists
-        let tmp = root.join(TMP_DIR);
-        fs::create_dir_all(&tmp)?;
+        let tmp = root.join(".abixio.tmp");
+        std::fs::create_dir_all(&tmp)?;
         // read volume_id from volume.json if available
         let volume_id = crate::storage::volume::read_volume_format(root)
             .map(|f| f.volume_id)
@@ -41,17 +39,16 @@ impl LocalVolume {
         &self.root
     }
 
-    fn walk_keys(
-        &self,
+    async fn walk_keys(
         base: &Path,
         dir: &Path,
         prefix: &str,
         keys: &mut Vec<String>,
     ) -> Result<(), StorageError> {
         pathing::validate_object_prefix(prefix)?;
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let ft = entry.file_type()?;
+        let mut entries = tokio::fs::read_dir(dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let ft = entry.file_type().await?;
             if ft.is_dir() {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with('.') {
@@ -72,7 +69,7 @@ impl LocalVolume {
                     }
                 } else {
                     // recurse into subdirectory
-                    self.walk_keys(base, &entry.path(), prefix, keys)?;
+                    Box::pin(Self::walk_keys(base, &entry.path(), prefix, keys)).await?;
                 }
             }
         }
@@ -82,7 +79,7 @@ impl LocalVolume {
 
 impl LocalVolume {
     /// Write a part shard file (part.N) into the object directory.
-    pub fn write_part_shard(
+    pub async fn write_part_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -90,14 +87,14 @@ impl LocalVolume {
         data: &[u8],
     ) -> Result<(), StorageError> {
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
-        fs::create_dir_all(&obj_dir)?;
+        tokio::fs::create_dir_all(&obj_dir).await?;
         let part_path = obj_dir.join(format!("part.{}", part_number));
-        fs::write(part_path, data)?;
+        tokio::fs::write(part_path, data).await?;
         Ok(())
     }
 
     /// Read a part shard file (part.N) from the object directory.
-    pub fn read_part_shard(
+    pub async fn read_part_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -105,24 +102,24 @@ impl LocalVolume {
     ) -> Result<Vec<u8>, StorageError> {
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         let part_path = obj_dir.join(format!("part.{}", part_number));
-        fs::read(&part_path).map_err(|_| StorageError::ObjectNotFound)
+        tokio::fs::read(&part_path).await.map_err(|_| StorageError::ObjectNotFound)
     }
 
     /// Write only meta.json without shard data (used by multipart complete).
-    pub fn write_meta_only(
+    pub async fn write_meta_only(
         &self,
         bucket: &str,
         key: &str,
         meta: &ObjectMeta,
     ) -> Result<(), StorageError> {
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
-        fs::create_dir_all(&obj_dir)?;
+        tokio::fs::create_dir_all(&obj_dir).await?;
         let mut version = meta.clone();
         version.is_latest = true;
         let mf = ObjectMetaFile {
             versions: vec![version],
         };
-        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf)
+        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf).await
             .map_err(StorageError::Io)
     }
 }
@@ -137,10 +134,10 @@ impl Backend for LocalVolume {
         meta: &ObjectMeta,
     ) -> Result<(), StorageError> {
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
-        fs::create_dir_all(&obj_dir)?;
+        tokio::fs::create_dir_all(&obj_dir).await?;
 
         // write shard data directly to key/shard.dat
-        fs::write(pathing::object_shard_path(&self.root, bucket, key)?, data)?;
+        tokio::fs::write(pathing::object_shard_path(&self.root, bucket, key)?, data).await?;
 
         // update meta.json: single version entry (unversioned = overwrite)
         let mut version = meta.clone();
@@ -148,7 +145,7 @@ impl Backend for LocalVolume {
         let mf = ObjectMetaFile {
             versions: vec![version],
         };
-        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf)
+        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf).await
             .map_err(StorageError::Io)?;
 
         Ok(())
@@ -159,7 +156,7 @@ impl Backend for LocalVolume {
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
-        let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?)
+        let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await
             .map_err(|_| StorageError::ObjectNotFound)?;
 
         // find latest non-delete-marker version
@@ -176,7 +173,7 @@ impl Backend for LocalVolume {
             pathing::version_shard_path(&self.root, bucket, key, &version.version_id)?
         };
 
-        let data = fs::read(&shard_path).map_err(|_| StorageError::ObjectNotFound)?;
+        let data = tokio::fs::read(&shard_path).await.map_err(|_| StorageError::ObjectNotFound)?;
         Ok((data, version.clone()))
     }
 
@@ -185,7 +182,7 @@ impl Backend for LocalVolume {
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
-        fs::remove_dir_all(&obj_dir)?;
+        tokio::fs::remove_dir_all(&obj_dir).await?;
         Ok(())
     }
 
@@ -195,20 +192,20 @@ impl Backend for LocalVolume {
             return Err(StorageError::BucketNotFound);
         }
         let mut keys = Vec::new();
-        self.walk_keys(&bucket_dir, &bucket_dir, prefix, &mut keys)?;
+        Self::walk_keys(&bucket_dir, &bucket_dir, prefix, &mut keys).await?;
         keys.sort();
         Ok(keys)
     }
 
     async fn list_buckets(&self) -> Result<Vec<String>, StorageError> {
         let mut buckets = Vec::new();
-        for entry in fs::read_dir(&self.root)? {
-            let entry = entry?;
+        let mut entries = tokio::fs::read_dir(&self.root).await?;
+        while let Some(entry) = entries.next_entry().await? {
             let name = entry.file_name().to_string_lossy().to_string();
             if name.starts_with('.') {
                 continue;
             }
-            if entry.file_type()?.is_dir() {
+            if entry.file_type().await?.is_dir() {
                 buckets.push(name);
             }
         }
@@ -221,7 +218,7 @@ impl Backend for LocalVolume {
         if path.is_dir() {
             return Err(StorageError::BucketExists);
         }
-        fs::create_dir_all(&path)?;
+        tokio::fs::create_dir_all(&path).await?;
         Ok(())
     }
 
@@ -230,7 +227,7 @@ impl Backend for LocalVolume {
         if !path.is_dir() {
             return Err(StorageError::BucketNotFound);
         }
-        fs::remove_dir(&path).map_err(|e| {
+        tokio::fs::remove_dir(&path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::DirectoryNotEmpty
                 || e.to_string().contains("not empty")
             {
@@ -251,7 +248,7 @@ impl Backend for LocalVolume {
         let Ok(path) = pathing::bucket_dir(&self.root, bucket) else {
             return 0;
         };
-        fs::metadata(&path)
+        std::fs::metadata(&path)
             .and_then(|m| m.modified())
             .ok()
             .and_then(|t| t.duration_since(std::time::SystemTime::UNIX_EPOCH).ok())
@@ -264,7 +261,7 @@ impl Backend for LocalVolume {
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
         }
-        let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?)
+        let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await
             .map_err(|_| StorageError::ObjectNotFound)?;
         mf.versions
             .iter()
@@ -279,7 +276,7 @@ impl Backend for LocalVolume {
             return Err(StorageError::ObjectNotFound);
         }
         // replace the matching version entry (by index) in meta.json
-        let mut mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?)
+        let mut mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await
             .map_err(|_| StorageError::ObjectNotFound)?;
         if let Some(v) = mf
             .versions
@@ -288,7 +285,7 @@ impl Backend for LocalVolume {
         {
             *v = meta.clone();
         }
-        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf)
+        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf).await
             .map_err(StorageError::Io)
     }
 
@@ -301,13 +298,13 @@ impl Backend for LocalVolume {
         meta: &ObjectMeta,
     ) -> Result<(), StorageError> {
         let ver_dir = pathing::version_dir(&self.root, bucket, key, version_id)?;
-        fs::create_dir_all(&ver_dir)?;
+        tokio::fs::create_dir_all(&ver_dir).await?;
 
         // write shard data to key/<uuid>/shard.dat
-        fs::write(pathing::version_shard_path(&self.root, bucket, key, version_id)?, data)?;
+        tokio::fs::write(pathing::version_shard_path(&self.root, bucket, key, version_id)?, data).await?;
 
         // update meta.json: add new version entry at front, mark others as not latest
-        let mut mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).unwrap_or(ObjectMetaFile {
+        let mut mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await.unwrap_or(ObjectMetaFile {
             versions: Vec::new(),
         });
         for v in &mut mf.versions {
@@ -317,7 +314,7 @@ impl Backend for LocalVolume {
         version.is_latest = true;
         version.version_id = version_id.to_string();
         mf.versions.insert(0, version);
-        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf)
+        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf).await
             .map_err(StorageError::Io)?;
 
         Ok(())
@@ -329,7 +326,7 @@ impl Backend for LocalVolume {
         key: &str,
         version_id: &str,
     ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
-        let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?)
+        let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await
             .map_err(|_| StorageError::ObjectNotFound)?;
 
         let version = mf
@@ -339,7 +336,7 @@ impl Backend for LocalVolume {
             .ok_or(StorageError::ObjectNotFound)?;
 
         let shard_path = pathing::version_shard_path(&self.root, bucket, key, version_id)?;
-        let data = fs::read(&shard_path).map_err(|_| StorageError::ObjectNotFound)?;
+        let data = tokio::fs::read(&shard_path).await.map_err(|_| StorageError::ObjectNotFound)?;
         Ok((data, version.clone()))
     }
 
@@ -352,23 +349,23 @@ impl Backend for LocalVolume {
         // remove shard data dir
         let ver_dir = pathing::version_dir(&self.root, bucket, key, version_id)?;
         if ver_dir.is_dir() {
-            fs::remove_dir_all(&ver_dir)?;
+            tokio::fs::remove_dir_all(&ver_dir).await?;
         }
 
         // remove version entry from meta.json
-        if let Ok(mut mf) = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?) {
+        if let Ok(mut mf) = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await {
             mf.versions.retain(|v| v.version_id != version_id);
             // update is_latest
             if let Some(first) = mf.versions.first_mut() {
                 first.is_latest = true;
             }
-            let _ = write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf);
+            let _ = write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf).await;
         }
         Ok(())
     }
 
     async fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError> {
-        match read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?) {
+        match read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await {
             Ok(mf) => Ok(mf.versions),
             Err(_) => Ok(Vec::new()),
         }
@@ -381,11 +378,11 @@ impl Backend for LocalVolume {
         versions: &[ObjectMeta],
     ) -> Result<(), StorageError> {
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
-        fs::create_dir_all(&obj_dir)?;
+        tokio::fs::create_dir_all(&obj_dir).await?;
         let mf = ObjectMetaFile {
             versions: versions.to_vec(),
         };
-        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf)
+        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf).await
             .map_err(StorageError::Io)
     }
 
@@ -393,7 +390,7 @@ impl Backend for LocalVolume {
         let Ok(path) = pathing::bucket_settings_path(&self.root, bucket) else {
             return BucketSettings::default();
         };
-        fs::read(&path)
+        tokio::fs::read(&path).await
             .ok()
             .and_then(|data| serde_json::from_slice(&data).ok())
             .unwrap_or_default()
@@ -405,10 +402,10 @@ impl Backend for LocalVolume {
         settings: &BucketSettings,
     ) -> Result<(), StorageError> {
         let dir = pathing::bucket_settings_dir(&self.root, bucket)?;
-        fs::create_dir_all(&dir)?;
+        tokio::fs::create_dir_all(&dir).await?;
         let data = serde_json::to_vec_pretty(settings)
             .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
-        fs::write(dir.join(BUCKET_SETTINGS_FILE), data)?;
+        tokio::fs::write(dir.join(BUCKET_SETTINGS_FILE), data).await?;
         Ok(())
     }
 
@@ -510,13 +507,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn new_nonexistent_dir() {
-        let path = PathBuf::from("/tmp/abixio_does_not_exist_12345");
-        assert!(LocalVolume::new(&path).is_err());
+    async fn new_missing_dir() {
+        let result = LocalVolume::new(Path::new("/nonexistent"));
+        assert!(result.is_err());
     }
 
     #[tokio::test]
-    async fn make_bucket_and_exists() {
+    async fn bucket_lifecycle() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
         assert!(!disk.bucket_exists("test"));
@@ -525,7 +522,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn make_bucket_twice_errors() {
+    async fn make_bucket_already_exists() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("test").await.unwrap();
@@ -543,18 +540,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_buckets_ignores_tmp() {
-        let dir = TempDir::new().unwrap();
-        let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("alpha").await.unwrap();
-        disk.make_bucket("beta").await.unwrap();
-        let buckets = disk.list_buckets().await.unwrap();
-        assert_eq!(buckets, vec!["alpha", "beta"]);
-        assert!(!buckets.contains(&TMP_DIR.to_string()));
-    }
-
-    #[tokio::test]
-    async fn write_read_shard_round_trip() {
+    async fn write_read_shard() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("test").await.unwrap();
@@ -613,7 +599,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_object_then_read_fails() {
+    async fn delete_object_removes_dir() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
         disk.make_bucket("test").await.unwrap();

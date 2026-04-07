@@ -840,6 +840,7 @@ impl S3 for AbixioS3 {
             &content_type,
             user_metadata,
         )
+        .await
         .map_err(map_err)?;
 
         Ok(S3Response::new(CreateMultipartUploadOutput {
@@ -868,6 +869,7 @@ impl S3 for AbixioS3 {
             input.part_number,
             &body,
         )
+        .await
         .map_err(map_err)?;
 
         Ok(S3Response::new(UploadPartOutput {
@@ -906,6 +908,7 @@ impl S3 for AbixioS3 {
             &input.upload_id,
             &parts,
         )
+        .await
         .map_err(map_err)?;
 
         Ok(S3Response::new(CompleteMultipartUploadOutput {
@@ -927,6 +930,7 @@ impl S3 for AbixioS3 {
             &input.key,
             &input.upload_id,
         )
+        .await
         .map_err(map_err)?;
         Ok(S3Response::new(AbortMultipartUploadOutput::default()))
     }
@@ -942,6 +946,7 @@ impl S3 for AbixioS3 {
             &input.key,
             &input.upload_id,
         )
+        .await
         .map_err(map_err)?;
 
         let s3_parts: Vec<Part> = parts
@@ -969,6 +974,7 @@ impl S3 for AbixioS3 {
     ) -> S3Result<S3Response<ListMultipartUploadsOutput>> {
         let input = req.input;
         let uploads = crate::multipart::list_uploads(self.store.disks(), &input.bucket)
+            .await
             .map_err(map_err)?;
 
         let s3_uploads: Vec<MultipartUpload> = uploads

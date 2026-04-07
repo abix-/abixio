@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::fs;
 use std::io;
 use std::path::Path;
 use std::time::SystemTime;
@@ -160,14 +159,14 @@ impl ObjectMeta {
     }
 }
 
-pub fn write_meta_file(path: &Path, meta: &ObjectMetaFile) -> io::Result<()> {
+pub async fn write_meta_file(path: &Path, meta: &ObjectMetaFile) -> io::Result<()> {
     let json = serde_json::to_vec_pretty(meta)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-    fs::write(path, json)
+    tokio::fs::write(path, json).await
 }
 
-pub fn read_meta_file(path: &Path) -> io::Result<ObjectMetaFile> {
-    let data = fs::read(path)?;
+pub async fn read_meta_file(path: &Path) -> io::Result<ObjectMetaFile> {
+    let data = tokio::fs::read(path).await?;
     serde_json::from_slice(&data).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
 }
 
@@ -220,23 +219,23 @@ mod tests {
         assert_eq!(mf, decoded);
     }
 
-    #[test]
-    fn write_read_meta_file_round_trip() {
+    #[tokio::test]
+    async fn write_read_meta_file_round_trip() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("meta.json");
         let mf = ObjectMetaFile {
             versions: vec![test_version(1)],
         };
-        write_meta_file(&path, &mf).unwrap();
-        let loaded = read_meta_file(&path).unwrap();
+        write_meta_file(&path, &mf).await.unwrap();
+        let loaded = read_meta_file(&path).await.unwrap();
         assert_eq!(mf, loaded);
     }
 
-    #[test]
-    fn read_meta_file_missing_returns_error() {
+    #[tokio::test]
+    async fn read_meta_file_missing_returns_error() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("nonexistent.json");
-        assert!(read_meta_file(&path).is_err());
+        assert!(read_meta_file(&path).await.is_err());
     }
 
     #[test]
@@ -255,8 +254,8 @@ mod tests {
         assert!(!meta_a.quorum_eq(&meta_b));
     }
 
-    #[test]
-    fn multi_version_meta_file() {
+    #[tokio::test]
+    async fn multi_version_meta_file() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("meta.json");
         let mf = ObjectMetaFile {
@@ -273,8 +272,8 @@ mod tests {
                 },
             ],
         };
-        write_meta_file(&path, &mf).unwrap();
-        let loaded = read_meta_file(&path).unwrap();
+        write_meta_file(&path, &mf).await.unwrap();
+        let loaded = read_meta_file(&path).await.unwrap();
         assert_eq!(loaded.versions.len(), 2);
         assert_eq!(loaded.versions[0].version_id, "uuid-2");
         assert!(loaded.versions[0].is_latest);
