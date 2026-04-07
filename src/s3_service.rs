@@ -1,7 +1,10 @@
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime};
 
+use futures::Stream;
 use s3s::dto::*;
 use s3s::s3_error;
 use s3s::{S3Request, S3Response, S3Result, S3};
@@ -10,6 +13,21 @@ use crate::cluster::ClusterManager;
 use crate::storage::Store;
 use crate::storage::metadata::{ListOptions, PutOptions};
 use crate::storage::volume_pool::VolumePool;
+
+/// Wrapper to add Sync to a Send stream. Safe because streams are only polled
+/// from one task at a time (s3s serializes response body polling).
+struct SyncStream<S>(S);
+
+// SAFETY: the inner stream is Send. We only expose it through Pin<&mut Self>
+// which requires exclusive access, so Sync is safe.
+unsafe impl<S: Send> Sync for SyncStream<S> {}
+
+impl<S: Stream + Unpin> Stream for SyncStream<S> {
+    type Item = S::Item;
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Pin::new(&mut self.0).poll_next(cx)
+    }
+}
 use crate::storage::StorageError;
 
 pub struct AbixioS3 {
@@ -33,6 +51,84 @@ impl AbixioS3 {
             store,
             _cluster: cluster,
         }
+    }
+
+    /// Buffered GET path for range requests and versioned objects.
+    async fn get_object_buffered(
+        &self,
+        input: GetObjectInput,
+    ) -> S3Result<S3Response<GetObjectOutput>> {
+        let (data, info) = if let Some(vid) = &input.version_id {
+            self.store
+                .get_object_version(&input.bucket, &input.key, vid)
+                .await
+                .map_err(map_err)?
+        } else {
+            self.store
+                .get_object(&input.bucket, &input.key)
+                .await
+                .map_err(map_err)?
+        };
+
+        let last_mod = timestamp_to_s3(info.created_at);
+        check_conditionals(
+            &input.if_match,
+            &input.if_none_match,
+            &input.if_modified_since,
+            &input.if_unmodified_since,
+            &info.etag,
+            &last_mod,
+        )?;
+
+        let (body_data, content_range) = if let Some(range) = input.range {
+            let total = data.len();
+            let (start, end) = match range {
+                Range::Int { first, last } => {
+                    let end = last.map(|l| l as usize).unwrap_or(total - 1).min(total - 1);
+                    (first as usize, end)
+                }
+                Range::Suffix { length } => {
+                    let len = (length as usize).min(total);
+                    (total - len, total - 1)
+                }
+            };
+            if start < total {
+                let slice = data[start..=end].to_vec();
+                let cr = format!("bytes {}-{}/{}", start, end, total);
+                (slice, Some(cr))
+            } else {
+                (data, None)
+            }
+        } else {
+            (data, None)
+        };
+
+        let content_length = body_data.len() as i64;
+        let blob = StreamingBlob::wrap(futures::stream::once(async move {
+            Ok::<_, std::io::Error>(hyper::body::Bytes::from(body_data))
+        }));
+
+        let mut output = GetObjectOutput {
+            body: Some(blob),
+            content_length: Some(content_length),
+            content_type: Some(info.content_type.clone()),
+            e_tag: Some(ETag::Strong(info.etag.clone())),
+            last_modified: Some(timestamp_to_s3(info.created_at)),
+            metadata: if info.user_metadata.is_empty() {
+                None
+            } else {
+                Some(info.user_metadata.clone())
+            },
+            ..Default::default()
+        };
+        if let Some(cr) = content_range {
+            output.content_range = Some(cr);
+        }
+        if !info.version_id.is_empty() {
+            output.version_id = Some(info.version_id.clone());
+        }
+
+        Ok(S3Response::new(output))
     }
 }
 
@@ -263,19 +359,19 @@ impl S3 for AbixioS3 {
         req: S3Request<GetObjectInput>,
     ) -> S3Result<S3Response<GetObjectOutput>> {
         let input = req.input;
+        let has_range = input.range.is_some();
+        let has_version = input.version_id.is_some();
 
-        // handle version_id if present
-        let (data, info) = if let Some(vid) = &input.version_id {
-            self.store
-                .get_object_version(&input.bucket, &input.key, vid)
-                .await
-                .map_err(map_err)?
-        } else {
-            self.store
-                .get_object(&input.bucket, &input.key)
-                .await
-                .map_err(map_err)?
-        };
+        // range and versioned requests use buffered path (need random access or version lookup)
+        if has_range || has_version {
+            return self.get_object_buffered(input).await;
+        }
+
+        // streaming path: no buffering, chunks flow directly to response
+        let (info, stream) = self.store
+            .get_object_stream(&input.bucket, &input.key)
+            .await
+            .map_err(map_err)?;
 
         // evaluate conditional headers
         let last_mod = timestamp_to_s3(info.created_at);
@@ -288,34 +384,12 @@ impl S3 for AbixioS3 {
             &last_mod,
         )?;
 
-        // handle range request
-        let (body_data, content_range) = if let Some(range) = input.range {
-            let total = data.len();
-            let (start, end) = match range {
-                Range::Int { first, last } => {
-                    let end = last.map(|l| l as usize).unwrap_or(total - 1).min(total - 1);
-                    (first as usize, end)
-                }
-                Range::Suffix { length } => {
-                    let len = (length as usize).min(total);
-                    (total - len, total - 1)
-                }
-            };
-            if start < total {
-                let slice = data[start..=end].to_vec();
-                let cr = format!("bytes {}-{}/{}", start, end, total);
-                (slice, Some(cr))
-            } else {
-                (data, None)
-            }
-        } else {
-            (data, None)
-        };
-
-        let content_length = body_data.len() as i64;
-        let blob = StreamingBlob::wrap(futures::stream::once(async move {
-            Ok::<_, std::io::Error>(hyper::body::Bytes::from(body_data))
-        }));
+        use futures::StreamExt;
+        let content_length = info.size as i64;
+        let mapped = stream.map(|r| {
+            r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+        });
+        let blob = StreamingBlob::wrap(SyncStream(mapped));
 
         let mut output = GetObjectOutput {
             body: Some(blob),
@@ -330,9 +404,6 @@ impl S3 for AbixioS3 {
             },
             ..Default::default()
         };
-        if let Some(cr) = content_range {
-            output.content_range = Some(cr);
-        }
         if !info.version_id.is_empty() {
             output.version_id = Some(info.version_id.clone());
         }

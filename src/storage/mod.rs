@@ -11,6 +11,7 @@ pub mod pathing;
 pub mod volume;
 
 use std::io;
+use std::pin::Pin;
 
 use std::collections::HashMap;
 
@@ -51,6 +52,17 @@ pub trait Backend: Send + Sync {
     ) -> Result<(), StorageError>;
 
     async fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError>;
+
+    /// Open shard for streaming read. Returns an async reader + metadata.
+    /// Default falls back to read_shard (loads full shard into memory).
+    async fn read_shard_stream(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(Pin<Box<dyn tokio::io::AsyncRead + Send + Unpin>>, ObjectMeta), StorageError> {
+        let (data, meta) = self.read_shard(bucket, key).await?;
+        Ok((Box::pin(std::io::Cursor::new(data)), meta))
+    }
 
     async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError>;
 
@@ -138,6 +150,20 @@ pub trait Store: Send + Sync {
     ) -> Result<ObjectInfo, StorageError>;
 
     async fn get_object(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectInfo), StorageError>;
+
+    /// Streaming GET: returns metadata + a stream of decoded chunks.
+    /// Default falls back to get_object (loads full object into memory).
+    async fn get_object_stream(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(ObjectInfo, Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, StorageError>> + Send>>), StorageError> {
+        let (data, info) = self.get_object(bucket, key).await?;
+        let stream = futures::stream::once(async move {
+            Ok::<bytes::Bytes, StorageError>(bytes::Bytes::from(data))
+        });
+        Ok((info, Box::pin(stream)))
+    }
 
     async fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo, StorageError>;
 

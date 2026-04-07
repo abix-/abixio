@@ -1,7 +1,7 @@
 use std::sync::{Arc, RwLock};
 
 use super::Backend;
-use super::erasure_decode::{read_and_decode, read_and_decode_multipart, read_and_decode_versioned};
+use super::erasure_decode::{read_and_decode, read_and_decode_multipart, read_and_decode_stream, read_and_decode_versioned};
 use super::erasure_encode::{encode_and_write, encode_and_write_bytes};
 use super::metadata::{
     BucketInfo, BucketSettings, ErasureMeta, ListOptions, ListResult, ObjectInfo, ObjectMeta,
@@ -264,6 +264,41 @@ impl Store for VolumePool {
         };
         let (data, meta) = read_and_decode(&self.disks, data_n, parity_n, bucket, key).await?;
         Ok((data, Self::meta_to_info(bucket, key, &meta)))
+    }
+
+    async fn get_object_stream(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(ObjectInfo, std::pin::Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, StorageError>> + Send>>), StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
+        if !self.head_bucket(bucket).await? {
+            return Err(StorageError::BucketNotFound);
+        }
+
+        // multipart objects fall back to buffered read (streaming multipart is future work)
+        for disk in &self.disks {
+            if let Ok(meta) = disk.stat_object(bucket, key).await {
+                if meta.is_multipart() {
+                    let data = read_and_decode_multipart(&self.disks, bucket, key, &meta).await?;
+                    let info = Self::meta_to_info(bucket, key, &meta);
+                    let stream = futures::stream::once(async move {
+                        Ok::<bytes::Bytes, StorageError>(bytes::Bytes::from(data))
+                    });
+                    return Ok((info, Box::pin(stream)));
+                }
+                break;
+            }
+        }
+
+        let (data_n, parity_n) = match self.read_ec_from_meta(bucket, key).await {
+            Some(ec) => ec,
+            None => self.bucket_ec(bucket).await,
+        };
+        let (meta, rx) = read_and_decode_stream(&self.disks, data_n, parity_n, bucket, key).await?;
+        let info = Self::meta_to_info(bucket, key, &meta);
+        Ok((info, Box::pin(rx)))
     }
 
     async fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectInfo, StorageError> {
@@ -1477,5 +1512,39 @@ mod tests {
         let t = std::time::Instant::now();
         set.put_object("bench", "timing_full", &payload, opts3).await.unwrap();
         eprintln!("  full put_object 10MB: {:.3}ms", t.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    #[tokio::test]
+    async fn get_object_stream_round_trip() {
+        use futures::StreamExt;
+
+        for cfg in CONFIGS {
+            let total = cfg.data + cfg.parity;
+            let (_base, paths) = make_disk_dirs(total);
+            let set = make_set(&paths);
+            set.make_bucket("test").await.unwrap();
+
+            // test with various sizes: small, exactly 1MB (block boundary), and multi-block
+            for &size in &[43usize, 1024 * 1024, 3 * 1024 * 1024 + 7] {
+                let payload: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+                let key = format!("stream_{}_{}", cfg.data, size);
+                let opts = PutOptions {
+                    content_type: "application/octet-stream".to_string(),
+                    ..Default::default()
+                };
+                set.put_object("test", &key, &payload, opts).await.unwrap();
+
+                let (info, stream) = set.get_object_stream("test", &key).await.unwrap();
+                assert_eq!(info.size, size as u64);
+
+                let mut result = Vec::new();
+                let mut stream = std::pin::pin!(stream);
+                while let Some(chunk) = stream.next().await {
+                    result.extend_from_slice(&chunk.unwrap());
+                }
+                assert_eq!(result.len(), size, "size mismatch for data={} parity={} size={}", cfg.data, cfg.parity, size);
+                assert_eq!(result, payload, "data mismatch for data={} parity={} size={}", cfg.data, cfg.parity, size);
+            }
+        }
     }
 }

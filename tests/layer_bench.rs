@@ -635,7 +635,7 @@ async fn bench_perf() {
                 let r = measure("L4", "put_stream", disk_count, size, iters, &mut timings);
                 emit(&r); results.push(r);
 
-                // GET
+                // GET (buffered)
                 let mut timings = Vec::new();
                 for i in 0..iters {
                     let t = Instant::now();
@@ -643,6 +643,21 @@ async fn bench_perf() {
                     timings.push(t.elapsed());
                 }
                 let r = measure("L4", "get", disk_count, size, iters, &mut timings);
+                emit(&r); results.push(r);
+
+                // GET (streaming)
+                let mut timings = Vec::new();
+                for i in 0..iters {
+                    use futures::StreamExt;
+                    let t = Instant::now();
+                    let (_info, stream) = pool.get_object_stream("bench", &format!("s/{}/{}", label, i)).await.unwrap();
+                    let mut stream = std::pin::pin!(stream);
+                    while let Some(chunk) = stream.next().await {
+                        let _ = chunk.unwrap();
+                    }
+                    timings.push(t.elapsed());
+                }
+                let r = measure("L4", "get_stream", disk_count, size, iters, &mut timings);
                 emit(&r); results.push(r);
             }
         }

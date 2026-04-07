@@ -253,6 +253,31 @@ impl Backend for LocalVolume {
         Ok((data, version.clone()))
     }
 
+    async fn read_shard_stream(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<(std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send + Unpin>>, ObjectMeta), StorageError> {
+        let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
+        if !obj_dir.is_dir() {
+            return Err(StorageError::ObjectNotFound);
+        }
+        let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await
+            .map_err(|_| StorageError::ObjectNotFound)?;
+        let version = mf
+            .versions
+            .iter()
+            .find(|v| !v.is_delete_marker)
+            .ok_or(StorageError::ObjectNotFound)?;
+        let shard_path = if version.version_id.is_empty() {
+            pathing::object_shard_path(&self.root, bucket, key)?
+        } else {
+            pathing::version_shard_path(&self.root, bucket, key, &version.version_id)?
+        };
+        let file = tokio::fs::File::open(&shard_path).await.map_err(|_| StorageError::ObjectNotFound)?;
+        Ok((Box::pin(file), version.clone()))
+    }
+
     async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
