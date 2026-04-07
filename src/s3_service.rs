@@ -752,6 +752,15 @@ impl S3 for AbixioS3 {
 
     // -- versioning --
 
+    async fn get_bucket_location(
+        &self,
+        _req: S3Request<GetBucketLocationInput>,
+    ) -> S3Result<S3Response<GetBucketLocationOutput>> {
+        Ok(S3Response::new(GetBucketLocationOutput {
+            location_constraint: None,
+        }))
+    }
+
     async fn get_bucket_versioning(
         &self,
         req: S3Request<GetBucketVersioningInput>,

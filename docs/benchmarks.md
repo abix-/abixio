@@ -95,36 +95,33 @@ RustFS 1.0.0-alpha.90, MinIO RELEASE.2026-04-07 (archived).
 
 | Operation | AbixIO | RustFS | MinIO |
 |---|---|---|---|
-| PUT | **146 MB/s** (69ms) | 76 MB/s (131ms) | 87 MB/s (115ms) |
-| GET | **151 MB/s** (66ms) | 95 MB/s (106ms) | 126 MB/s (80ms) |
+| PUT | **147 MB/s** (68ms) | 77 MB/s (130ms) | 88 MB/s (114ms) |
+| GET | **143 MB/s** (70ms) | 99 MB/s (101ms) | 124 MB/s (81ms) |
 
-### All sizes (5 iterations)
+### 1GB throughput (10 iterations)
 
-| Operation | Size | AbixIO | RustFS | MinIO |
-|---|---|---|---|---|
-| PUT | 1KB | 0.0 MB/s (69ms) | 0.0 MB/s (72ms) | 0.0 MB/s (73ms) |
-| GET | 1KB | 0.0 MB/s (65ms) | 0.0 MB/s (70ms) | 0.0 MB/s (68ms) |
-| PUT | 1MB | 15 MB/s (66ms) | 12 MB/s (84ms) | 13 MB/s (78ms) |
-| GET | 1MB | 16 MB/s (64ms) | 13 MB/s (79ms) | 14 MB/s (72ms) |
-| PUT | 10MB | **150 MB/s** (67ms) | 78 MB/s (128ms) | 88 MB/s (113ms) |
-| GET | 10MB | **130 MB/s** (77ms) | 106 MB/s (95ms) | 126 MB/s (79ms) |
+| Operation | AbixIO | RustFS | MinIO |
+|---|---|---|---|
+| PUT | 353 MB/s (2.9s) | 464 MB/s (2.2s) | **537 MB/s** (1.9s) |
+| GET | 372 MB/s (2.75s) | 576 MB/s (1.78s) | **849 MB/s** (1.2s) |
 
 ### Metadata operations (10 iterations)
 
 | Operation | AbixIO | RustFS | MinIO |
 |---|---|---|---|
-| HEAD | 65ms | 67ms | 64ms |
-| LIST (100 objects) | 64ms | 65ms | 65ms |
-| DELETE | 63ms | 68ms | 66ms |
+| HEAD | 65ms | 64ms | 64ms |
+| LIST (100 objects) | 63ms | 63ms | 63ms |
+| DELETE | 64ms | 66ms | 66ms |
 
 ### Notes
 
-- 1KB throughput is dominated by `mc` process startup (~65ms per call)
-- AbixIO PUT is ~1.9x faster than RustFS and ~1.7x faster than MinIO at 10MB
-- AbixIO GET is ~1.6x faster than RustFS at 10MB; MinIO GET is competitive
+- AbixIO dominates at 10MB: **1.9x faster PUT than RustFS, 1.7x faster than MinIO**
+- At 1GB, AbixIO is slowest: sequential shard writes within blocks (no parallel
+  write_chunk across backends yet). RustFS and MinIO parallelize shard I/O
 - Metadata operations (HEAD, LIST, DELETE) are within noise across all three
-- 100MB results omitted: AbixIO OOM risk due to Vec<u8> body buffering (see todo)
 - All numbers are page-cache writes (no fsync). Real disk throughput is lower
+- Benchmark verifies round-trip: PUT then GET, size check before timing
+- 1KB throughput dominated by `mc` process startup (~65ms per call)
 
 ## Running benchmarks
 

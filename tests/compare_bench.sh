@@ -244,11 +244,32 @@ fmt_lat() {
     echo "${avg}ms avg"
 }
 
+# -- verify PUT/GET actually works for each server at each size --
+verify_roundtrip() {
+    local alias=$1 file=$2 label=$3
+    local sink="$TMPDIR_BASE/verify_sink"
+    $MC cp "$file" "$alias/bench/verify_obj" >/dev/null 2>&1
+    if ! $MC cp "$alias/bench/verify_obj" "$sink" >/dev/null 2>&1; then
+        echo "WARN: $alias failed GET for $label -- skipping this server for this size" >&2
+        rm -f "$sink"
+        $MC rm "$alias/bench/verify_obj" >/dev/null 2>&1 || true
+        return 1
+    fi
+    local orig_size=$(wc -c < "$file" | tr -d ' ')
+    local got_size=$(wc -c < "$sink" | tr -d ' ')
+    rm -f "$sink"
+    $MC rm "$alias/bench/verify_obj" >/dev/null 2>&1 || true
+    if [[ "$orig_size" != "$got_size" ]]; then
+        echo "WARN: $alias size mismatch for $label (put $orig_size, got $got_size) -- skipping" >&2
+        return 1
+    fi
+    return 0
+}
+
 # -- warmup --
 echo ""
 echo "warming up ..."
 for alias in abixio-bench rustfs-bench minio-bench; do
-    # only warmup if alias exists
     $MC cp "$TESTDATA/1KB" "$alias/bench/warmup" >/dev/null 2>&1 || true
     $MC rm "$alias/bench/warmup" >/dev/null 2>&1 || true
 done
@@ -266,27 +287,33 @@ for sz in $SIZES; do
     label=$(human_size "$sz")
     file="$TESTDATA/$label"
 
+    # verify round-trip before benchmarking this size
+    can_abixio=$HAS_ABIXIO; can_rustfs=$HAS_RUSTFS; can_minio=$HAS_MINIO
+    if $HAS_ABIXIO && ! verify_roundtrip "abixio-bench" "$file" "$label"; then can_abixio=false; fi
+    if $HAS_RUSTFS && ! verify_roundtrip "rustfs-bench" "$file" "$label"; then can_rustfs=false; fi
+    if $HAS_MINIO  && ! verify_roundtrip "minio-bench"  "$file" "$label"; then can_minio=false;  fi
+
     # PUT
     a_ms=0; r_ms=0; m_ms=0
-    if $HAS_ABIXIO; then a_ms=$(bench_put "abixio-bench" "$file" "$ITERS"); fi
-    if $HAS_RUSTFS; then r_ms=$(bench_put "rustfs-bench" "$file" "$ITERS"); fi
-    if $HAS_MINIO;  then m_ms=$(bench_put "minio-bench"  "$file" "$ITERS"); fi
+    if $can_abixio; then a_ms=$(bench_put "abixio-bench" "$file" "$ITERS"); fi
+    if $can_rustfs; then r_ms=$(bench_put "rustfs-bench" "$file" "$ITERS"); fi
+    if $can_minio;  then m_ms=$(bench_put "minio-bench"  "$file" "$ITERS"); fi
     printf "| %-10s | %-6s | $COL | $COL | $COL |\n" \
         "PUT" "$label" \
-        "$(fmt_tp $HAS_ABIXIO "$sz" "$a_ms" "$ITERS")" \
-        "$(fmt_tp $HAS_RUSTFS "$sz" "$r_ms" "$ITERS")" \
-        "$(fmt_tp $HAS_MINIO  "$sz" "$m_ms" "$ITERS")"
+        "$(fmt_tp $can_abixio "$sz" "$a_ms" "$ITERS")" \
+        "$(fmt_tp $can_rustfs "$sz" "$r_ms" "$ITERS")" \
+        "$(fmt_tp $can_minio  "$sz" "$m_ms" "$ITERS")"
 
     # GET (reads back the objects written by PUT)
     a_ms=0; r_ms=0; m_ms=0
-    if $HAS_ABIXIO; then a_ms=$(bench_get "abixio-bench" "$ITERS"); fi
-    if $HAS_RUSTFS; then r_ms=$(bench_get "rustfs-bench" "$ITERS"); fi
-    if $HAS_MINIO;  then m_ms=$(bench_get "minio-bench"  "$ITERS"); fi
+    if $can_abixio; then a_ms=$(bench_get "abixio-bench" "$ITERS"); fi
+    if $can_rustfs; then r_ms=$(bench_get "rustfs-bench" "$ITERS"); fi
+    if $can_minio;  then m_ms=$(bench_get "minio-bench"  "$ITERS"); fi
     printf "| %-10s | %-6s | $COL | $COL | $COL |\n" \
         "GET" "$label" \
-        "$(fmt_tp $HAS_ABIXIO "$sz" "$a_ms" "$ITERS")" \
-        "$(fmt_tp $HAS_RUSTFS "$sz" "$r_ms" "$ITERS")" \
-        "$(fmt_tp $HAS_MINIO  "$sz" "$m_ms" "$ITERS")"
+        "$(fmt_tp $can_abixio "$sz" "$a_ms" "$ITERS")" \
+        "$(fmt_tp $can_rustfs "$sz" "$r_ms" "$ITERS")" \
+        "$(fmt_tp $can_minio  "$sz" "$m_ms" "$ITERS")"
 
     # cleanup for next size
     for alias in abixio-bench rustfs-bench minio-bench; do
