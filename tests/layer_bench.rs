@@ -73,7 +73,7 @@ async fn bench_layer_1_primitives() {
 
     eprintln!("\n=== Layer 1: Raw primitives (10MB) ===\n");
 
-    // tokio::fs::write
+    // tokio::fs::write (page cache -- may not hit disk)
     let mut timings = Vec::new();
     for i in 0..iters {
         let path = tmp.path().join(format!("raw_{}", i));
@@ -81,9 +81,24 @@ async fn bench_layer_1_primitives() {
         tokio::fs::write(&path, &data).await.unwrap();
         timings.push(t.elapsed());
     }
-    run_n("tokio::fs::write", size, iters, &mut timings);
+    run_n("tokio::fs::write (cached)", size, iters, &mut timings);
 
-    // tokio::fs::read
+    // tokio::fs::write + fsync (forces data to physical disk)
+    let mut timings = Vec::new();
+    for i in 0..iters {
+        let path = tmp.path().join(format!("sync_{}", i));
+        let t = Instant::now();
+        {
+            use tokio::io::AsyncWriteExt;
+            let mut file = tokio::fs::File::create(&path).await.unwrap();
+            file.write_all(&data).await.unwrap();
+            file.sync_all().await.unwrap();
+        }
+        timings.push(t.elapsed());
+    }
+    run_n("tokio::fs::write + fsync (disk)", size, iters, &mut timings);
+
+    // tokio::fs::read (will be cached from writes above)
     let mut timings = Vec::new();
     for i in 0..iters {
         let path = tmp.path().join(format!("raw_{}", i));
@@ -91,7 +106,7 @@ async fn bench_layer_1_primitives() {
         let _ = tokio::fs::read(&path).await.unwrap();
         timings.push(t.elapsed());
     }
-    run_n("tokio::fs::read", size, iters, &mut timings);
+    run_n("tokio::fs::read (cached)", size, iters, &mut timings);
 
     // MD5
     let mut timings = Vec::new();
