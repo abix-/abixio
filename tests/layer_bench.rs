@@ -428,6 +428,7 @@ async fn bench_layer_5_full_client() {
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct BenchResult {
+    layer: String,
     op: String,
     disks: usize,
     size: usize,
@@ -445,6 +446,7 @@ struct BenchReport {
 }
 
 fn measure(
+    layer: &str,
     op: &str,
     disks: usize,
     size: usize,
@@ -457,6 +459,7 @@ fn measure(
     let p50 = timings[iters / 2];
     let mbps = (size * iters) as f64 / total.as_secs_f64() / MB as f64;
     BenchResult {
+        layer: layer.to_string(),
         op: op.to_string(),
         disks,
         size,
@@ -465,6 +468,12 @@ fn measure(
         p50_ms: p50.as_secs_f64() * 1000.0,
         mbps,
     }
+}
+
+fn iters_for_size(size: usize, base: usize) -> usize {
+    if size <= 4096 { base * 5 }       // 4KB: 50 iters
+    else if size >= 1024 * MB { base / 2 } // 1GB: 5 iters
+    else { base }                       // 10MB: 10 iters
 }
 
 fn human(size: usize) -> String {
@@ -486,65 +495,158 @@ fn git_commit() -> String {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn bench_perf() {
-    let default_sizes = vec![1 * MB, 10 * MB, 100 * MB, 1024 * MB];
+    let default_sizes = vec![4096, 10 * MB, 1024 * MB];
     let sizes: Vec<usize> = std::env::var("BENCH_SIZES")
         .ok()
         .map(|s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect())
         .unwrap_or(default_sizes);
 
-    let iters = std::env::var("BENCH_ITERS")
+    let base_iters: usize = std::env::var("BENCH_ITERS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(10);
 
-    let disk_configs = [1, 4];
+    let layers: Vec<String> = std::env::var("BENCH_LAYERS")
+        .ok()
+        .map(|s| s.split(',').map(|v| v.trim().to_uppercase()).collect())
+        .unwrap_or_else(|| vec!["L1".into(), "L2".into(), "L3".into(), "L4".into()]);
+
     let mut results: Vec<BenchResult> = Vec::new();
+    let tmp = TempDir::new().unwrap();
 
-    eprintln!("\n=== bench_perf: VolumePool direct, {} iters ===\n", iters);
+    eprintln!("\n=== bench_perf: layers {:?}, sizes {:?} ===\n", layers, sizes.iter().map(|s| human(*s)).collect::<Vec<_>>());
 
-    for &disk_count in &disk_configs {
-        let (_base, paths) = setup(disk_count);
-        let pool = make_pool(&paths);
-        pool.make_bucket("bench").await.unwrap();
+    fn emit(r: &BenchResult) {
+        eprintln!("  {:<3} {:<12} {:>2} disk  {:>5}  {:>8.1} MB/s  avg {:>8.2}ms  p50 {:>8.2}ms",
+            r.layer, r.op, r.disks, human(r.size), r.mbps, r.avg_ms, r.p50_ms);
+    }
 
+    // ---- L1: Hashing ----
+    if layers.contains(&"L1".to_string()) {
+        eprintln!("--- L1: Hashing ---");
         for &size in &sizes {
             let data = vec![0x42u8; size];
-            let label = human(size);
+            let iters = iters_for_size(size, base_iters);
 
-            // warmup
-            for i in 0..2 {
-                pool.put_object("bench", &format!("w/{}/{}", label, i), &data, opts()).await.unwrap();
-            }
-
-            // streaming PUT
             let mut timings = Vec::new();
-            for i in 0..iters {
-                let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = data
-                    .chunks(64 * 1024)
-                    .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
-                    .collect();
-                let stream = futures::stream::iter(chunks);
+            for _ in 0..iters {
                 let t = Instant::now();
-                pool.put_object_stream("bench", &format!("s/{}/{}", label, i), stream, opts()).await.unwrap();
+                let _ = abixio::storage::bitrot::blake3_hex(&data);
                 timings.push(t.elapsed());
             }
-            let r = measure("put_stream", disk_count, size, iters, &mut timings);
-            eprintln!("  put_stream  {:>2} disk  {:>5}  {:>8.1} MB/s  avg {:>8.2}ms  p50 {:>8.2}ms",
-                disk_count, label, r.mbps, r.avg_ms, r.p50_ms);
-            results.push(r);
+            let r = measure("L1", "blake3", 0, size, iters, &mut timings);
+            emit(&r); results.push(r);
 
-            // GET
             let mut timings = Vec::new();
-            for i in 0..iters {
+            for _ in 0..iters {
                 let t = Instant::now();
-                let _ = pool.get_object("bench", &format!("s/{}/{}", label, i)).await.unwrap();
+                let _ = abixio::storage::bitrot::md5_hex(&data);
                 timings.push(t.elapsed());
             }
-            let r = measure("get", disk_count, size, iters, &mut timings);
-            eprintln!("  get         {:>2} disk  {:>5}  {:>8.1} MB/s  avg {:>8.2}ms  p50 {:>8.2}ms",
-                disk_count, label, r.mbps, r.avg_ms, r.p50_ms);
-            results.push(r);
+            let r = measure("L1", "md5", 0, size, iters, &mut timings);
+            emit(&r); results.push(r);
         }
+        eprintln!();
+    }
+
+    // ---- L2: RS encode ----
+    if layers.contains(&"L2".to_string()) {
+        eprintln!("--- L2: RS encode ---");
+        let rs = reed_solomon_erasure::galois_8::ReedSolomon::new(3, 1).unwrap();
+        for &size in &sizes {
+            let data = vec![0x42u8; size];
+            let iters = iters_for_size(size, base_iters);
+
+            let mut timings = Vec::new();
+            for _ in 0..iters {
+                let mut shards = abixio::storage::erasure_encode::split_data(&data, 3);
+                let shard_size = shards[0].len();
+                shards.push(vec![0u8; shard_size]);
+                let t = Instant::now();
+                rs.encode(&mut shards).unwrap();
+                timings.push(t.elapsed());
+            }
+            let r = measure("L2", "rs_encode_3+1", 4, size, iters, &mut timings);
+            emit(&r); results.push(r);
+        }
+        eprintln!();
+    }
+
+    // ---- L3: Disk I/O ----
+    if layers.contains(&"L3".to_string()) {
+        eprintln!("--- L3: Disk I/O ---");
+        for &size in &sizes {
+            let data = vec![0x42u8; size];
+            let iters = iters_for_size(size, base_iters);
+
+            let mut timings = Vec::new();
+            for i in 0..iters {
+                let path = tmp.path().join(format!("l3_w_{}", i));
+                let t = Instant::now();
+                tokio::fs::write(&path, &data).await.unwrap();
+                timings.push(t.elapsed());
+            }
+            let r = measure("L3", "disk_write", 1, size, iters, &mut timings);
+            emit(&r); results.push(r);
+
+            let mut timings = Vec::new();
+            for i in 0..iters {
+                let path = tmp.path().join(format!("l3_w_{}", i));
+                let t = Instant::now();
+                let _ = tokio::fs::read(&path).await.unwrap();
+                timings.push(t.elapsed());
+            }
+            let r = measure("L3", "disk_read", 1, size, iters, &mut timings);
+            emit(&r); results.push(r);
+        }
+        eprintln!();
+    }
+
+    // ---- L4: Storage pipeline (VolumePool) ----
+    if layers.contains(&"L4".to_string()) {
+        eprintln!("--- L4: Storage pipeline ---");
+        for &disk_count in &[1, 4] {
+            let (_base, paths) = setup(disk_count);
+            let pool = make_pool(&paths);
+            pool.make_bucket("bench").await.unwrap();
+
+            for &size in &sizes {
+                let data = vec![0x42u8; size];
+                let label = human(size);
+                let iters = iters_for_size(size, base_iters);
+
+                // warmup
+                for i in 0..2 {
+                    pool.put_object("bench", &format!("w/{}/{}", label, i), &data, opts()).await.unwrap();
+                }
+
+                // streaming PUT
+                let mut timings = Vec::new();
+                for i in 0..iters {
+                    let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = data
+                        .chunks(64 * 1024)
+                        .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+                        .collect();
+                    let stream = futures::stream::iter(chunks);
+                    let t = Instant::now();
+                    pool.put_object_stream("bench", &format!("s/{}/{}", label, i), stream, opts()).await.unwrap();
+                    timings.push(t.elapsed());
+                }
+                let r = measure("L4", "put_stream", disk_count, size, iters, &mut timings);
+                emit(&r); results.push(r);
+
+                // GET
+                let mut timings = Vec::new();
+                for i in 0..iters {
+                    let t = Instant::now();
+                    let _ = pool.get_object("bench", &format!("s/{}/{}", label, i)).await.unwrap();
+                    timings.push(t.elapsed());
+                }
+                let r = measure("L4", "get", disk_count, size, iters, &mut timings);
+                emit(&r); results.push(r);
+            }
+        }
+        eprintln!();
     }
 
     // save results
@@ -567,19 +669,19 @@ async fn bench_perf() {
         if let Ok(baseline_json) = std::fs::read_to_string(&baseline_path) {
             if let Ok(baseline) = serde_json::from_str::<BenchReport>(&baseline_json) {
                 eprintln!("\n  comparing against: {} ({})\n", baseline_path, baseline.git_commit);
-                eprintln!("  {:<12} {:>5} {:>6} {:>12} {:>12} {:>8}",
-                    "Op", "Disks", "Size", "Baseline", "Current", "Delta");
-                eprintln!("  {}", "-".repeat(60));
+                eprintln!("  {:<4} {:<12} {:>5} {:>6} {:>12} {:>12} {:>8}",
+                    "Layer", "Op", "Disks", "Size", "Baseline", "Current", "Delta");
+                eprintln!("  {}", "-".repeat(68));
                 for cur in &results {
                     if let Some(base) = baseline.results.iter().find(|b|
-                        b.op == cur.op && b.disks == cur.disks && b.size == cur.size
+                        b.layer == cur.layer && b.op == cur.op && b.disks == cur.disks && b.size == cur.size
                     ) {
                         let delta = (cur.mbps - base.mbps) / base.mbps * 100.0;
                         let flag = if delta < -5.0 { " <-- REGRESSION" }
                             else if delta > 5.0 { " <-- FASTER" }
                             else { "" };
-                        eprintln!("  {:<12} {:>5} {:>6} {:>9.1} MB/s {:>9.1} MB/s {:>+7.1}%{}",
-                            cur.op, cur.disks, human(cur.size),
+                        eprintln!("  {:<4} {:<12} {:>5} {:>6} {:>9.1} MB/s {:>9.1} MB/s {:>+7.1}%{}",
+                            cur.layer, cur.op, cur.disks, human(cur.size),
                             base.mbps, cur.mbps, delta, flag);
                     }
                 }
