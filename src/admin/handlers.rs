@@ -247,11 +247,7 @@ impl AdminHandler {
         }
 
         // find first valid meta for consensus
-        let mut consensus_meta = None;
-        for (_, meta) in all_reads.iter().flatten() {
-            consensus_meta = Some(meta.clone());
-            break;
-        }
+        let consensus_meta = all_reads.iter().flatten().next().map(|(_, meta)| meta.clone());
 
         let meta = match consensus_meta {
             Some(m) => m,
