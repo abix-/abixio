@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 620 270" font-family="system-ui,-apple-system,sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 280" font-family="system-ui,-apple-system,sans-serif">
 
-  <text x="310" y="22" text-anchor="middle" style="font-size:15px;font-weight:600;fill:#24292f">PUT throughput (MB/s, higher is better)</text>
+  <text x="340" y="22" text-anchor="middle" style="font-size:15px;font-weight:600;fill:#24292f">PUT throughput (MB/s, higher is better)</text>
 
   <line x1="120" y1="35" x2="120" y2="250" style="stroke:#d1d9e0;stroke-width:0.5"/>
   <line x1="210" y1="35" x2="210" y2="250" style="stroke:#d1d9e0;stroke-width:0.5"/>
@@ -47,10 +47,10 @@
   <text x="608" y="248" style="font-size:12px;font-weight:600;fill:#24292f">537 MB/s</text>
 
   <!-- legend -->
-  <rect x="175" y="268" width="10" height="10" rx="1" fill="#2563eb"/>
-  <text x="189" y="278" style="font-size:12px;fill:#24292f">AbixIO</text>
-  <rect x="255" y="268" width="10" height="10" rx="1" fill="#d97706"/>
-  <text x="269" y="278" style="font-size:12px;fill:#24292f">RustFS</text>
-  <rect x="335" y="268" width="10" height="10" rx="1" fill="#059669"/>
-  <text x="349" y="278" style="font-size:12px;fill:#24292f">MinIO</text>
+  <rect x="205" y="270" width="10" height="10" rx="1" fill="#2563eb"/>
+  <text x="219" y="280" style="font-size:12px;fill:#24292f">AbixIO</text>
+  <rect x="285" y="270" width="10" height="10" rx="1" fill="#d97706"/>
+  <text x="299" y="280" style="font-size:12px;fill:#24292f">RustFS</text>
+  <rect x="365" y="270" width="10" height="10" rx="1" fill="#059669"/>
+  <text x="379" y="280" style="font-size:12px;fill:#24292f">MinIO</text>
 </svg>
