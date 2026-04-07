@@ -113,6 +113,8 @@ pub struct PutOptions {
     pub user_metadata: HashMap<String, String>,
     pub tags: HashMap<String, String>,
     pub ec_ftt: Option<usize>,
+    /// Pre-computed MD5 hex (ETag). If set, encode skips the md5_hex() pass.
+    pub precomputed_etag: Option<String>,
 }
 
 // -- versioning --

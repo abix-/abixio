@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use super::Backend;
 use super::erasure_decode::{read_and_decode, read_and_decode_multipart, read_and_decode_versioned};
-use super::erasure_encode::{encode_and_write_versioned, encode_and_write_with_mrf};
+use super::erasure_encode::{encode_and_write_stream, encode_and_write_versioned, encode_and_write_with_mrf};
 use super::metadata::{
     BucketInfo, BucketSettings, ErasureMeta, ListOptions, ListResult, ObjectInfo, ObjectMeta,
     PutOptions, VersioningConfig,
@@ -167,6 +167,40 @@ impl VolumePool {
             version_id: meta.version_id.clone(),
             is_delete_marker: meta.is_delete_marker,
         }
+    }
+
+    /// Streaming PUT: reads body chunks, computes MD5 inline, encodes and writes
+    /// shard data block-by-block. Use this for HTTP request bodies to avoid
+    /// buffering the entire object before processing.
+    pub async fn put_object_stream<S>(
+        &self,
+        bucket: &str,
+        key: &str,
+        body: S,
+        opts: PutOptions,
+    ) -> Result<ObjectInfo, StorageError>
+    where
+        S: futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin,
+    {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
+        if !self.head_bucket(bucket).await? {
+            return Err(StorageError::BucketNotFound);
+        }
+        let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
+        let planner = self.placement_planner()?;
+        encode_and_write_stream(
+            &self.disks,
+            &planner,
+            data_n,
+            parity_n,
+            bucket,
+            key,
+            body,
+            opts,
+            self.mrf.as_ref(),
+        )
+        .await
     }
 }
 

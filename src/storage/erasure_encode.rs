@@ -115,7 +115,7 @@ async fn encode_and_write_impl(
 ) -> Result<ObjectInfo, StorageError> {
     let t0 = std::time::Instant::now();
     let total = data_n + parity_n;
-    let etag = md5_hex(data);
+    let etag = opts.precomputed_etag.clone().unwrap_or_else(|| md5_hex(data));
     let t_md5 = t0.elapsed();
 
     let created_at = unix_timestamp_secs();
@@ -267,6 +267,238 @@ async fn encode_and_write_impl(
         version_id: version_id.unwrap_or("").to_string(),
         is_delete_marker: false,
     })
+}
+
+/// Block size for streaming encode (1MB).
+const STREAM_BLOCK_SIZE: usize = 1024 * 1024;
+
+/// Streaming encode: reads body chunks, computes MD5 inline, encodes and writes
+/// shard data block-by-block. Avoids buffering the entire object in memory before
+/// processing (though individual blocks are still buffered).
+#[allow(clippy::too_many_arguments)]
+pub async fn encode_and_write_stream<S>(
+    disks: &[Box<dyn Backend>],
+    planner: &PlacementPlanner,
+    data_n: usize,
+    parity_n: usize,
+    bucket: &str,
+    key: &str,
+    mut body: S,
+    opts: PutOptions,
+    mrf: Option<&Arc<MrfQueue>>,
+) -> Result<ObjectInfo, StorageError>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin,
+{
+    use futures::StreamExt;
+    use md5::{Digest, Md5};
+    use tokio::io::AsyncWriteExt;
+
+    let total = data_n + parity_n;
+    let created_at = unix_timestamp_secs();
+    let content_type = if opts.content_type.is_empty() {
+        "application/octet-stream".to_string()
+    } else {
+        opts.content_type.clone()
+    };
+
+    let placement = planner
+        .plan(bucket, key, data_n, parity_n)
+        .map_err(StorageError::InvalidConfig)?;
+    let distribution: Vec<usize> = placement
+        .shards
+        .iter()
+        .map(|s| s.backend_index)
+        .collect();
+    let volume_ids: Vec<String> = placement
+        .shards
+        .iter()
+        .map(|s| s.volume_id.clone())
+        .collect();
+
+    let rs = if parity_n > 0 {
+        Some(
+            ReedSolomon::new(data_n, parity_n)
+                .map_err(|e| StorageError::InvalidConfig(format!("reed-solomon: {}", e)))?,
+        )
+    } else {
+        None
+    };
+
+    // open shard files: create dirs and open for writing
+    let mut shard_files = Vec::with_capacity(total);
+    let mut shard_paths = Vec::with_capacity(total);
+    for shard_idx in 0..total {
+        let disk_idx = distribution[shard_idx];
+        let info = disks[disk_idx].info();
+        let disk_root = if let Some(path) = info.label.strip_prefix("local:") {
+            std::path::PathBuf::from(path)
+        } else {
+            return Err(StorageError::InvalidConfig(
+                "streaming encode only supports local disks".to_string(),
+            ));
+        };
+        let obj_dir = super::pathing::object_dir(&disk_root, bucket, key)?;
+        tokio::fs::create_dir_all(&obj_dir).await?;
+        let shard_path = super::pathing::object_shard_path(&disk_root, bucket, key)?;
+        let file = tokio::fs::File::create(&shard_path).await?;
+        shard_paths.push(shard_path);
+        shard_files.push(file);
+    }
+
+    // running hashers
+    let mut md5_hasher = Md5::new();
+    let mut shard_hashers: Vec<blake3::Hasher> =
+        (0..total).map(|_| blake3::Hasher::new()).collect();
+    let mut total_size: u64 = 0;
+
+    // read body in blocks, encode, write
+    let mut block_buf = Vec::with_capacity(STREAM_BLOCK_SIZE);
+
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk.map_err(|e| StorageError::Io(e))?;
+        md5_hasher.update(&chunk);
+        total_size += chunk.len() as u64;
+        block_buf.extend_from_slice(&chunk);
+
+        // process complete blocks
+        while block_buf.len() >= STREAM_BLOCK_SIZE {
+            let block: Vec<u8> = block_buf.drain(..STREAM_BLOCK_SIZE).collect();
+            write_stream_block(
+                &block,
+                data_n,
+                parity_n,
+                &rs,
+                &mut shard_files,
+                &mut shard_hashers,
+            )
+            .await?;
+        }
+    }
+
+    // process remaining data (last partial block)
+    if !block_buf.is_empty() {
+        write_stream_block(
+            &block_buf,
+            data_n,
+            parity_n,
+            &rs,
+            &mut shard_files,
+            &mut shard_hashers,
+        )
+        .await?;
+    }
+
+    // flush and close shard files
+    for file in &mut shard_files {
+        file.flush().await?;
+    }
+    drop(shard_files);
+
+    // finalize
+    let etag = hex::encode(md5_hasher.finalize());
+    let checksums: Vec<String> = shard_hashers
+        .iter()
+        .map(|h| h.finalize().to_hex().to_string())
+        .collect();
+
+    // write meta.json on each disk
+    let mut meta_errs: Vec<Option<StorageError>> = (0..total).map(|_| None).collect();
+    for shard_idx in 0..total {
+        let disk_idx = distribution[shard_idx];
+        let meta = ObjectMeta {
+            size: total_size,
+            etag: etag.clone(),
+            content_type: content_type.clone(),
+            created_at,
+            erasure: ErasureMeta {
+                ftt: parity_n,
+                index: shard_idx,
+                epoch_id: placement.epoch_id,
+                volume_ids: volume_ids.clone(),
+            },
+            checksum: checksums[shard_idx].clone(),
+            user_metadata: opts.user_metadata.clone(),
+            tags: opts.tags.clone(),
+            version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+        };
+        let mf = super::metadata::ObjectMetaFile {
+            versions: vec![meta],
+        };
+        let info = disks[disk_idx].info();
+        let disk_root = std::path::PathBuf::from(info.label.strip_prefix("local:").unwrap());
+        let meta_path = super::pathing::object_meta_path(&disk_root, bucket, key)?;
+        if let Err(e) = super::metadata::write_meta_file(&meta_path, &mf).await {
+            meta_errs[shard_idx] = Some(StorageError::Io(e));
+        }
+    }
+
+    // check write quorum
+    let successes = meta_errs.iter().filter(|e| e.is_none()).count();
+    let write_quorum = if parity_n == 0 { data_n } else { data_n + 1 };
+    if successes < write_quorum {
+        // cleanup
+        for path in &shard_paths {
+            let _ = tokio::fs::remove_file(path).await;
+        }
+        return Err(StorageError::WriteQuorum);
+    }
+
+    // enqueue MRF if some shards failed
+    if successes < total {
+        if let Some(mrf) = mrf {
+            let _ = mrf.enqueue(MrfEntry {
+                bucket: bucket.to_string(),
+                key: key.to_string(),
+            });
+        }
+    }
+
+    Ok(ObjectInfo {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+        size: total_size,
+        etag,
+        content_type,
+        created_at,
+        user_metadata: opts.user_metadata,
+        tags: opts.tags,
+        version_id: String::new(),
+        is_delete_marker: false,
+    })
+}
+
+/// Write one block of data through the RS encode pipeline to all shard files.
+async fn write_stream_block(
+    block: &[u8],
+    data_n: usize,
+    parity_n: usize,
+    rs: &Option<ReedSolomon>,
+    shard_files: &mut [tokio::fs::File],
+    shard_hashers: &mut [blake3::Hasher],
+) -> Result<(), StorageError> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut shards = split_data(block, data_n);
+    if let Some(rs) = rs {
+        let shard_size = shards[0].len();
+        for _ in 0..parity_n {
+            shards.push(vec![0u8; shard_size]);
+        }
+        rs.encode(&mut shards)
+            .map_err(|e| StorageError::InvalidConfig(format!("reed-solomon encode: {}", e)))?;
+    }
+
+    // write each shard chunk and update running hash
+    for (i, shard_data) in shards.iter().enumerate() {
+        shard_hashers[i].update(shard_data);
+        shard_files[i].write_all(shard_data).await?;
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

@@ -56,19 +56,30 @@ fn map_err(e: StorageError) -> s3s::S3Error {
 }
 
 async fn collect_body(body: Option<StreamingBlob>) -> S3Result<Vec<u8>> {
+    let (data, _) = collect_body_with_md5(body).await?;
+    Ok(data)
+}
+
+/// Collect body and compute MD5 (ETag) inline during read.
+/// Eliminates the separate md5_hex() pass over the full data.
+async fn collect_body_with_md5(body: Option<StreamingBlob>) -> S3Result<(Vec<u8>, String)> {
     let Some(body) = body else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), crate::storage::bitrot::md5_hex(b"")));
     };
     use futures::StreamExt;
+    use md5::{Digest, Md5};
     let mut buf = Vec::new();
+    let mut md5 = Md5::new();
     let mut stream = body;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| {
             s3s::S3Error::with_message(s3s::S3ErrorCode::IncompleteBody, e.to_string())
         })?;
+        md5.update(&chunk);
         buf.extend_from_slice(&chunk);
     }
-    Ok(buf)
+    let etag = hex::encode(md5.finalize());
+    Ok((buf, etag))
 }
 
 fn timestamp_to_s3(unix_secs: u64) -> Timestamp {
@@ -190,12 +201,19 @@ impl S3 for AbixioS3 {
         req: S3Request<PutObjectInput>,
     ) -> S3Result<S3Response<PutObjectOutput>> {
         let input = req.input;
-        let body = collect_body(input.body).await?;
         let content_type = input.content_type.unwrap_or_default();
         let user_metadata = input.metadata.unwrap_or_default();
-
-        // check for per-object FTT header
         let ec_ftt = user_metadata.get("ec-ftt").and_then(|v| v.parse::<usize>().ok());
+
+        // check versioning state to decide write path
+        let versioning = self
+            .store
+            .get_versioning_config(&input.bucket)
+            .await
+            .ok()
+            .flatten();
+
+        let is_versioned = versioning.as_ref().map(|v| v.status.as_str()) == Some("Enabled");
 
         let opts = PutOptions {
             content_type: if content_type.is_empty() {
@@ -208,23 +226,34 @@ impl S3 for AbixioS3 {
             ..Default::default()
         };
 
-        // check versioning state to decide write path
-        let versioning = self
-            .store
-            .get_versioning_config(&input.bucket)
-            .await
-            .ok()
-            .flatten();
-
-        let info = if versioning.as_ref().map(|v| v.status.as_str()) == Some("Enabled") {
+        let info = if is_versioned {
+            // versioned: buffer body (needs version metadata)
+            let (body, etag) = collect_body_with_md5(input.body).await?;
+            let mut opts = opts;
+            opts.precomputed_etag = Some(etag);
             let version_id = uuid::Uuid::new_v4().to_string();
             self.store
                 .put_object_versioned(&input.bucket, &input.key, &body, opts, &version_id)
                 .await
                 .map_err(map_err)?
-        } else {
+        } else if let Some(body) = input.body {
+            // non-versioned: streaming encode (no full-body buffering)
+            use futures::StreamExt;
+            let stream = body.map(|chunk| -> Result<bytes::Bytes, std::io::Error> {
+                chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            });
             self.store
-                .put_object(&input.bucket, &input.key, &body, opts)
+                .put_object_stream(&input.bucket, &input.key, stream, opts)
+                .await
+                .map_err(map_err)?
+        } else {
+            // empty body
+            let opts_with_etag = PutOptions {
+                precomputed_etag: Some(crate::storage::bitrot::md5_hex(b"")),
+                ..opts
+            };
+            self.store
+                .put_object(&input.bucket, &input.key, b"", opts_with_etag)
                 .await
                 .map_err(map_err)?
         };
@@ -233,7 +262,6 @@ impl S3 for AbixioS3 {
             e_tag: Some(ETag::Strong(info.etag)),
             ..Default::default()
         };
-        // set version-id header
         if !info.version_id.is_empty() {
             output.version_id = Some(info.version_id);
         } else if versioning.as_ref().map(|v| v.status.as_str()) == Some("Suspended") {
