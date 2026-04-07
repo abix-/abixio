@@ -1,44 +1,43 @@
 # AbixIO Project State
 
-## Last Session: 2026-04-06 (phase 1 async storage layer complete)
+## Last Session: 2026-04-06 (phase 2 s3s wiring in progress)
 
 ### What We Worked On
-- Completed Phase 1 of s3s migration: async storage layer
-- Cascaded async through all 9 production files + 3 test files
-- Started with 231 compiler errors, ended with 0 errors, 125 tests passing, clippy clean
+- Phase 2 s3s protocol layer: created all new files, wired main.rs
+- s3_service.rs (1,024 lines, 31 S3 operations), s3_auth.rs, s3_access.rs, s3_route.rs
+- main.rs wired to S3ServiceBuilder + AbixioDispatch
+- Tests updated to use new dispatch layer
+- 41/125 integration tests passing, 84 need behavioral fixes
 
 ### Decisions Made
-- **heal worker simplification:** removed spawn_blocking wrappers in mrf_drain_worker and scanner_loop since heal_object and run_scan_cycle are now async directly
-- **multipart stays sync fs for now:** multipart/mod.rs functions still use std::fs directly (not through Backend trait), only erasure_decode_multipart got tokio::fs conversion. multipart async conversion is phase 1 plan item but was not needed to compile -- can be done opportunistically
-- **bucket_ec on Store trait is async:** confirmed the earlier decision that bucket_ec needs to be async since it reads bucket settings from disk
+- **dispatch layer instead of S3Route:** admin and storage_server use hyper Request<Incoming>
+  which can't be constructed from s3s Body. AbixioDispatch intercepts _admin/* and
+  _storage/v1/* at the hyper level before passing to s3s. cleaner than trying to
+  convert between incompatible body types
+- **no global state:** AbixioS3 struct owns Arc<VolumePool> + Arc<ClusterManager>
+- **single map_err function:** all StorageError -> S3Error mapping in one place
+- **body collection:** s3s returns streaming responses; AbixioDispatch collects
+  the body stream into Full<Bytes> for hyper compatibility
 
 ### Current State
-- Phase 1 COMPLETE: all production code and tests compile and pass
-- 125 tests pass, 0 failures
-- clippy clean (0 new errors, pre-existing warnings only)
-- migration plan at docs/s3s-migration.md still accurate for phases 2-3
+- Phase 2 IN PROGRESS: all new code compiles, 41/125 tests passing
+- 84 failing tests are behavioral differences, not compilation errors
+- Old src/s3/ code still exists (not yet deleted) -- some tests may still reference it
+- plan at ~/.claude/plans/streamed-baking-dongarra.md
 
-### Files Changed in This Session
-- erasure_encode.rs, erasure_decode.rs: async fn + .await
-- volume_pool.rs: #[async_trait] on impl Store, all methods async, private helpers async, tests #[tokio::test]
-- heal/worker.rs: heal_object/scanner async, removed spawn_blocking
-- storage_server.rs: all handlers async, .await on Backend calls
-- s3/handlers.rs: .await on all Store/Backend/multipart calls
-- admin/handlers.rs: dispatch + handlers async
-- tests/support/mod.rs: ControlledBackend impl async
-- tests/s3_integration.rs: .await fixes
+### Failing Test Categories (84 tests)
+1. **multipart ops (~25):** multipart functions called directly, may need .await or signature fixes
+2. **versioning (~8):** delete markers, version-id in responses
+3. **CORS/notification/ACL stubs (~12):** s3s returns different status codes for unimplemented ops
+4. **conditional requests (~6):** If-Match, If-None-Match not implemented in s3_service.rs
+5. **status code/header differences (~15):** request-id, 405 vs 400, etc.
+6. **XML format differences (~10):** smithy-generated XML vs our quick-xml templates
+7. **policy/lifecycle/tagging (~8):** field mapping issues
 
 ### Next Steps
-1. **Phase 2: s3s protocol layer** (the big value-add)
-   - add s3s dependency
-   - impl S3 for AbixioStore (41 operations as thin async adapters)
-   - impl S3Auth (delegates to s3s SimpleAuth)
-   - impl S3Access (cluster fencing)
-   - S3Route for admin + internode RPC
-   - wire S3ServiceBuilder in main.rs
-   - delete old src/s3/ files (handlers.rs, auth.rs, errors.rs, response.rs, router.rs)
-2. Phase 3: cleanup (remove unused deps, update docs)
-3. Parallel shard I/O optimization (join_all in erasure_encode/decode) -- can be done anytime now that everything is async
+1. Fix 84 failing integration tests (biggest task -- categorize and batch-fix)
+2. Delete old src/s3/ directory once all tests pass
+3. Phase 3: cleanup deps, update docs
 
 ### k3s NodePort Allocation
 | Port  | Service   |
