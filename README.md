@@ -48,8 +48,9 @@ Same `--nodes` on every node. Identity resolves automatically. You now have 5 vo
 
 | | |
 |---|---|
-| **Tests** | 316 (unit + integration) |
+| **Tests** | 171 passing (unit + integration) |
 | **S3 coverage** | 41 of 72 operations ([details](docs/s3-compliance.md)) |
+| **Protocol** | [s3s](https://crates.io/crates/s3s) v0.13 (SigV4, chunked auth, smithy XML) |
 | **Releases** | None yet |
 
 ### Docs

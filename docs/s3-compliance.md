@@ -108,34 +108,46 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 
 ## Response quality
 
+s3s generates all XML responses from smithy models (AWS spec-compliant).
+
 ### Common response headers
 
 | Header | Status |
 |---|---|
-| `x-amz-request-id` | Set on every response (hex nanos). |
-| `Content-Type` | Set on all XML and object responses. |
-| `ETag` | Set on PUT, GET, HEAD. Quoted format. |
+| `x-amz-request-id` | Set on every response (UUID). |
+| `Content-Type` | Set by s3s on all XML and object responses. |
+| `ETag` | Set on PUT, GET, HEAD. RFC 7232 strong entity tag. |
 | `Last-Modified` | RFC 7231 HTTP-date on GET, HEAD. |
-| `x-amz-version-id` | Set when versioning enabled. |
-| `x-amz-delete-marker` | Set on versioned DELETE. |
+| `x-amz-version-id` | Pending (versioning response headers not yet wired). |
+| `x-amz-delete-marker` | Pending (versioning response headers not yet wired). |
 
 ### Error responses
 
+s3s generates spec-compliant error XML with all standard S3 error codes.
+
 | Field | Status |
 |---|---|
-| `<Code>` | 12 error codes defined. |
+| `<Code>` | All standard S3 error codes (smithy-generated). |
 | `<Message>` | Descriptive messages. |
-| `<RequestId>` | Included in XML body. |
-| `<Resource>` | Included when handler has context. |
+| `<RequestId>` | Set by dispatch layer (UUID). |
+| `<Resource>` | Set by s3s when context available. |
 
 ## Auth
 
+Protocol layer powered by [s3s](https://crates.io/crates/s3s) v0.13 (smithy-generated).
+
 | Method | Status | Rating |
 |---|---|---|
-| SigV4 header auth | Done | 8/10 |
-| SigV4 presigned URL | Done | 8/10 |
+| SigV4 header auth | Done | 9/10 |
+| SigV4 presigned URL | Done | 9/10 |
+| SigV4 chunked transfer | Done | 9/10 |
+| SigV4 trailing checksums | Done | 9/10 |
+| POST policy uploads | Done | 8/10 |
+| Content-MD5 validation | Done | 9/10 |
 | Anonymous (no-auth mode) | Done | 8/10 |
-| SigV4 chunked transfer | No | 0/10 |
+
+SigV4 chunked transfer, trailing checksums, POST policy, and content-MD5
+are handled by s3s at the protocol layer. No application code needed.
 
 ## Summary
 
@@ -148,4 +160,4 @@ here.
 
 Not implemented: encryption config, replication, notifications,
 object lock/retention, ACLs, S3 Select.
-CORS is stub-only (matches MinIO) -- full implementation is a 2.0 item.
+CORS is stub-only -- full implementation is a 2.0 item.

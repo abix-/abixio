@@ -86,13 +86,10 @@ src/
     erasure_encode.rs     # split_data + reed-solomon encode + volume subset selection
     erasure_decode.rs     # read from backends + bitrot check + reconstruct
     volume.rs             # VolumeFormat: read/write .abixio.sys/volume.json
-  s3/
-    mod.rs
-    router.rs             # HTTP server: TcpListener + hyper service dispatch
-    handlers.rs           # S3 handler dispatch + all endpoint implementations
-    auth.rs               # AWS Sig V4 verification + presigned URL validation
-    response.rs           # S3 XML response structs (quick-xml)
-    errors.rs             # S3 error codes + XML + error mapping
+  s3_service.rs           # impl S3 for AbixioS3: thin adapter to VolumePool (s3s)
+  s3_auth.rs              # impl S3Auth: SigV4 credential lookup (s3s)
+  s3_access.rs            # impl S3Access: cluster fencing check (s3s)
+  s3_route.rs             # AbixioDispatch: admin + storage RPC bypass, s3s passthrough
   admin/
     mod.rs                # HealStats shared state (atomic counters, uptime)
     handlers.rs           # Admin API handlers (status, disks, healing, inspect, bucket EC)
@@ -132,16 +129,15 @@ docs/
 
 | Crate | Purpose |
 |---|---|
+| `s3s` | S3 protocol layer: SigV4 auth, XML serialization, routing, DTOs |
 | `reed-solomon-erasure` | erasure coding (parity >= 1; 0-parity bypasses) |
 | `serde` / `serde_json` | metadata serialization |
 | `tokio` | async runtime |
 | `hyper` / `hyper-util` | HTTP server |
-| `quick-xml` | S3 XML request/response |
-| `sha2` / `md-5` / `hmac` / `hex` | checksums + auth |
+| `sha2` / `md-5` / `hmac` / `hex` | checksums + internode auth |
 | `clap` | CLI args |
 | `tracing` | structured logging |
-| `uuid` | version IDs |
-| `subtle` | constant-time compare (auth) |
+| `uuid` | version IDs, request IDs |
 | `jsonwebtoken` | JWT sign/validate (internode RPC auth) |
 | `reqwest` | HTTP client (internode RPC) |
-| `form_urlencoded` | URL query parsing |
+| `async-trait` / `futures` | async trait support |
