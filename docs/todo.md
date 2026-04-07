@@ -27,7 +27,7 @@
 
 ## medium
 
-- [ ] basic benchmark suite (put small, put large, get, list, delete with timing)
+- [x] basic benchmark suite -- abixio-ui/tests/bench.rs: PUT/GET/HEAD/LIST/DELETE with 1-4 disks
 - [ ] release pipeline (dockerfile + github release with binaries)
 - [ ] changelog -- no release notes exist for 159 commits
 - [ ] encryption at rest
