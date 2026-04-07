@@ -717,8 +717,8 @@ mod tests {
 
     // -- construction tests --
 
-    #[test]
-    fn new_empty_disks_fails() {
+    #[tokio::test]
+    async fn new_empty_disks_fails() {
         assert!(VolumePool::new(Vec::new()).is_err());
     }
 
@@ -737,24 +737,24 @@ mod tests {
         TestConfig { data: 3, parity: 3 },
     ];
 
-    #[test]
-    fn put_get_round_trip_all_configs() {
+    #[tokio::test]
+    async fn put_get_round_trip_all_configs() {
         for cfg in CONFIGS {
             let total = cfg.data + cfg.parity;
             let (_base, paths) = make_disk_dirs(total);
             let set = make_set(&paths);
-            set.make_bucket("test").unwrap();
+            set.make_bucket("test").await.unwrap();
 
             let payload = b"the quick brown fox jumps over the lazy dog";
             let opts = PutOptions {
                 content_type: "text/plain".to_string(),
                 ..Default::default()
             };
-            let info = set.put_object("test", "fox.txt", payload, opts).unwrap();
+            let info = set.put_object("test", "fox.txt", payload, opts).await.unwrap();
 
             assert_eq!(info.etag, crate::storage::bitrot::md5_hex(payload));
 
-            let (data, get_info) = set.get_object("test", "fox.txt").unwrap();
+            let (data, get_info) = set.get_object("test", "fox.txt").await.unwrap();
             assert_eq!(
                 data, payload,
                 "data mismatch for config data={} parity={}",
@@ -766,22 +766,22 @@ mod tests {
         }
     }
 
-    #[test]
-    fn head_object_returns_correct_info() {
+    #[tokio::test]
+    async fn head_object_returns_correct_info() {
         for cfg in CONFIGS {
             let total = cfg.data + cfg.parity;
             let (_base, paths) = make_disk_dirs(total);
             let set = make_set(&paths);
-            set.make_bucket("test").unwrap();
+            set.make_bucket("test").await.unwrap();
 
             let payload = b"head test data";
             let opts = PutOptions {
                 content_type: "application/json".to_string(),
                 ..Default::default()
             };
-            set.put_object("test", "obj", payload, opts).unwrap();
+            set.put_object("test", "obj", payload, opts).await.unwrap();
 
-            let info = set.head_object("test", "obj").unwrap();
+            let info = set.head_object("test", "obj").await.unwrap();
             assert_eq!(info.size, payload.len() as u64);
             assert_eq!(info.content_type, "application/json");
         }
@@ -789,12 +789,12 @@ mod tests {
 
     // -- per-object EC in a larger pool --
 
-    #[test]
-    fn per_object_ftt_override() {
+    #[tokio::test]
+    async fn per_object_ftt_override() {
         // 6-disk pool with default FTT=2 (4+2)
         let (_base, paths) = make_disk_dirs(6);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
 
         // write with FTT=1 (5+1, uses all 6 disks)
         let payload = b"per-object ftt test";
@@ -803,13 +803,13 @@ mod tests {
             ec_ftt: Some(1),
             ..Default::default()
         };
-        set.put_object("test", "small", payload, opts).unwrap();
+        set.put_object("test", "small", payload, opts).await.unwrap();
 
-        let meta = set.read_ec_from_meta("test", "small").unwrap();
+        let meta = set.read_ec_from_meta("test", "small").await.unwrap();
         assert_eq!(meta, (5, 1));
 
         // read back
-        let (data, _) = set.get_object("test", "small").unwrap();
+        let (data, _) = set.get_object("test", "small").await.unwrap();
         assert_eq!(data, payload);
 
         // write with default EC (no FTT override)
@@ -818,17 +818,17 @@ mod tests {
             ..Default::default()
         };
         let payload2 = b"default ec test";
-        set.put_object("test", "normal", payload2, opts2).unwrap();
-        let (data2, _) = set.get_object("test", "normal").unwrap();
+        set.put_object("test", "normal", payload2, opts2).await.unwrap();
+        let (data2, _) = set.get_object("test", "normal").await.unwrap();
         assert_eq!(data2, payload2);
     }
 
-    #[test]
-    fn per_object_ftt_max_parity() {
+    #[tokio::test]
+    async fn per_object_ftt_max_parity() {
         // 6-disk pool, write with FTT=5 (1+5, max parity)
         let (_base, paths) = make_disk_dirs(6);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
 
         let payload = b"max parity test data";
         let opts = PutOptions {
@@ -836,7 +836,7 @@ mod tests {
             ec_ftt: Some(5),
             ..Default::default()
         };
-        set.put_object("test", "critical", payload, opts).unwrap();
+        set.put_object("test", "critical", payload, opts).await.unwrap();
 
         // delete 4 of 6 disks' object data -- should still be readable (FTT=5)
         for i in 0..4 {
@@ -846,25 +846,25 @@ mod tests {
             }
         }
 
-        let (data, _) = set.get_object("test", "critical").unwrap();
+        let (data, _) = set.get_object("test", "critical").await.unwrap();
         assert_eq!(data, payload);
     }
 
-    #[test]
-    fn bucket_ec_config() {
+    #[tokio::test]
+    async fn bucket_ec_config() {
         let (_base, paths) = make_disk_dirs(6);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
 
         // bucket gets default FTT=1 on creation
-        let loaded = set.get_ftt("test").unwrap().unwrap();
+        let loaded = set.get_ftt("test").await.unwrap().unwrap();
         assert_eq!(loaded, 1);
 
         // update to FTT=3 (on 6 disks -> 3+3)
-        set.set_ftt("test", 3).unwrap();
+        set.set_ftt("test", 3).await.unwrap();
 
         // verify it's stored
-        let loaded = set.get_ftt("test").unwrap().unwrap();
+        let loaded = set.get_ftt("test").await.unwrap().unwrap();
         assert_eq!(loaded, 3);
 
         // write object -- should use bucket FTT=3 -> 3+3
@@ -873,21 +873,21 @@ mod tests {
             content_type: "text/plain".to_string(),
             ..Default::default()
         };
-        set.put_object("test", "key", payload, opts).unwrap();
+        set.put_object("test", "key", payload, opts).await.unwrap();
 
         // verify the object used 3+3
-        let meta = set.read_ec_from_meta("test", "key").unwrap();
+        let meta = set.read_ec_from_meta("test", "key").await.unwrap();
         assert_eq!(meta, (3, 3));
     }
 
-    #[test]
-    fn per_object_overrides_bucket_config() {
+    #[tokio::test]
+    async fn per_object_overrides_bucket_config() {
         let (_base, paths) = make_disk_dirs(6);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
 
         // set bucket config to FTT=3 (3+3)
-        set.set_ftt("test", 3).unwrap();
+        set.set_ftt("test", 3).await.unwrap();
 
         // write with per-object FTT=1 override (5+1)
         let opts = PutOptions {
@@ -895,32 +895,32 @@ mod tests {
             ec_ftt: Some(1),
             ..Default::default()
         };
-        set.put_object("test", "key", b"override", opts).unwrap();
+        set.put_object("test", "key", b"override", opts).await.unwrap();
 
         // verify per-object FTT=1 won over bucket FTT=3
-        let meta = set.read_ec_from_meta("test", "key").unwrap();
+        let meta = set.read_ec_from_meta("test", "key").await.unwrap();
         assert_eq!(meta, (5, 1));
     }
 
-    #[test]
-    fn ec_config_validation() {
+    #[tokio::test]
+    async fn ec_config_validation() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
 
         // ftt >= disks should fail
-        assert!(set.set_ftt("test", 4).is_err());
-        assert!(set.set_ftt("test", 5).is_err());
+        assert!(set.set_ftt("test", 4).await.is_err());
+        assert!(set.set_ftt("test", 5).await.is_err());
 
         // valid ftt should succeed
-        assert!(set.set_ftt("test", 1).is_ok());
-        assert!(set.set_ftt("test", 3).is_ok());
+        assert!(set.set_ftt("test", 1).await.is_ok());
+        assert!(set.set_ftt("test", 3).await.is_ok());
     }
 
     // -- FTT mapping --
 
-    #[test]
-    fn ftt_to_ec_mapping() {
+    #[tokio::test]
+    async fn ftt_to_ec_mapping() {
         // 1 disk
         assert_eq!(ftt_to_ec(0, 1).unwrap(), (1, 0));
         assert!(ftt_to_ec(1, 1).is_err());
@@ -947,11 +947,11 @@ mod tests {
         assert!(ftt_to_ec(0, 0).is_err());
     }
 
-    #[test]
-    fn resolve_ec_ftt_per_object() {
+    #[tokio::test]
+    async fn resolve_ec_ftt_per_object() {
         let (_base, paths) = make_disk_dirs(6);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
 
         // FTT=2 on 6 disks should give 4+2
         let opts = PutOptions {
@@ -959,47 +959,47 @@ mod tests {
             ec_ftt: Some(2),
             ..Default::default()
         };
-        set.put_object("test", "ftt2", b"ftt test", opts).unwrap();
-        let meta = set.read_ec_from_meta("test", "ftt2").unwrap();
+        set.put_object("test", "ftt2", b"ftt test", opts).await.unwrap();
+        let meta = set.read_ec_from_meta("test", "ftt2").await.unwrap();
         assert_eq!(meta, (4, 2));
     }
 
-    #[test]
-    fn resolve_ec_bucket_ftt() {
+    #[tokio::test]
+    async fn resolve_ec_bucket_ftt() {
         let (_base, paths) = make_disk_dirs(6);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
 
         // set bucket config with FTT=2 on 6 disks -> 4+2
-        set.set_ftt("test", 2).unwrap();
+        set.set_ftt("test", 2).await.unwrap();
 
         // write with no per-object EC -- should use bucket config 4+2
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
             ..Default::default()
         };
-        set.put_object("test", "bucket-ftt", b"bucket ftt", opts).unwrap();
-        let meta = set.read_ec_from_meta("test", "bucket-ftt").unwrap();
+        set.put_object("test", "bucket-ftt", b"bucket ftt", opts).await.unwrap();
+        let meta = set.read_ec_from_meta("test", "bucket-ftt").await.unwrap();
         assert_eq!(meta, (4, 2));
     }
 
     // -- erasure resilience --
 
-    #[test]
-    fn resilience_survives_parity_failures() {
+    #[tokio::test]
+    async fn resilience_survives_parity_failures() {
         for cfg in CONFIGS.iter().filter(|c| c.parity > 0) {
             let total = cfg.data + cfg.parity;
             let (_base, paths) = make_disk_dirs(total);
             let set = make_set(&paths);
-            set.make_bucket("test").unwrap();
-            set.set_ftt("test", cfg.parity).unwrap();
+            set.make_bucket("test").await.unwrap();
+            set.set_ftt("test", cfg.parity).await.unwrap();
 
             let payload = b"resilience test data that should survive disk failures";
             let opts = PutOptions {
                 content_type: "text/plain".to_string(),
                 ..Default::default()
             };
-            set.put_object("test", "key", payload, opts).unwrap();
+            set.put_object("test", "key", payload, opts).await.unwrap();
 
             for i in 0..cfg.parity {
                 let obj_dir = paths[total - 1 - i].join("test").join("key");
@@ -1008,7 +1008,7 @@ mod tests {
                 }
             }
 
-            let (data, _) = set.get_object("test", "key").unwrap();
+            let (data, _) = set.get_object("test", "key").await.unwrap();
             assert_eq!(
                 data, payload,
                 "failed for config data={} parity={}",
@@ -1017,21 +1017,21 @@ mod tests {
         }
     }
 
-    #[test]
-    fn resilience_fails_beyond_parity() {
+    #[tokio::test]
+    async fn resilience_fails_beyond_parity() {
         for cfg in CONFIGS.iter().filter(|c| c.parity > 0) {
             let total = cfg.data + cfg.parity;
             let (_base, paths) = make_disk_dirs(total);
             let set = make_set(&paths);
-            set.make_bucket("test").unwrap();
-            set.set_ftt("test", cfg.parity).unwrap();
+            set.make_bucket("test").await.unwrap();
+            set.set_ftt("test", cfg.parity).await.unwrap();
 
             let payload = b"this should fail";
             let opts = PutOptions {
                 content_type: "text/plain".to_string(),
                 ..Default::default()
             };
-            set.put_object("test", "key", payload, opts).unwrap();
+            set.put_object("test", "key", payload, opts).await.unwrap();
 
             for i in 0..(cfg.parity + 1) {
                 let obj_dir = paths[total - 1 - i].join("test").join("key");
@@ -1040,7 +1040,7 @@ mod tests {
                 }
             }
 
-            let result = set.get_object("test", "key");
+            let result = set.get_object("test", "key").await;
             assert!(
                 matches!(
                     result,
@@ -1055,40 +1055,40 @@ mod tests {
 
     // -- bitrot detection --
 
-    #[test]
-    fn bitrot_one_corrupt_shard_recovers() {
+    #[tokio::test]
+    async fn bitrot_one_corrupt_shard_recovers() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
 
         let payload = b"bitrot test data";
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
             ..Default::default()
         };
-        set.put_object("test", "key", payload, opts).unwrap();
+        set.put_object("test", "key", payload, opts).await.unwrap();
 
         let shard_path = paths[0].join("test").join("key").join("shard.dat");
         if shard_path.exists() {
             std::fs::write(&shard_path, b"CORRUPTED").unwrap();
         }
 
-        let (data, _) = set.get_object("test", "key").unwrap();
+        let (data, _) = set.get_object("test", "key").await.unwrap();
         assert_eq!(data, payload);
     }
 
-    #[test]
-    fn bitrot_too_many_corrupt_fails() {
+    #[tokio::test]
+    async fn bitrot_too_many_corrupt_fails() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
 
         let payload = b"bitrot fail test";
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
             ..Default::default()
         };
-        set.put_object("test", "key", payload, opts).unwrap();
+        set.put_object("test", "key", payload, opts).await.unwrap();
 
         for i in 0..3 {
             let shard_path = paths[i].join("test").join("key").join("shard.dat");
@@ -1098,55 +1098,55 @@ mod tests {
         }
 
         assert!(matches!(
-            set.get_object("test", "key"),
+            set.get_object("test", "key").await,
             Err(StorageError::ReadQuorum)
         ));
     }
 
     // -- bucket operations --
 
-    #[test]
-    fn make_bucket_creates_on_all_disks() {
+    #[tokio::test]
+    async fn make_bucket_creates_on_all_disks() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        set.make_bucket("mybucket").unwrap();
+        set.make_bucket("mybucket").await.unwrap();
         for path in &paths {
             assert!(path.join("mybucket").is_dir());
         }
     }
 
-    #[test]
-    fn head_bucket_true_after_create() {
+    #[tokio::test]
+    async fn head_bucket_true_after_create() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        assert!(!set.head_bucket("nope").unwrap());
-        set.make_bucket("test").unwrap();
-        assert!(set.head_bucket("test").unwrap());
+        assert!(!set.head_bucket("nope").await.unwrap());
+        set.make_bucket("test").await.unwrap();
+        assert!(set.head_bucket("test").await.unwrap());
     }
 
-    #[test]
-    fn list_buckets_returns_all() {
+    #[tokio::test]
+    async fn list_buckets_returns_all() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        set.make_bucket("alpha").unwrap();
-        set.make_bucket("beta").unwrap();
-        let buckets = set.list_buckets().unwrap();
+        set.make_bucket("alpha").await.unwrap();
+        set.make_bucket("beta").await.unwrap();
+        let buckets = set.list_buckets().await.unwrap();
         let names: Vec<&str> = buckets.iter().map(|b| b.name.as_str()).collect();
         assert!(names.contains(&"alpha"));
         assert!(names.contains(&"beta"));
     }
 
-    #[test]
-    fn delete_object_removes_from_all_disks() {
+    #[tokio::test]
+    async fn delete_object_removes_from_all_disks() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
             ..Default::default()
         };
-        set.put_object("test", "key", b"data", opts).unwrap();
-        set.delete_object("test", "key").unwrap();
+        set.put_object("test", "key", b"data", opts).await.unwrap();
+        set.delete_object("test", "key").await.unwrap();
 
         for path in &paths {
             assert!(!path.join("test").join("key").exists());
@@ -1155,40 +1155,40 @@ mod tests {
 
     // -- list operations --
 
-    #[test]
-    fn list_objects_returns_all() {
+    #[tokio::test]
+    async fn list_objects_returns_all() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
             ..Default::default()
         };
-        set.put_object("test", "aaa", b"1", opts.clone()).unwrap();
-        set.put_object("test", "bbb", b"2", opts.clone()).unwrap();
-        set.put_object("test", "ccc", b"3", opts).unwrap();
+        set.put_object("test", "aaa", b"1", opts.clone()).await.unwrap();
+        set.put_object("test", "bbb", b"2", opts.clone()).await.unwrap();
+        set.put_object("test", "ccc", b"3", opts).await.unwrap();
 
-        let result = set.list_objects("test", ListOptions::default()).unwrap();
+        let result = set.list_objects("test", ListOptions::default()).await.unwrap();
         let keys: Vec<&str> = result.objects.iter().map(|o| o.key.as_str()).collect();
         assert!(keys.contains(&"aaa"));
         assert!(keys.contains(&"bbb"));
         assert!(keys.contains(&"ccc"));
     }
 
-    #[test]
-    fn list_objects_with_prefix() {
+    #[tokio::test]
+    async fn list_objects_with_prefix() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
             ..Default::default()
         };
         set.put_object("test", "logs/a", b"1", opts.clone())
-            .unwrap();
+            .await.unwrap();
         set.put_object("test", "logs/b", b"2", opts.clone())
-            .unwrap();
-        set.put_object("test", "data/c", b"3", opts).unwrap();
+            .await.unwrap();
+        set.put_object("test", "data/c", b"3", opts).await.unwrap();
 
         let result = set
             .list_objects(
@@ -1198,23 +1198,23 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .unwrap();
+            .await.unwrap();
         assert_eq!(result.objects.len(), 2);
     }
 
-    #[test]
-    fn list_objects_with_delimiter() {
+    #[tokio::test]
+    async fn list_objects_with_delimiter() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
             ..Default::default()
         };
-        set.put_object("test", "a/1", b"1", opts.clone()).unwrap();
-        set.put_object("test", "a/2", b"2", opts.clone()).unwrap();
-        set.put_object("test", "b/3", b"3", opts.clone()).unwrap();
-        set.put_object("test", "root", b"4", opts).unwrap();
+        set.put_object("test", "a/1", b"1", opts.clone()).await.unwrap();
+        set.put_object("test", "a/2", b"2", opts.clone()).await.unwrap();
+        set.put_object("test", "b/3", b"3", opts.clone()).await.unwrap();
+        set.put_object("test", "root", b"4", opts).await.unwrap();
 
         let result = set
             .list_objects(
@@ -1224,7 +1224,7 @@ mod tests {
                     ..Default::default()
                 },
             )
-            .unwrap();
+            .await.unwrap();
         assert!(result.common_prefixes.contains(&"a/".to_string()));
         assert!(result.common_prefixes.contains(&"b/".to_string()));
         assert_eq!(result.objects.len(), 1); // just "root"
@@ -1233,11 +1233,11 @@ mod tests {
 
     // -- quorum enforcement --
 
-    #[test]
-    fn write_quorum_failure() {
+    #[tokio::test]
+    async fn write_quorum_failure() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
 
         for path in &paths {
             std::fs::remove_dir_all(path).unwrap();
@@ -1247,15 +1247,15 @@ mod tests {
             content_type: "text/plain".to_string(),
             ..Default::default()
         };
-        let result = set.put_object("test", "key", b"data", opts);
+        let result = set.put_object("test", "key", b"data", opts).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn single_disk_no_parity_write_fails_when_disk_gone() {
+    #[tokio::test]
+    async fn single_disk_no_parity_write_fails_when_disk_gone() {
         let (_base, paths) = make_disk_dirs(1);
         let set = make_set(&paths);
-        set.make_bucket("test").unwrap();
+        set.make_bucket("test").await.unwrap();
 
         std::fs::remove_dir_all(&paths[0]).unwrap();
 
@@ -1263,6 +1263,6 @@ mod tests {
             content_type: "text/plain".to_string(),
             ..Default::default()
         };
-        assert!(set.put_object("test", "key", b"data", opts).is_err());
+        assert!(set.put_object("test", "key", b"data", opts).await.is_err());
     }
 }

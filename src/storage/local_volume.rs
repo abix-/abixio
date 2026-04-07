@@ -503,167 +503,167 @@ mod tests {
         }
     }
 
-    #[test]
-    fn new_valid_dir() {
+    #[tokio::test]
+    async fn new_valid_dir() {
         let dir = TempDir::new().unwrap();
         assert!(LocalVolume::new(dir.path()).is_ok());
     }
 
-    #[test]
-    fn new_nonexistent_dir() {
+    #[tokio::test]
+    async fn new_nonexistent_dir() {
         let path = PathBuf::from("/tmp/abixio_does_not_exist_12345");
         assert!(LocalVolume::new(&path).is_err());
     }
 
-    #[test]
-    fn make_bucket_and_exists() {
+    #[tokio::test]
+    async fn make_bucket_and_exists() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
         assert!(!disk.bucket_exists("test"));
-        disk.make_bucket("test").unwrap();
+        disk.make_bucket("test").await.unwrap();
         assert!(disk.bucket_exists("test"));
     }
 
-    #[test]
-    fn make_bucket_twice_errors() {
+    #[tokio::test]
+    async fn make_bucket_twice_errors() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("test").unwrap();
+        disk.make_bucket("test").await.unwrap();
         assert!(matches!(
-            disk.make_bucket("test"),
+            disk.make_bucket("test").await,
             Err(StorageError::BucketExists)
         ));
     }
 
-    #[test]
-    fn bucket_exists_missing() {
+    #[tokio::test]
+    async fn bucket_exists_missing() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
         assert!(!disk.bucket_exists("nope"));
     }
 
-    #[test]
-    fn list_buckets_ignores_tmp() {
+    #[tokio::test]
+    async fn list_buckets_ignores_tmp() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("alpha").unwrap();
-        disk.make_bucket("beta").unwrap();
-        let buckets = disk.list_buckets().unwrap();
+        disk.make_bucket("alpha").await.unwrap();
+        disk.make_bucket("beta").await.unwrap();
+        let buckets = disk.list_buckets().await.unwrap();
         assert_eq!(buckets, vec!["alpha", "beta"]);
         assert!(!buckets.contains(&TMP_DIR.to_string()));
     }
 
-    #[test]
-    fn write_read_shard_round_trip() {
+    #[tokio::test]
+    async fn write_read_shard_round_trip() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("test").unwrap();
+        disk.make_bucket("test").await.unwrap();
         let meta = test_meta(0);
         let data = b"hello world";
-        disk.write_shard("test", "mykey", data, &meta).unwrap();
-        let (read_data, read_meta) = disk.read_shard("test", "mykey").unwrap();
+        disk.write_shard("test", "mykey", data, &meta).await.unwrap();
+        let (read_data, read_meta) = disk.read_shard("test", "mykey").await.unwrap();
         assert_eq!(read_data, data);
         assert_eq!(read_meta, meta);
     }
 
-    #[test]
-    fn write_shard_nested_key() {
+    #[tokio::test]
+    async fn write_shard_nested_key() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("test").unwrap();
+        disk.make_bucket("test").await.unwrap();
         let meta = test_meta(0);
-        disk.write_shard("test", "a/b/c", b"nested", &meta).unwrap();
-        let (data, _) = disk.read_shard("test", "a/b/c").unwrap();
+        disk.write_shard("test", "a/b/c", b"nested", &meta).await.unwrap();
+        let (data, _) = disk.read_shard("test", "a/b/c").await.unwrap();
         assert_eq!(data, b"nested");
     }
 
-    #[test]
-    fn write_shard_rejects_hostile_key() {
+    #[tokio::test]
+    async fn write_shard_rejects_hostile_key() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("test").unwrap();
+        disk.make_bucket("test").await.unwrap();
         let meta = test_meta(0);
 
-        let err = disk.write_shard("test", "a/../b", b"bad", &meta).unwrap_err();
+        let err = disk.write_shard("test", "a/../b", b"bad", &meta).await.unwrap_err();
         assert!(matches!(err, StorageError::InvalidObjectKey(_)));
     }
 
-    #[test]
-    fn write_versioned_shard_rejects_hostile_version_id() {
+    #[tokio::test]
+    async fn write_versioned_shard_rejects_hostile_version_id() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("test").unwrap();
+        disk.make_bucket("test").await.unwrap();
         let meta = test_meta(0);
 
         let err = disk
             .write_versioned_shard("test", "safe", "../escape", b"bad", &meta)
-            .unwrap_err();
+            .await.unwrap_err();
         assert!(matches!(err, StorageError::InvalidVersionId(_)));
     }
 
-    #[test]
-    fn read_shard_missing_returns_error() {
+    #[tokio::test]
+    async fn read_shard_missing_returns_error() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("test").unwrap();
+        disk.make_bucket("test").await.unwrap();
         assert!(matches!(
-            disk.read_shard("test", "nope"),
+            disk.read_shard("test", "nope").await,
             Err(StorageError::ObjectNotFound)
         ));
     }
 
-    #[test]
-    fn delete_object_then_read_fails() {
+    #[tokio::test]
+    async fn delete_object_then_read_fails() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("test").unwrap();
+        disk.make_bucket("test").await.unwrap();
         let meta = test_meta(0);
-        disk.write_shard("test", "key", b"data", &meta).unwrap();
-        disk.delete_object("test", "key").unwrap();
+        disk.write_shard("test", "key", b"data", &meta).await.unwrap();
+        disk.delete_object("test", "key").await.unwrap();
         assert!(matches!(
-            disk.read_shard("test", "key"),
+            disk.read_shard("test", "key").await,
             Err(StorageError::ObjectNotFound)
         ));
     }
 
-    #[test]
-    fn list_objects_returns_written_keys() {
+    #[tokio::test]
+    async fn list_objects_returns_written_keys() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("test").unwrap();
+        disk.make_bucket("test").await.unwrap();
         let meta = test_meta(0);
-        disk.write_shard("test", "aaa", b"1", &meta).unwrap();
-        disk.write_shard("test", "bbb", b"2", &meta).unwrap();
-        let keys = disk.list_objects("test", "").unwrap();
+        disk.write_shard("test", "aaa", b"1", &meta).await.unwrap();
+        disk.write_shard("test", "bbb", b"2", &meta).await.unwrap();
+        let keys = disk.list_objects("test", "").await.unwrap();
         assert_eq!(keys, vec!["aaa", "bbb"]);
     }
 
-    #[test]
-    fn list_objects_with_prefix() {
+    #[tokio::test]
+    async fn list_objects_with_prefix() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("test").unwrap();
+        disk.make_bucket("test").await.unwrap();
         let meta = test_meta(0);
-        disk.write_shard("test", "logs/a", b"1", &meta).unwrap();
-        disk.write_shard("test", "logs/b", b"2", &meta).unwrap();
-        disk.write_shard("test", "data/c", b"3", &meta).unwrap();
-        let keys = disk.list_objects("test", "logs/").unwrap();
+        disk.write_shard("test", "logs/a", b"1", &meta).await.unwrap();
+        disk.write_shard("test", "logs/b", b"2", &meta).await.unwrap();
+        disk.write_shard("test", "data/c", b"3", &meta).await.unwrap();
+        let keys = disk.list_objects("test", "logs/").await.unwrap();
         assert_eq!(keys, vec!["logs/a", "logs/b"]);
     }
 
-    #[test]
-    fn stat_object_returns_meta() {
+    #[tokio::test]
+    async fn stat_object_returns_meta() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        disk.make_bucket("test").unwrap();
+        disk.make_bucket("test").await.unwrap();
         let meta = test_meta(0);
-        disk.write_shard("test", "key", b"data", &meta).unwrap();
-        let loaded = disk.stat_object("test", "key").unwrap();
+        disk.write_shard("test", "key", b"data", &meta).await.unwrap();
+        let loaded = disk.stat_object("test", "key").await.unwrap();
         assert_eq!(loaded, meta);
     }
 
-    #[test]
-    fn info_returns_local_backend() {
+    #[tokio::test]
+    async fn info_returns_local_backend() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
         let info = disk.info();

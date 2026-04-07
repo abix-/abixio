@@ -71,8 +71,9 @@ impl ControlledBackend {
     }
 }
 
+#[async_trait::async_trait]
 impl Backend for ControlledBackend {
-    fn write_shard(
+    async fn write_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -80,37 +81,37 @@ impl Backend for ControlledBackend {
         meta: &ObjectMeta,
     ) -> Result<(), StorageError> {
         self.ensure_available()?;
-        self.inner.write_shard(bucket, key, data, meta)
+        self.inner.write_shard(bucket, key, data, meta).await
     }
 
-    fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
+    async fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
         self.ensure_available()?;
-        self.inner.read_shard(bucket, key)
+        self.inner.read_shard(bucket, key).await
     }
 
-    fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+    async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
         self.ensure_available()?;
-        self.inner.delete_object(bucket, key)
+        self.inner.delete_object(bucket, key).await
     }
 
-    fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError> {
+    async fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError> {
         self.ensure_available()?;
-        self.inner.list_objects(bucket, prefix)
+        self.inner.list_objects(bucket, prefix).await
     }
 
-    fn list_buckets(&self) -> Result<Vec<String>, StorageError> {
+    async fn list_buckets(&self) -> Result<Vec<String>, StorageError> {
         self.ensure_available()?;
-        self.inner.list_buckets()
+        self.inner.list_buckets().await
     }
 
-    fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+    async fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
         self.ensure_available()?;
-        self.inner.make_bucket(bucket)
+        self.inner.make_bucket(bucket).await
     }
 
-    fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
+    async fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError> {
         self.ensure_available()?;
-        self.inner.delete_bucket(bucket)
+        self.inner.delete_bucket(bucket).await
     }
 
     fn bucket_exists(&self, bucket: &str) -> bool {
@@ -125,32 +126,32 @@ impl Backend for ControlledBackend {
         }
     }
 
-    fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
+    async fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
         self.ensure_available()?;
-        self.inner.stat_object(bucket, key)
+        self.inner.stat_object(bucket, key).await
     }
 
-    fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError> {
+    async fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError> {
         self.ensure_available()?;
-        self.inner.update_meta(bucket, key, meta)
+        self.inner.update_meta(bucket, key, meta).await
     }
 
-    fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError> {
+    async fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError> {
         self.ensure_available()?;
-        self.inner.read_meta_versions(bucket, key)
+        self.inner.read_meta_versions(bucket, key).await
     }
 
-    fn write_meta_versions(
+    async fn write_meta_versions(
         &self,
         bucket: &str,
         key: &str,
         versions: &[ObjectMeta],
     ) -> Result<(), StorageError> {
         self.ensure_available()?;
-        self.inner.write_meta_versions(bucket, key, versions)
+        self.inner.write_meta_versions(bucket, key, versions).await
     }
 
-    fn write_versioned_shard(
+    async fn write_versioned_shard(
         &self,
         bucket: &str,
         key: &str,
@@ -159,44 +160,44 @@ impl Backend for ControlledBackend {
         meta: &ObjectMeta,
     ) -> Result<(), StorageError> {
         self.ensure_available()?;
-        self.inner.write_versioned_shard(bucket, key, version_id, data, meta)
+        self.inner.write_versioned_shard(bucket, key, version_id, data, meta).await
     }
 
-    fn read_versioned_shard(
+    async fn read_versioned_shard(
         &self,
         bucket: &str,
         key: &str,
         version_id: &str,
     ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
         self.ensure_available()?;
-        self.inner.read_versioned_shard(bucket, key, version_id)
+        self.inner.read_versioned_shard(bucket, key, version_id).await
     }
 
-    fn delete_version_data(
+    async fn delete_version_data(
         &self,
         bucket: &str,
         key: &str,
         version_id: &str,
     ) -> Result<(), StorageError> {
         self.ensure_available()?;
-        self.inner.delete_version_data(bucket, key, version_id)
+        self.inner.delete_version_data(bucket, key, version_id).await
     }
 
-    fn read_bucket_settings(&self, bucket: &str) -> BucketSettings {
+    async fn read_bucket_settings(&self, bucket: &str) -> BucketSettings {
         if self.available() {
-            self.inner.read_bucket_settings(bucket)
+            self.inner.read_bucket_settings(bucket).await
         } else {
             BucketSettings::default()
         }
     }
 
-    fn write_bucket_settings(
+    async fn write_bucket_settings(
         &self,
         bucket: &str,
         settings: &BucketSettings,
     ) -> Result<(), StorageError> {
         self.ensure_available()?;
-        self.inner.write_bucket_settings(bucket, settings)
+        self.inner.write_bucket_settings(bucket, settings).await
     }
 
     fn info(&self) -> BackendInfo {

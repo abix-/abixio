@@ -715,7 +715,7 @@ impl S3Handler {
                         parts: Vec::new(),
                     },
                 );
-                let _ = disk.write_meta_versions(bucket, key, &versions);
+                let _ = disk.write_meta_versions(bucket, key, &versions).await;
             }
             let mut resp = empty_response(StatusCode::NO_CONTENT);
             resp.headers_mut()

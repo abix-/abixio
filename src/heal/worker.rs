@@ -359,31 +359,31 @@ mod tests {
         VolumePool::new(make_backends(paths)).unwrap()
     }
 
-    fn put_test_object(set: &VolumePool, bucket: &str, key: &str, payload: &[u8]) {
-        set.make_bucket(bucket).unwrap();
+    async fn put_test_object(set: &VolumePool, bucket: &str, key: &str, payload: &[u8]) {
+        set.make_bucket(bucket).await.unwrap();
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
             ..Default::default()
         };
-        set.put_object(bucket, key, payload, opts).unwrap();
+        set.put_object(bucket, key, payload, opts).await.unwrap();
     }
 
-    #[test]
-    fn heal_healthy_object_returns_healthy() {
+    #[tokio::test]
+    async fn heal_healthy_object_returns_healthy() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        put_test_object(&set, "test", "key", b"heal test data");
+        put_test_object(&set, "test", "key", b"heal test data").await;
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, "test", "key").unwrap();
+        let result = heal_object(&disks, "test", "key").await.unwrap();
         assert!(matches!(result, HealResult::Healthy));
     }
 
-    #[test]
-    fn heal_missing_shard_repairs() {
+    #[tokio::test]
+    async fn heal_missing_shard_repairs() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        put_test_object(&set, "test", "key", b"heal missing shard");
+        put_test_object(&set, "test", "key", b"heal missing shard").await;
 
         // delete shard from one disk
         let obj_dir = paths[0].join("test").join("key");
@@ -392,19 +392,19 @@ mod tests {
         }
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, "test", "key").unwrap();
+        let result = heal_object(&disks, "test", "key").await.unwrap();
         assert!(matches!(result, HealResult::Repaired { shards_fixed } if shards_fixed >= 1));
 
         // verify the object is now fully readable
-        let (data, _) = set.get_object("test", "key").unwrap();
+        let (data, _) = set.get_object("test", "key").await.unwrap();
         assert_eq!(data, b"heal missing shard");
     }
 
-    #[test]
-    fn heal_corrupt_shard_repairs() {
+    #[tokio::test]
+    async fn heal_corrupt_shard_repairs() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        put_test_object(&set, "test", "key", b"heal corrupt shard");
+        put_test_object(&set, "test", "key", b"heal corrupt shard").await;
 
         // corrupt shard.dat on disk 0
         let shard_path = paths[0].join("test").join("key").join("shard.dat");
@@ -413,19 +413,19 @@ mod tests {
         }
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, "test", "key").unwrap();
+        let result = heal_object(&disks, "test", "key").await.unwrap();
         assert!(matches!(result, HealResult::Repaired { shards_fixed } if shards_fixed >= 1));
 
         // verify data integrity after heal
-        let (data, _) = set.get_object("test", "key").unwrap();
+        let (data, _) = set.get_object("test", "key").await.unwrap();
         assert_eq!(data, b"heal corrupt shard");
     }
 
-    #[test]
-    fn heal_too_many_missing_is_unrecoverable() {
+    #[tokio::test]
+    async fn heal_too_many_missing_is_unrecoverable() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        put_test_object(&set, "test", "key", b"unrecoverable");
+        put_test_object(&set, "test", "key", b"unrecoverable").await;
 
         // delete 3 of 4 disk shards (parity=2, so max tolerable is 2)
         for i in 0..3 {
@@ -436,7 +436,7 @@ mod tests {
         }
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, "test", "key");
+        let result = heal_object(&disks, "test", "key").await;
         // either Unrecoverable or ReadQuorum error -- both mean "can't heal"
         match result {
             Ok(HealResult::Unrecoverable) => {}
@@ -445,19 +445,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn heal_missing_two_shards_repairs() {
+    #[tokio::test]
+    async fn heal_missing_two_shards_repairs() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        put_test_object(&set, "test", "key", b"two missing shards");
+        put_test_object(&set, "test", "key", b"two missing shards").await;
         // upgrade bucket to FTT=2 (2+2) so we can test 2-disk failure
-        set.set_ftt("test", 2).unwrap();
+        set.set_ftt("test", 2).await.unwrap();
         // rewrite with FTT=2
         set.put_object("test", "key", b"two missing shards", PutOptions {
             content_type: "text/plain".to_string(),
             ec_ftt: Some(2),
             ..Default::default()
-        }).unwrap();
+        }).await.unwrap();
 
         // delete 2 of 4 disk shards (exactly at parity limit)
         for i in 0..2 {
@@ -468,32 +468,32 @@ mod tests {
         }
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, "test", "key").unwrap();
+        let result = heal_object(&disks, "test", "key").await.unwrap();
         assert!(matches!(result, HealResult::Repaired { shards_fixed } if shards_fixed == 2));
 
         // verify full integrity
-        let (data, _) = set.get_object("test", "key").unwrap();
+        let (data, _) = set.get_object("test", "key").await.unwrap();
         assert_eq!(data, b"two missing shards");
     }
 
-    #[test]
-    fn heal_nonexistent_object_returns_not_found() {
+    #[tokio::test]
+    async fn heal_nonexistent_object_returns_not_found() {
         let (_base, paths) = make_disk_dirs(4);
         let _set = make_set(&paths);
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, "test", "nope");
+        let result = heal_object(&disks, "test", "nope").await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn object_needs_healing_detects_missing_shard() {
+    #[tokio::test]
+    async fn object_needs_healing_detects_missing_shard() {
         let (_base, paths) = make_disk_dirs(4);
         let set = make_set(&paths);
-        put_test_object(&set, "test", "key", b"check healing");
+        put_test_object(&set, "test", "key", b"check healing").await;
 
         let disks = make_backends(&paths);
-        assert!(!object_needs_healing(&disks, "test", "key"));
+        assert!(!object_needs_healing(&disks, "test", "key").await);
 
         // delete one shard
         let obj_dir = paths[0].join("test").join("key");
@@ -501,17 +501,17 @@ mod tests {
             std::fs::remove_dir_all(&obj_dir).unwrap();
         }
 
-        assert!(object_needs_healing(&disks, "test", "key"));
+        assert!(object_needs_healing(&disks, "test", "key").await);
     }
 
-    #[test]
-    fn heal_single_disk_no_parity() {
+    #[tokio::test]
+    async fn heal_single_disk_no_parity() {
         let (_base, paths) = make_disk_dirs(1);
         let set = make_set(&paths);
-        put_test_object(&set, "test", "key", b"no parity");
+        put_test_object(&set, "test", "key", b"no parity").await;
 
         let disks = make_backends(&paths);
-        let result = heal_object(&disks, "test", "key").unwrap();
+        let result = heal_object(&disks, "test", "key").await.unwrap();
         assert!(matches!(result, HealResult::Healthy));
     }
 }

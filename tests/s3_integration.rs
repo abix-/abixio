@@ -3678,7 +3678,7 @@ async fn windows_forbidden_chars_rejected_at_storage_layer() {
     let dir = tempfile::TempDir::new().unwrap();
     let vol = abixio::storage::local_volume::LocalVolume::new(dir.path()).unwrap();
     use abixio::storage::Backend;
-    vol.make_bucket("tb").unwrap();
+    vol.make_bucket("tb").await.unwrap();
 
     for ch in &[':', '*', '?', '"', '|', '<', '>', '\\'] {
         let key = format!("file{}name", ch);
@@ -3700,7 +3700,7 @@ async fn windows_forbidden_chars_rejected_at_storage_layer() {
             is_delete_marker: false,
             parts: Vec::new(),
         };
-        let result = vol.write_shard("tb", &key, b"data", &meta);
+        let result = vol.write_shard("tb", &key, b"data", &meta).await;
         assert!(
             result.is_err(),
             "key with '{}' should be rejected at storage layer",
