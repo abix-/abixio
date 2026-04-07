@@ -39,30 +39,34 @@ This is how we validate optimizations -- change one layer, measure its impact
 without touching the rest of the stack.
 
 ```
-Layer  What it measures                              10MB         1GB
------  -------------------------------------------  -----------  -----------
-L1     blake3 hash (shard integrity)                 4418 MB/s    4247 MB/s
-L1     MD5 hash (S3 ETag)                             702 MB/s     688 MB/s
-L2     RS encode 3+1 (reed-solomon, SIMD)            2627 MB/s    2744 MB/s
-L3     tokio::fs::write (disk ceiling)               1373 MB/s    1018 MB/s
-L3     tokio::fs::read                               2236 MB/s    2762 MB/s
-L4     VolumePool put_stream (1 disk, integrated)     424 MB/s     478 MB/s
-L4     VolumePool get (1 disk, integrated)           1191 MB/s    1224 MB/s
-L4     VolumePool put_stream (4 disk, 3+1 EC)         366 MB/s     402 MB/s
-L4     VolumePool get (4 disk, 3+1 EC)                838 MB/s     921 MB/s
+Layer  What it measures                              4KB          10MB         1GB
+-----  -------------------------------------------  -----------  -----------  -----------
+L1     blake3 hash (shard integrity)                 1604 MB/s    4303 MB/s    4286 MB/s
+L1     MD5 hash (S3 ETag)                             449 MB/s     703 MB/s     700 MB/s
+L2     RS encode 3+1 (reed-solomon, SIMD)            2955 MB/s    2762 MB/s    2825 MB/s
+L3     tokio::fs::write (disk ceiling)                 13 MB/s    1625 MB/s    1056 MB/s
+L3     tokio::fs::read                                 46 MB/s    2703 MB/s    2902 MB/s
+L4     VolumePool put_stream (1 disk)                   4 MB/s     439 MB/s     493 MB/s
+L4     VolumePool get (1 disk)                          8 MB/s    1178 MB/s    1256 MB/s
+L4     VolumePool put_stream (4 disk, 3+1 EC)           2 MB/s     367 MB/s     416 MB/s
+L4     VolumePool get (4 disk, 3+1 EC)                  1 MB/s     902 MB/s     917 MB/s
+L5     HTTP transport (hyper, no S3)                   32 MB/s     762 MB/s     800 MB/s
+L6     S3 protocol + storage (s3s, no SigV4)            3 MB/s     230 MB/s     305 MB/s
+L6     S3 GET + storage                                 6 MB/s     365 MB/s     452 MB/s
 ```
 
 **What each layer tells you:**
 
-- **L1** -- MD5 is 6.3x slower than blake3. If we could drop MD5 from the hot
-  path, hashing overhead nearly disappears. (MD5 is computed inline during
-  the stream, so it overlaps with I/O for large objects.)
-- **L2** -- RS encode at 2627 MB/s is not a bottleneck. SIMD-accel is enabled.
-- **L3** -- Disk write at 1373 MB/s is the ceiling. L4 at 424 MB/s = 3.2x
-  overhead from hashing + RS + metadata writes.
-- **L4** -- The integrated storage path. This is where ShardWriter trait
-  dispatch, buffer management, and parallel writes show up. 4-disk EC adds
-  ~15% overhead vs 1-disk at 10MB (extra RS encode + 4x shard I/O on same drive).
+- **L1** -- MD5 is 6.1x slower than blake3. Both are computed inline during
+  the stream, so their cost overlaps with I/O for large objects.
+- **L2** -- RS encode at 2762 MB/s is not a bottleneck. SIMD-accel is enabled.
+- **L3** -- Disk write is the ceiling. 4KB is slow (filesystem metadata overhead).
+- **L4** -- The integrated storage path. L4 at 439 MB/s vs L3 at 1625 MB/s
+  = 3.7x overhead from hashing + RS + metadata writes at 10MB.
+- **L5** -- Raw HTTP transport does 762 MB/s PUT at 10MB. HTTP itself is fast.
+- **L6** -- s3s protocol + storage = 230 MB/s PUT at 10MB. The gap between
+  L4 (439) and L6 (230) is s3s body collection and dispatch overhead.
+  At 1GB, L6 (305) vs L4 (493) = s3s adds 38% overhead.
 
 ## Reproducing these benchmarks
 
@@ -85,12 +89,13 @@ ABIXIO_BIN=./target/release/abixio RUSTFS_BIN=./rustfs.exe MINIO_BIN=./minio.exe
     bash tests/compare_bench.sh
 ```
 
-### Per-layer benchmark (storage internals)
+### Per-layer benchmark (L1-L6)
 
-No external binaries needed. Saves JSON to `bench-results/` for A/B comparison.
+No external binaries needed. Tests all 6 layers at 4KB, 10MB, 1GB.
+Saves JSON to `bench-results/` for A/B comparison. ~5 minutes total.
 
 ```bash
-# run all layers at all sizes (~3 minutes)
+# run all layers at all sizes
 cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
 
 # compare against a baseline after making a change
@@ -105,6 +110,9 @@ BENCH_LAYERS=L1,L2 \
 BENCH_SIZES=10485760 \
     cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
 ```
+
+Layers: L1 (hashing), L2 (RS encode), L3 (disk I/O), L4 (storage pipeline),
+L5 (HTTP transport), L6 (S3 protocol + storage).
 
 The comparison output flags regressions (>5% slower) and improvements (>5% faster)
 per layer, per size, so you can see exactly what a change affected.

@@ -509,7 +509,7 @@ async fn bench_perf() {
     let layers: Vec<String> = std::env::var("BENCH_LAYERS")
         .ok()
         .map(|s| s.split(',').map(|v| v.trim().to_uppercase()).collect())
-        .unwrap_or_else(|| vec!["L1".into(), "L2".into(), "L3".into(), "L4".into()]);
+        .unwrap_or_else(|| vec!["L1".into(), "L2".into(), "L3".into(), "L4".into(), "L5".into(), "L6".into()]);
 
     let mut results: Vec<BenchResult> = Vec::new();
     let tmp = TempDir::new().unwrap();
@@ -645,6 +645,179 @@ async fn bench_perf() {
                 let r = measure("L4", "get", disk_count, size, iters, &mut timings);
                 emit(&r); results.push(r);
             }
+        }
+        eprintln!();
+    }
+
+    // ---- L5: HTTP transport (hyper only, no S3, no storage) ----
+    if layers.contains(&"L5".to_string()) {
+        eprintln!("--- L5: HTTP transport ---");
+
+        // PUT server: reads body, returns 200
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let put_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = hyper_util::rt::TokioIo::new(stream);
+                tokio::spawn(async move {
+                    let svc = hyper::service::service_fn(|req: hyper::Request<hyper::body::Incoming>| async move {
+                        use http_body_util::BodyExt;
+                        let _ = req.into_body().collect().await;
+                        Ok::<_, hyper::Error>(hyper::Response::new(
+                            http_body_util::Full::new(hyper::body::Bytes::from("ok")),
+                        ))
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new().serve_connection(io, svc).await;
+                });
+            }
+        });
+
+        let client = reqwest::Client::new();
+
+        for &size in &sizes {
+            let data = vec![0x42u8; size];
+            let iters = iters_for_size(size, base_iters);
+
+            // warmup
+            for _ in 0..3 {
+                client.put(&format!("http://{}/test", put_addr)).body(data.clone()).send().await.unwrap();
+            }
+
+            let mut timings = Vec::new();
+            for _ in 0..iters {
+                let t = Instant::now();
+                client.put(&format!("http://{}/test", put_addr)).body(data.clone()).send().await.unwrap();
+                timings.push(t.elapsed());
+            }
+            let r = measure("L5", "http_put", 0, size, iters, &mut timings);
+            emit(&r); results.push(r);
+
+            // GET: start a size-specific response server
+            let response_bytes = bytes::Bytes::from(data.clone());
+            let get_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let get_addr = get_listener.local_addr().unwrap();
+            let rb = response_bytes.clone();
+            tokio::spawn(async move {
+                loop {
+                    let (stream, _) = get_listener.accept().await.unwrap();
+                    let io = hyper_util::rt::TokioIo::new(stream);
+                    let body = rb.clone();
+                    tokio::spawn(async move {
+                        let svc = hyper::service::service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                            let body = body.clone();
+                            async move {
+                                Ok::<_, hyper::Error>(hyper::Response::new(
+                                    http_body_util::Full::new(body),
+                                ))
+                            }
+                        });
+                        let _ = hyper::server::conn::http1::Builder::new().serve_connection(io, svc).await;
+                    });
+                }
+            });
+
+            // warmup
+            for _ in 0..3 {
+                let resp = client.get(&format!("http://{}/test", get_addr)).send().await.unwrap();
+                let _ = resp.bytes().await.unwrap();
+            }
+
+            let mut timings = Vec::new();
+            for _ in 0..iters {
+                let t = Instant::now();
+                let resp = client.get(&format!("http://{}/test", get_addr)).send().await.unwrap();
+                let _ = resp.bytes().await.unwrap();
+                timings.push(t.elapsed());
+            }
+            let r = measure("L5", "http_get", 0, size, iters, &mut timings);
+            emit(&r); results.push(r);
+        }
+        eprintln!();
+    }
+
+    // ---- L6: S3 protocol (s3s + storage, no SigV4, raw reqwest) ----
+    if layers.contains(&"L6".to_string()) {
+        eprintln!("--- L6: S3 protocol ---");
+
+        let (_base, paths) = setup(1);
+        let pool = Arc::new(make_pool(&paths));
+        pool.make_bucket("bench").await.unwrap();
+
+        let cluster = Arc::new(
+            ClusterManager::new(ClusterConfig {
+                node_id: "test".to_string(),
+                advertise_s3: "http://127.0.0.1:0".to_string(),
+                advertise_cluster: "http://127.0.0.1:0".to_string(),
+                nodes: Vec::new(),
+                access_key: String::new(),
+                secret_key: String::new(),
+                no_auth: true,
+                disk_paths: paths.clone(),
+            })
+            .unwrap(),
+        );
+
+        let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&pool), Arc::clone(&cluster));
+        let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+        builder.set_validation(abixio::s3_service::RelaxedNameValidation);
+        let s3_service = builder.build();
+        let dispatch = Arc::new(AbixioDispatch::new(s3_service, None, None));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dispatch_clone = dispatch.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = hyper_util::rt::TokioIo::new(stream);
+                let d = dispatch_clone.clone();
+                tokio::spawn(async move {
+                    let svc = hyper::service::service_fn(move |req| {
+                        let d = d.clone();
+                        async move { Ok::<_, hyper::Error>(d.dispatch(req).await) }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new().serve_connection(io, svc).await;
+                });
+            }
+        });
+
+        let client = reqwest::Client::new();
+
+        for &size in &sizes {
+            let data = vec![0x42u8; size];
+            let iters = iters_for_size(size, base_iters);
+            let label = human(size);
+
+            // warmup
+            for i in 0..3 {
+                let url = format!("http://{}/bench/l6w_{}", addr, i);
+                client.put(&url).body(data.clone()).send().await.unwrap();
+            }
+
+            // PUT through s3s (no SigV4)
+            let mut timings = Vec::new();
+            for i in 0..iters {
+                let url = format!("http://{}/bench/l6_{}_{}", addr, label, i);
+                let t = Instant::now();
+                let resp = client.put(&url).body(data.clone()).send().await.unwrap();
+                assert!(resp.status().is_success(), "PUT failed: {}", resp.status());
+                timings.push(t.elapsed());
+            }
+            let r = measure("L6", "s3s_put", 1, size, iters, &mut timings);
+            emit(&r); results.push(r);
+
+            // GET through s3s
+            let mut timings = Vec::new();
+            for i in 0..iters {
+                let url = format!("http://{}/bench/l6_{}_{}", addr, label, i);
+                let t = Instant::now();
+                let resp = client.get(&url).send().await.unwrap();
+                let _ = resp.bytes().await.unwrap();
+                timings.push(t.elapsed());
+            }
+            let r = measure("L6", "s3s_get", 1, size, iters, &mut timings);
+            emit(&r); results.push(r);
         }
         eprintln!();
     }
