@@ -85,6 +85,16 @@ impl ControlledBackend {
 
 #[async_trait::async_trait]
 impl Backend for ControlledBackend {
+    async fn open_shard_writer(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+    ) -> Result<Box<dyn abixio::storage::ShardWriter>, StorageError> {
+        self.ensure_available()?;
+        self.inner.open_shard_writer(bucket, key, version_id).await
+    }
+
     async fn write_shard(
         &self,
         bucket: &str,

@@ -19,10 +19,29 @@ use metadata::{
     VersioningConfig,
 };
 
+/// Streaming shard writer. Backends return this from open_shard_writer.
+/// Write chunks of encoded shard data, then finalize with metadata.
+#[async_trait::async_trait]
+pub trait ShardWriter: Send {
+    /// Write a chunk of shard data. Called once per stream block.
+    async fn write_chunk(&mut self, data: &[u8]) -> Result<(), StorageError>;
+    /// Flush data and write metadata. Consumes the writer.
+    async fn finalize(self: Box<Self>, meta: &ObjectMeta) -> Result<(), StorageError>;
+}
+
 /// Backend is the per-disk storage interface. Each erasure "disk" implements
 /// this -- whether it is a local directory, a cloud drive, or anything else.
 #[async_trait::async_trait]
 pub trait Backend: Send + Sync {
+    /// Open a streaming shard writer. For local volumes this opens a file;
+    /// for remote volumes this buffers data for a single HTTP POST on finalize.
+    async fn open_shard_writer(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+    ) -> Result<Box<dyn ShardWriter>, StorageError>;
+
     async fn write_shard(
         &self,
         bucket: &str,

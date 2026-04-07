@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use super::Backend;
 use super::erasure_decode::{read_and_decode, read_and_decode_multipart, read_and_decode_versioned};
-use super::erasure_encode::{encode_and_write_stream, encode_and_write_versioned, encode_and_write_with_mrf};
+use super::erasure_encode::{encode_and_write, encode_and_write_bytes};
 use super::metadata::{
     BucketInfo, BucketSettings, ErasureMeta, ListOptions, ListResult, ObjectInfo, ObjectMeta,
     PutOptions, VersioningConfig,
@@ -189,7 +189,7 @@ impl VolumePool {
         }
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
         let planner = self.placement_planner()?;
-        encode_and_write_stream(
+        encode_and_write(
             &self.disks,
             &planner,
             data_n,
@@ -199,6 +199,7 @@ impl VolumePool {
             body,
             opts,
             self.mrf.as_ref(),
+            None,
         )
         .await
     }
@@ -213,24 +214,14 @@ impl Store for VolumePool {
         data: &[u8],
         opts: PutOptions,
     ) -> Result<ObjectInfo, StorageError> {
-        let t0 = std::time::Instant::now();
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
-        let t_head = t0.elapsed();
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
-        let t_ec = t0.elapsed();
         let planner = self.placement_planner()?;
-        if data.len() >= 1024 * 1024 {
-            tracing::info!(
-                head_ms = t_head.as_secs_f64() * 1000.0,
-                resolve_ec_ms = (t_ec - t_head).as_secs_f64() * 1000.0,
-                "put_object preamble"
-            );
-        }
-        encode_and_write_with_mrf(
+        encode_and_write_bytes(
             &self.disks,
             &planner,
             data_n,
@@ -240,6 +231,7 @@ impl Store for VolumePool {
             data,
             opts,
             self.mrf.as_ref(),
+            None,
         ).await
     }
 
@@ -519,7 +511,7 @@ impl Store for VolumePool {
         }
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
         let planner = self.placement_planner()?;
-        encode_and_write_versioned(
+        encode_and_write_bytes(
             &self.disks,
             &planner,
             data_n,
@@ -529,7 +521,7 @@ impl Store for VolumePool {
             data,
             opts,
             self.mrf.as_ref(),
-            version_id,
+            Some(version_id),
         ).await
     }
 

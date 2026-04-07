@@ -1,10 +1,12 @@
 use std::path::{Path, PathBuf};
 
+use tokio::io::AsyncWriteExt;
+
 use super::metadata::{
     BucketSettings, ObjectMeta, ObjectMetaFile, read_meta_file, write_meta_file,
 };
 use super::pathing;
-use super::{Backend, BackendInfo, StorageError};
+use super::{Backend, BackendInfo, ShardWriter, StorageError};
 
 pub struct LocalVolume {
     root: PathBuf,
@@ -124,8 +126,82 @@ impl LocalVolume {
     }
 }
 
+/// Streaming shard writer for local disk. Opens a file on creation,
+/// appends chunks, writes meta on finalize.
+pub struct LocalShardWriter {
+    file: tokio::fs::File,
+    root: PathBuf,
+    bucket: String,
+    key: String,
+    version_id: Option<String>,
+}
+
+#[async_trait::async_trait]
+impl ShardWriter for LocalShardWriter {
+    async fn write_chunk(&mut self, data: &[u8]) -> Result<(), StorageError> {
+        self.file.write_all(data).await?;
+        Ok(())
+    }
+
+    async fn finalize(mut self: Box<Self>, meta: &ObjectMeta) -> Result<(), StorageError> {
+        self.file.flush().await?;
+        drop(self.file);
+
+        if let Some(ref vid) = self.version_id {
+            // versioned: update meta.json adding new version at front
+            let meta_path = pathing::object_meta_path(&self.root, &self.bucket, &self.key)?;
+            let mut mf = read_meta_file(&meta_path).await.unwrap_or(ObjectMetaFile {
+                versions: Vec::new(),
+            });
+            for v in &mut mf.versions {
+                v.is_latest = false;
+            }
+            let mut version = meta.clone();
+            version.is_latest = true;
+            version.version_id = vid.clone();
+            mf.versions.insert(0, version);
+            write_meta_file(&meta_path, &mf).await.map_err(StorageError::Io)?;
+        } else {
+            // unversioned: single version entry
+            let mut version = meta.clone();
+            version.is_latest = true;
+            let mf = ObjectMetaFile {
+                versions: vec![version],
+            };
+            let meta_path = pathing::object_meta_path(&self.root, &self.bucket, &self.key)?;
+            write_meta_file(&meta_path, &mf).await.map_err(StorageError::Io)?;
+        }
+        Ok(())
+    }
+}
+
 #[async_trait::async_trait]
 impl Backend for LocalVolume {
+    async fn open_shard_writer(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+    ) -> Result<Box<dyn ShardWriter>, StorageError> {
+        let shard_path = if let Some(vid) = version_id {
+            let ver_dir = pathing::version_dir(&self.root, bucket, key, vid)?;
+            tokio::fs::create_dir_all(&ver_dir).await?;
+            pathing::version_shard_path(&self.root, bucket, key, vid)?
+        } else {
+            let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
+            tokio::fs::create_dir_all(&obj_dir).await?;
+            pathing::object_shard_path(&self.root, bucket, key)?
+        };
+        let file = tokio::fs::File::create(&shard_path).await?;
+        Ok(Box::new(LocalShardWriter {
+            file,
+            root: self.root.clone(),
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            version_id: version_id.map(|s| s.to_string()),
+        }))
+    }
+
     async fn write_shard(
         &self,
         bucket: &str,

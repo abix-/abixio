@@ -1,5 +1,5 @@
 use super::metadata::{BucketSettings, ObjectMeta};
-use super::{Backend, BackendInfo, StorageError};
+use super::{Backend, BackendInfo, ShardWriter, StorageError};
 use super::internode_auth;
 
 pub struct RemoteVolume {
@@ -82,8 +82,100 @@ impl RemoteVolume {
     }
 }
 
+/// Buffering shard writer for remote volumes. Collects chunks in memory,
+/// POSTs the full shard + meta on finalize.
+struct RemoteShardWriter {
+    buf: Vec<u8>,
+    endpoint: String,
+    volume_path: String,
+    client: reqwest::Client,
+    access_key: String,
+    secret_key: String,
+    no_auth: bool,
+    bucket: String,
+    key: String,
+    version_id: Option<String>,
+}
+
+impl RemoteShardWriter {
+    fn post(&self, path: &str) -> reqwest::RequestBuilder {
+        let url = format!("{}/_storage/v1{}", self.endpoint, path);
+        let rb = self.client.post(&url)
+            .header("x-abixio-volume-path", &self.volume_path);
+        if !self.no_auth {
+            if let Ok(token) = internode_auth::sign_token(&self.access_key, &self.secret_key) {
+                return rb.bearer_auth(token);
+            }
+        }
+        rb
+    }
+}
+
+#[async_trait::async_trait]
+impl ShardWriter for RemoteShardWriter {
+    async fn write_chunk(&mut self, data: &[u8]) -> Result<(), StorageError> {
+        self.buf.extend_from_slice(data);
+        Ok(())
+    }
+
+    async fn finalize(self: Box<Self>, meta: &ObjectMeta) -> Result<(), StorageError> {
+        let meta_json = serde_json::to_string(meta)
+            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        let (path, query) = if let Some(ref vid) = self.version_id {
+            ("/write-versioned-shard", vec![
+                ("bucket", self.bucket.as_str()),
+                ("key", self.key.as_str()),
+                ("version_id", vid.as_str()),
+                ("meta", &meta_json),
+            ])
+        } else {
+            ("/write-shard", vec![
+                ("bucket", self.bucket.as_str()),
+                ("key", self.key.as_str()),
+                ("meta", &meta_json),
+                ("_unused", ""),  // keep vec same length for type inference
+            ])
+        };
+        let resp = self.post(path)
+            .query(&query)
+            .body(self.buf)
+            .send().await
+            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        if resp.status().is_success() {
+            Ok(())
+        } else {
+            let status = resp.status().as_u16();
+            let body = resp.text().await.unwrap_or_default();
+            Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("remote write-shard {}: {}", status, body),
+            )))
+        }
+    }
+}
+
 #[async_trait::async_trait]
 impl Backend for RemoteVolume {
+    async fn open_shard_writer(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+    ) -> Result<Box<dyn ShardWriter>, StorageError> {
+        Ok(Box::new(RemoteShardWriter {
+            buf: Vec::new(),
+            endpoint: self.endpoint.clone(),
+            volume_path: self.volume_path.clone(),
+            client: self.client.clone(),
+            access_key: self.access_key.clone(),
+            secret_key: self.secret_key.clone(),
+            no_auth: self.no_auth,
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            version_id: version_id.map(|s| s.to_string()),
+        }))
+    }
+
     async fn write_shard(
         &self,
         bucket: &str,
