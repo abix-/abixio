@@ -104,15 +104,17 @@ where
         None
     };
 
-    // open shard writers via Backend trait
-    let mut writers: Vec<Box<dyn ShardWriter>> = Vec::with_capacity(total);
-    for shard_idx in 0..total {
-        let disk_idx = distribution[shard_idx];
-        let writer = disks[disk_idx]
-            .open_shard_writer(bucket, key, version_id)
-            .await?;
-        writers.push(writer);
-    }
+    // open shard writers in parallel via Backend trait
+    let open_futs: Vec<_> = (0..total)
+        .map(|shard_idx| {
+            let disk_idx = distribution[shard_idx];
+            disks[disk_idx].open_shard_writer(bucket, key, version_id)
+        })
+        .collect();
+    let mut writers: Vec<Box<dyn ShardWriter>> = futures::future::join_all(open_futs)
+        .await
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
 
     // running hashers: MD5 for etag (inline), blake3 per shard (inline)
     let mut md5_hasher = Md5::new();
@@ -266,7 +268,7 @@ pub async fn encode_and_write_bytes(
     encode_and_write(disks, planner, data_n, parity_n, bucket, key, stream, opts, mrf, version_id).await
 }
 
-/// Write one RS-encoded block to all shard writers in parallel.
+/// Write one RS-encoded block to all shard writers.
 async fn write_block(
     block: &[u8],
     data_n: usize,
@@ -285,17 +287,8 @@ async fn write_block(
             .map_err(|e| StorageError::InvalidConfig(format!("reed-solomon encode: {}", e)))?;
     }
 
-    // update running blake3 hashes
     for (i, shard_data) in shards.iter().enumerate() {
         shard_hashers[i].update(shard_data);
-    }
-
-    // write all shard chunks in parallel
-    // NOTE: we can't borrow multiple &mut writers simultaneously with join_all,
-    // so we write sequentially. For local disk this is fine since tokio::fs
-    // dispatches to a thread pool anyway. For true parallelism across backends,
-    // a channel-based approach would be needed.
-    for (i, shard_data) in shards.iter().enumerate() {
         writers[i].write_chunk(shard_data).await?;
     }
 

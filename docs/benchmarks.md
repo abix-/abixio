@@ -113,15 +113,29 @@ RustFS 1.0.0-alpha.90, MinIO RELEASE.2026-04-07 (archived).
 | LIST (100 objects) | 63ms | 63ms | 63ms |
 | DELETE | 64ms | 66ms | 66ms |
 
+### Storage layer throughput (no HTTP, VolumePool direct)
+
+Single-node, tmpdir, 10 iterations, page-cache writes.
+
+| Op | Disks | 1MB | 10MB | 100MB | 1GB |
+|---|---|---|---|---|---|
+| put_stream | 1 | 248 MB/s | 436 MB/s | 480 MB/s | 468 MB/s |
+| get | 1 | 715 MB/s | 1164 MB/s | 1143 MB/s | 790 MB/s |
+| put_stream | 4 | 197 MB/s | 377 MB/s | 435 MB/s | 382 MB/s |
+| get | 4 | 90 MB/s | 736 MB/s | 933 MB/s | 564 MB/s |
+
+The storage layer does 468 MB/s PUT at 1GB -- HTTP/s3s/mc overhead accounts
+for the gap between these numbers and the mc-based competitive benchmark.
+
 ### Notes
 
-- AbixIO dominates at 10MB: **1.9x faster PUT than RustFS, 1.7x faster than MinIO**
-- At 1GB, AbixIO is slowest: sequential shard writes within blocks (no parallel
-  write_chunk across backends yet). RustFS and MinIO parallelize shard I/O
+- AbixIO dominates at 10MB via mc: **1.9x faster PUT than RustFS, 1.7x faster than MinIO**
+- At 1GB via mc, AbixIO (353 MB/s) trails RustFS (464) and MinIO (537) due to HTTP overhead
+- Storage layer at 1GB (468 MB/s) is competitive with RustFS's mc throughput
 - Metadata operations (HEAD, LIST, DELETE) are within noise across all three
 - All numbers are page-cache writes (no fsync). Real disk throughput is lower
-- Benchmark verifies round-trip: PUT then GET, size check before timing
-- 1KB throughput dominated by `mc` process startup (~65ms per call)
+- mc benchmark verifies round-trip: PUT then GET, size check before timing
+- Internal bench (`bench_perf`) saves JSON to bench-results/ for A/B comparison
 
 ## Running benchmarks
 

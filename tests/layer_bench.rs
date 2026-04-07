@@ -411,3 +411,212 @@ async fn bench_layer_5_full_client() {
     eprintln!("  (run abixio-ui/tests/bench.rs for this layer)");
     eprintln!("  Latest: PUT 10MB 1 disk = ~14 MB/s, GET 10MB = ~291 MB/s");
 }
+
+// ============================================================================
+// bench_perf: structured multi-size benchmark with JSON output and comparison
+// ============================================================================
+//
+// Usage:
+//   # establish baseline
+//   cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
+//
+//   # compare after a change
+//   BENCH_COMPARE=bench-results/baseline.json cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
+//
+//   # test specific sizes (bytes, comma-separated)
+//   BENCH_SIZES=1048576,10485760 cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
+
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct BenchResult {
+    op: String,
+    disks: usize,
+    size: usize,
+    iters: usize,
+    avg_ms: f64,
+    p50_ms: f64,
+    mbps: f64,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct BenchReport {
+    timestamp: String,
+    git_commit: String,
+    results: Vec<BenchResult>,
+}
+
+fn measure(
+    op: &str,
+    disks: usize,
+    size: usize,
+    iters: usize,
+    timings: &mut Vec<Duration>,
+) -> BenchResult {
+    timings.sort();
+    let total: Duration = timings.iter().sum();
+    let avg = total / iters as u32;
+    let p50 = timings[iters / 2];
+    let mbps = (size * iters) as f64 / total.as_secs_f64() / MB as f64;
+    BenchResult {
+        op: op.to_string(),
+        disks,
+        size,
+        iters,
+        avg_ms: avg.as_secs_f64() * 1000.0,
+        p50_ms: p50.as_secs_f64() * 1000.0,
+        mbps,
+    }
+}
+
+fn human(size: usize) -> String {
+    if size >= 1024 * MB { format!("{}GB", size / (1024 * MB)) }
+    else if size >= MB { format!("{}MB", size / MB) }
+    else { format!("{}KB", size / 1024) }
+}
+
+fn git_commit() -> String {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_perf() {
+    let default_sizes = vec![1 * MB, 10 * MB, 100 * MB, 1024 * MB];
+    let sizes: Vec<usize> = std::env::var("BENCH_SIZES")
+        .ok()
+        .map(|s| s.split(',').filter_map(|v| v.trim().parse().ok()).collect())
+        .unwrap_or(default_sizes);
+
+    let iters = std::env::var("BENCH_ITERS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(10);
+
+    let disk_configs = [1, 4];
+    let mut results: Vec<BenchResult> = Vec::new();
+
+    eprintln!("\n=== bench_perf: VolumePool direct, {} iters ===\n", iters);
+
+    for &disk_count in &disk_configs {
+        let (_base, paths) = setup(disk_count);
+        let pool = make_pool(&paths);
+        pool.make_bucket("bench").await.unwrap();
+
+        for &size in &sizes {
+            let data = vec![0x42u8; size];
+            let label = human(size);
+
+            // warmup
+            for i in 0..2 {
+                pool.put_object("bench", &format!("w/{}/{}", label, i), &data, opts()).await.unwrap();
+            }
+
+            // streaming PUT
+            let mut timings = Vec::new();
+            for i in 0..iters {
+                let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = data
+                    .chunks(64 * 1024)
+                    .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+                    .collect();
+                let stream = futures::stream::iter(chunks);
+                let t = Instant::now();
+                pool.put_object_stream("bench", &format!("s/{}/{}", label, i), stream, opts()).await.unwrap();
+                timings.push(t.elapsed());
+            }
+            let r = measure("put_stream", disk_count, size, iters, &mut timings);
+            eprintln!("  put_stream  {:>2} disk  {:>5}  {:>8.1} MB/s  avg {:>8.2}ms  p50 {:>8.2}ms",
+                disk_count, label, r.mbps, r.avg_ms, r.p50_ms);
+            results.push(r);
+
+            // GET
+            let mut timings = Vec::new();
+            for i in 0..iters {
+                let t = Instant::now();
+                let _ = pool.get_object("bench", &format!("s/{}/{}", label, i)).await.unwrap();
+                timings.push(t.elapsed());
+            }
+            let r = measure("get", disk_count, size, iters, &mut timings);
+            eprintln!("  get         {:>2} disk  {:>5}  {:>8.1} MB/s  avg {:>8.2}ms  p50 {:>8.2}ms",
+                disk_count, label, r.mbps, r.avg_ms, r.p50_ms);
+            results.push(r);
+        }
+    }
+
+    // save results
+    let timestamp = chrono_lite_now();
+    let commit = git_commit();
+    let report = BenchReport {
+        timestamp: timestamp.clone(),
+        git_commit: commit.clone(),
+        results: results.clone(),
+    };
+
+    let filename = format!("bench-results/{}.json", timestamp.replace(':', "-"));
+    if let Ok(json) = serde_json::to_string_pretty(&report) {
+        let _ = std::fs::write(&filename, &json);
+        eprintln!("\n  saved: {}", filename);
+    }
+
+    // compare mode
+    if let Ok(baseline_path) = std::env::var("BENCH_COMPARE") {
+        if let Ok(baseline_json) = std::fs::read_to_string(&baseline_path) {
+            if let Ok(baseline) = serde_json::from_str::<BenchReport>(&baseline_json) {
+                eprintln!("\n  comparing against: {} ({})\n", baseline_path, baseline.git_commit);
+                eprintln!("  {:<12} {:>5} {:>6} {:>12} {:>12} {:>8}",
+                    "Op", "Disks", "Size", "Baseline", "Current", "Delta");
+                eprintln!("  {}", "-".repeat(60));
+                for cur in &results {
+                    if let Some(base) = baseline.results.iter().find(|b|
+                        b.op == cur.op && b.disks == cur.disks && b.size == cur.size
+                    ) {
+                        let delta = (cur.mbps - base.mbps) / base.mbps * 100.0;
+                        let flag = if delta < -5.0 { " <-- REGRESSION" }
+                            else if delta > 5.0 { " <-- FASTER" }
+                            else { "" };
+                        eprintln!("  {:<12} {:>5} {:>6} {:>9.1} MB/s {:>9.1} MB/s {:>+7.1}%{}",
+                            cur.op, cur.disks, human(cur.size),
+                            base.mbps, cur.mbps, delta, flag);
+                    }
+                }
+            }
+        }
+    }
+
+    eprintln!();
+}
+
+fn chrono_lite_now() -> String {
+    let d = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let secs = d.as_secs();
+    // rough UTC timestamp without chrono dependency
+    let days = secs / 86400;
+    let rem = secs % 86400;
+    let h = rem / 3600;
+    let m = (rem % 3600) / 60;
+    let s = rem % 60;
+    // days since epoch -> y/m/d (simplified, good enough for filenames)
+    let mut y = 1970u64;
+    let mut remaining_days = days;
+    loop {
+        let ydays = if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+        if remaining_days < ydays { break; }
+        remaining_days -= ydays;
+        y += 1;
+    }
+    let leap = y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+    let mdays = [31, if leap {29} else {28}, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut mo = 0u64;
+    for md in mdays {
+        if remaining_days < md { break; }
+        remaining_days -= md;
+        mo += 1;
+    }
+    format!("{:04}-{:02}-{:02}T{:02}-{:02}-{:02}Z", y, mo + 1, remaining_days + 1, h, m, s)
+}

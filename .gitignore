@@ -2,3 +2,4 @@
 *.exe
 site/
 .claude/
+bench-results/*.json
