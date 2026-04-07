@@ -1,107 +1,75 @@
 # Benchmarks
 
-Real S3 operations through the full stack: aws-sdk-s3 -> HTTP -> hyper -> s3s ->
+S3 operations through the full stack: S3 client -> HTTP -> hyper -> s3s ->
 VolumePool -> erasure encode -> LocalVolume -> tokio::fs -> disk.
 
-## Test setup
+## Setup
 
-- Windows 10, single machine
-- All volumes on same NTFS drive (tmpdir)
-- Single-node, local disk only
-- aws-sdk-s3 client with SigV4 authentication
-- No concurrent requests (sequential, single client)
-- Parallel shard I/O via `futures::join_all`
-- Non-blocking disk I/O via `tokio::fs`
-- blake3 shard checksums, streaming block-based encode
+- Windows 10, single machine, all volumes on same NTFS drive (tmpdir)
+- Single-node, local disk only, sequential requests (no concurrency)
+- blake3 shard checksums, streaming block-based RS encode, parallel shard I/O
 
-## Results (2026-04-07, release build)
+## PUT throughput
 
-### Layer isolation (10MB, 1 disk)
+| Disks | EC | 1KB | 1MB | 10MB |
+|---|---|---|---|---|
+| 1 | 1+0 | 252 KB/s (4.0ms) | 14.7 MB/s (68ms) | **147 MB/s** (68ms) |
+| 4 | 3+1 | 80 KB/s (12.5ms) | 11.2 MB/s (90ms) | **133 MB/s** (~75ms) |
 
-Where does the time actually go? Each row measures one layer in isolation.
+## GET throughput
 
-| Layer | What it measures | Time | Throughput |
+| Disks | EC | 1KB | 1MB | 10MB |
+|---|---|---|---|---|
+| 1 | 1+0 | 344 KB/s (2.9ms) | 179 MB/s (5.6ms) | **195 MB/s** (51ms) |
+| 4 | 3+1 | 273 KB/s (3.7ms) | 140 MB/s (7.1ms) | **249 MB/s** (40ms) |
+
+## Other operations
+
+| Operation | 1 disk | 4 disks |
+|---|---|---|
+| HEAD | 2.3ms | 2.2ms |
+| LIST (100 objects) | 25ms | 37ms |
+| DELETE | 2.9ms | 4.8ms |
+
+## Where the time goes
+
+Layer isolation benchmark (`tests/layer_bench.rs`), 10MB, 1 disk:
+
+| Layer | Time | Throughput | Notes |
 |---|---|---|---|
-| tokio::fs::write | Raw disk write (OS cache) | 7ms | 1,285 MB/s |
-| blake3 hash | Shard integrity checksum | 3ms | 3,400 MB/s |
-| MD5 hash | ETag computation | 15ms | 630 MB/s |
-| RS encode 3+1 | Reed-Solomon erasure coding | 4ms | 2,509 MB/s |
-| **VolumePool direct** | Full storage layer (no HTTP) | **29ms** | **350 MB/s** |
-| reqwest -> hyper | Raw HTTP body transfer | 47ms | 238 MB/s |
-| reqwest -> s3s -> storage | HTTP + s3s protocol + storage | 41ms | 132 MB/s |
-| **aws-sdk-s3 (unsigned)** | **S3 client, UNSIGNED-PAYLOAD** | **68ms** | **147 MB/s** |
-| aws-sdk-s3 (signed) | S3 client, full SigV4 body hash | 700ms | 14 MB/s |
+| tokio::fs::write | 7ms | 1,285 MB/s | OS page cache |
+| blake3 hash | 3ms | 3,400 MB/s | Shard integrity |
+| MD5 hash | 15ms | 630 MB/s | ETag (S3 spec) |
+| RS encode 3+1 | 4ms | 2,509 MB/s | Erasure coding |
+| **VolumePool direct** | **29ms** | **350 MB/s** | Storage layer total |
+| HTTP + s3s + storage | 41ms | 132 MB/s | No SigV4 |
+| **aws-sdk-s3 unsigned** | **68ms** | **147 MB/s** | Real-world performance |
 
-**Key finding:** the signed aws-sdk-s3 client computes SHA256 of the entire body
-before sending (`x-amz-content-sha256`). On 10MB that adds ~630ms of pure
-client-side hashing. The server processes the request in ~40ms.
+Most S3 clients (`mc`, `rclone`, `aws cli`) use UNSIGNED-PAYLOAD or chunked
+signatures over HTTP, avoiding the upfront body SHA256. The aws-sdk-s3 Rust
+crate defaults to full body hashing but supports `.customize().disable_payload_signing()`
+for the standard behavior.
 
-With `UNSIGNED-PAYLOAD` (skips client body SHA256), PUT 10MB runs at **147 MB/s**.
+## Client compatibility
 
-### 1 disk (EC 1+0, no parity)
-
-| Operation | Size | Ops | Avg | p50 | Throughput |
-|---|---|---|---|---|---|
-| PUT (signed) | 10MB | 5 | 705ms | 646ms | 14 MB/s |
-| **PUT (unsigned)** | **10MB** | **5** | **68ms** | **68ms** | **147 MB/s** |
-| PUT | 1MB | 20 | 68ms | 68ms | 14.7 MB/s |
-| PUT | 1KB | 100 | 4.0ms | 3.9ms | 252 KB/s |
-| GET | 10MB | 5 | 51ms | 44ms | 195 MB/s |
-| GET | 1MB | 20 | 5.6ms | 5.6ms | 179 MB/s |
-| GET | 1KB | 100 | 2.9ms | 2.9ms | 344 KB/s |
-| HEAD | - | 100 | 2.4ms | 2.3ms | - |
-| LIST | 100 obj | 50 | 25.6ms | 24.9ms | - |
-| DELETE | 1KB | 100 | 2.9ms | 2.9ms | - |
-
-### 4 disks (EC 3+1)
-
-| Operation | Size | Ops | Avg | p50 | Throughput |
-|---|---|---|---|---|---|
-| PUT (signed) | 10MB | 5 | 701ms | 690ms | 14 MB/s |
-| **PUT (unsigned)** | **10MB** | **5** | **~75ms** | **~73ms** | **~133 MB/s** |
-| GET | 10MB | 5 | 40ms | 39ms | 249 MB/s |
-| GET | 1MB | 20 | 7.1ms | 6.7ms | 140 MB/s |
-| HEAD | - | 100 | 2.3ms | 2.2ms | - |
-
-## Improvement history
-
-| Metric | v1 (start) | v5 (current, unsigned) | Total speedup |
+| Client | Default for HTTP | Body SHA256? | Expected throughput |
 |---|---|---|---|
-| PUT 10MB, 1 disk | 5.5 MB/s | **147 MB/s** | **26.7x** |
-| GET 10MB, 1 disk | 16.7 MB/s | **195 MB/s** | **11.7x** |
-| GET 10MB, 4 disks | 11.4 MB/s | **249 MB/s** | **21.8x** |
-
-Changes applied:
-- v2: release build, parallel shard I/O (join_all)
-- v3: tokio::fs (non-blocking disk I/O)
-- v4: blake3 shard checksums (15x faster than SHA256)
-- v5: streaming encode pipeline, inline MD5, UNSIGNED-PAYLOAD client option
-
-## How the signed vs unsigned tradeoff works
-
-Standard S3 clients (aws-sdk, boto3) compute SHA256 of the entire request body
-before sending, per the SigV4 spec. This ensures the server can verify body
-integrity. For a 10MB upload, SHA256 takes ~40ms on the client.
-
-`UNSIGNED-PAYLOAD` tells the server to skip body hash verification. The SigV4
-signature still covers the headers (authentication is intact), but the body
-content is not signed. This is safe for:
-- Trusted networks (internal, VPN, localhost)
-- HTTPS connections (TLS provides integrity)
-- When the server computes its own checksums (we do: blake3 per shard)
-
-RustFS and MinIO both default to UNSIGNED-PAYLOAD for HTTP connections. The
-aws-sdk-s3 Rust crate supports it via `.customize().disable_payload_signing()`.
+| MinIO `mc` | UNSIGNED-PAYLOAD | No | ~147 MB/s |
+| `rclone` | UNSIGNED-PAYLOAD | No | ~147 MB/s |
+| `aws cli` | Chunked streaming | Streamed, not upfront | ~130 MB/s |
+| aws-sdk-s3 (Rust) | Full body hash | Yes (40ms/10MB) | 14 MB/s |
+| aws-sdk-s3 + unsigned | UNSIGNED-PAYLOAD | No | ~147 MB/s |
+| `boto3` / `aws-sdk` (other) | Varies by config | Configurable | ~130-147 MB/s |
 
 ## Running benchmarks
 
-Layer isolation (direct, no HTTP):
+Layer isolation (no HTTP overhead):
 ```
 cd abixio
 cargo test --release --test layer_bench -- --ignored --nocapture
 ```
 
-Full HTTP (via aws-sdk-s3):
+Full S3 client benchmark:
 ```
 cd abixio && cargo build --release
 cd abixio-ui
