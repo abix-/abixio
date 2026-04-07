@@ -46,13 +46,15 @@ L1     MD5 hash (S3 ETag)                             449 MB/s     703 MB/s     
 L2     RS encode 3+1 (reed-solomon, SIMD)            2955 MB/s    2762 MB/s    2825 MB/s
 L3     tokio::fs::write (disk ceiling)                 13 MB/s    1625 MB/s    1056 MB/s
 L3     tokio::fs::read                                 46 MB/s    2703 MB/s    2902 MB/s
-L4     VolumePool put_stream (1 disk)                   4 MB/s     439 MB/s     493 MB/s
-L4     VolumePool get (1 disk)                          8 MB/s    1178 MB/s    1256 MB/s
-L4     VolumePool put_stream (4 disk, 3+1 EC)           2 MB/s     367 MB/s     416 MB/s
-L4     VolumePool get (4 disk, 3+1 EC)                  1 MB/s     902 MB/s     917 MB/s
+L4     VolumePool put_stream (1 disk)                   4 MB/s     439 MB/s     489 MB/s
+L4     VolumePool get (1 disk, buffered)                8 MB/s    1175 MB/s    1244 MB/s
+L4     VolumePool get_stream (1 disk, streaming)        -         1287 MB/s    1439 MB/s
+L4     VolumePool put_stream (4 disk, 3+1 EC)           2 MB/s     371 MB/s     409 MB/s
+L4     VolumePool get (4 disk, buffered)                1 MB/s     774 MB/s     919 MB/s
+L4     VolumePool get_stream (4 disk, streaming)        -          842 MB/s     983 MB/s
 L5     HTTP transport (hyper, no S3)                   32 MB/s     762 MB/s     800 MB/s
-L6     S3 protocol + storage (s3s, no SigV4)            3 MB/s     230 MB/s     305 MB/s
-L6     S3 GET + storage                                 6 MB/s     365 MB/s     452 MB/s
+L6     S3 PUT + storage (s3s, no SigV4)                 3 MB/s     214 MB/s     310 MB/s
+L6     S3 GET + storage (streaming)                     -          750 MB/s     833 MB/s
 ```
 
 **What each layer tells you:**
@@ -61,12 +63,15 @@ L6     S3 GET + storage                                 6 MB/s     365 MB/s     
   the stream, so their cost overlaps with I/O for large objects.
 - **L2** -- RS encode at 2762 MB/s is not a bottleneck. SIMD-accel is enabled.
 - **L3** -- Disk write is the ceiling. 4KB is slow (filesystem metadata overhead).
-- **L4** -- The integrated storage path. L4 at 439 MB/s vs L3 at 1625 MB/s
-  = 3.7x overhead from hashing + RS + metadata writes at 10MB.
+- **L4** -- The integrated storage path. L4 put at 439 MB/s vs L3 at 1625 MB/s
+  = 3.7x overhead from hashing + RS + metadata writes at 10MB. Streaming GET
+  is 9-16% faster than buffered GET (avoids full-body allocation).
 - **L5** -- Raw HTTP transport does 762 MB/s PUT at 10MB. HTTP itself is fast.
-- **L6** -- s3s protocol + storage = 230 MB/s PUT at 10MB. The gap between
-  L4 (439) and L6 (230) is s3s body collection and dispatch overhead.
-  At 1GB, L6 (305) vs L4 (493) = s3s adds 38% overhead.
+- **L6** -- s3s PUT = 214 MB/s at 10MB. The gap between L4 (439) and L6 (214)
+  is s3s dispatch overhead + per-PUT versioning config reads.
+  Streaming GET (750 MB/s at 10MB, 833 MB/s at 1GB) is 2x faster than the
+  previous buffered path (365/452) because chunks flow through s3s without
+  full-body collection.
 
 ## Reproducing these benchmarks
 
