@@ -14,14 +14,13 @@ pub async fn read_and_decode(
 ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
     let total = data_n + parity_n;
 
-    // read meta + shard from all disks
-    let mut raw_reads: Vec<Option<(Vec<u8>, ObjectMeta)>> = Vec::with_capacity(total);
-    for disk in disks.iter() {
-        match disk.read_shard(bucket, key).await {
-            Ok(pair) => raw_reads.push(Some(pair)),
-            Err(_) => raw_reads.push(None),
-        }
-    }
+    // read meta + shard from all disks in parallel
+    let read_futs: Vec<_> = disks.iter().map(|disk| disk.read_shard(bucket, key)).collect();
+    let raw_results = futures::future::join_all(read_futs).await;
+    let mut raw_reads: Vec<Option<(Vec<u8>, ObjectMeta)>> = raw_results
+        .into_iter()
+        .map(|r| r.ok())
+        .collect();
 
     // if no disk has the object at all, it's ObjectNotFound, not ReadQuorum
     let any_found = raw_reads.iter().any(|r| r.is_some());
@@ -159,13 +158,15 @@ pub async fn read_and_decode_versioned(
 ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
     let total = data_n + parity_n;
 
-    let mut raw_reads: Vec<Option<(Vec<u8>, ObjectMeta)>> = Vec::with_capacity(total);
-    for disk in disks.iter() {
-        match disk.read_versioned_shard(bucket, key, version_id).await {
-            Ok(pair) => raw_reads.push(Some(pair)),
-            Err(_) => raw_reads.push(None),
-        }
-    }
+    let read_futs: Vec<_> = disks
+        .iter()
+        .map(|disk| disk.read_versioned_shard(bucket, key, version_id))
+        .collect();
+    let raw_results = futures::future::join_all(read_futs).await;
+    let mut raw_reads: Vec<Option<(Vec<u8>, ObjectMeta)>> = raw_results
+        .into_iter()
+        .map(|r| r.ok())
+        .collect();
 
     let any_found = raw_reads.iter().any(|r| r.is_some());
     if !any_found {

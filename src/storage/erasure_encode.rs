@@ -152,38 +152,53 @@ async fn encode_and_write_impl(
             .map_err(|e| StorageError::InvalidConfig(format!("reed-solomon encode: {}", e)))?;
     }
 
-    // write shards to disks according to distribution
-    let mut errs: Vec<Option<StorageError>> = (0..total).map(|_| None).collect();
+    // write shards to disks in parallel
+    let data_size = data.len() as u64;
+    let vid_str = version_id.unwrap_or("").to_string();
 
-    // distribution[shard_idx] = disk_idx
-    for (shard_idx, shard_data) in shards.iter().enumerate() {
-        let disk_idx = distribution[shard_idx];
-        let checksum = sha256_hex(shard_data);
-        let meta = ObjectMeta {
-            size: data.len() as u64,
-            etag: etag.clone(),
-            content_type: content_type.clone(),
-            created_at,
-            erasure: ErasureMeta {
-                ftt: parity_n,
-                index: shard_idx,
-                epoch_id: placement.epoch_id,
-                volume_ids: volume_ids.clone(),
-            },
-            checksum,
-            user_metadata: opts.user_metadata.clone(),
-            tags: opts.tags.clone(),
-            version_id: version_id.unwrap_or("").to_string(),
-            is_latest: true,
-            is_delete_marker: false,
-            parts: Vec::new(),
-        };
-        let write_result = if let Some(vid) = version_id {
-            disks[disk_idx].write_versioned_shard(bucket, key, vid, shard_data, &meta).await
-        } else {
-            disks[disk_idx].write_shard(bucket, key, shard_data, &meta).await
-        };
-        if let Err(e) = write_result {
+    let write_futs: Vec<_> = shards
+        .iter()
+        .enumerate()
+        .map(|(shard_idx, shard_data)| {
+            let disk_idx = distribution[shard_idx];
+            let checksum = sha256_hex(shard_data);
+            let meta = ObjectMeta {
+                size: data_size,
+                etag: etag.clone(),
+                content_type: content_type.clone(),
+                created_at,
+                erasure: ErasureMeta {
+                    ftt: parity_n,
+                    index: shard_idx,
+                    epoch_id: placement.epoch_id,
+                    volume_ids: volume_ids.clone(),
+                },
+                checksum,
+                user_metadata: opts.user_metadata.clone(),
+                tags: opts.tags.clone(),
+                version_id: vid_str.clone(),
+                is_latest: true,
+                is_delete_marker: false,
+                parts: Vec::new(),
+            };
+            let disk = &disks[disk_idx];
+            let vid = version_id;
+            async move {
+                let result = if let Some(vid) = vid {
+                    disk.write_versioned_shard(bucket, key, vid, shard_data, &meta).await
+                } else {
+                    disk.write_shard(bucket, key, shard_data, &meta).await
+                };
+                (shard_idx, result)
+            }
+        })
+        .collect();
+
+    let write_results = futures::future::join_all(write_futs).await;
+
+    let mut errs: Vec<Option<StorageError>> = (0..total).map(|_| None).collect();
+    for (shard_idx, result) in write_results {
+        if let Err(e) = result {
             errs[shard_idx] = Some(e);
         }
     }
