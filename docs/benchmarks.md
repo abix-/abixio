@@ -6,7 +6,7 @@
 - Single-node, 1 disk, no erasure coding (1+0) unless noted
 - Sequential requests, no concurrency, page-cache writes (no fsync)
 - 10 iterations per measurement (50 for 4KB, 5 for 1GB)
-- Per-layer numbers from `bench_perf` at commit `2688069`
+- Per-layer numbers from `bench_perf` at commit `ad0506a`
 - Competitive numbers from `mc` client with UNSIGNED-PAYLOAD over HTTP
   against AbixIO `2688069`, RustFS 1.0.0-alpha.90, MinIO RELEASE.2026-04-07
 
@@ -60,7 +60,7 @@ L4     VolumePool get (1 disk, buffered)                8 MB/s    1175 MB/s    1
 L4     VolumePool get_stream (1 disk, mmap)              -        19098 MB/s    (page cache)
 L4     VolumePool put_stream (4 disk, 3+1 EC)           2 MB/s     371 MB/s     409 MB/s
 L4     VolumePool get (4 disk, buffered)                1 MB/s     774 MB/s     919 MB/s
-L4     VolumePool get_stream (4 disk, mmap EC)           -          675 MB/s     803 MB/s
+L4     VolumePool get_stream (4 disk, mmap EC)           -         1048 MB/s    1236 MB/s
 L5     HTTP transport (hyper, no S3)                   32 MB/s     762 MB/s     800 MB/s
 L6     S3 PUT + storage (s3s, no SigV4)                 3 MB/s     272 MB/s     310 MB/s
 L6     S3 GET + storage (mmap, 1 disk)                   -          809 MB/s    1048 MB/s
@@ -74,8 +74,9 @@ L6     S3 GET + storage (mmap, 1 disk)                   -          809 MB/s    
 - **L3** -- Disk write is the ceiling. 4KB is slow (filesystem metadata overhead).
 - **L4** -- PUT at 439 MB/s vs L3 at 1625 MB/s = 3.7x overhead from hashing
   + RS + metadata writes. GET (1+0 mmap) is effectively instant for cached
-  files -- 19 GB/s at 10MB, page-cache speed at 1GB. EC GET (4-disk) does
-  675-803 MB/s through mmap reads + RS decode.
+  files -- 23 GB/s at 10MB, page-cache speed at 1GB. EC GET (4-disk) does
+  1048-1236 MB/s via zero-alloc mmap fast path (slices directly from mmap
+  when all shards healthy, no Vec allocation per block).
 - **L5** -- Raw HTTP transport does 762 MB/s PUT at 10MB. HTTP itself is fast.
 - **L6** -- s3s PUT = 272 MB/s at 10MB. The gap between L4 (439) and L6
   (272) is s3s dispatch overhead. s3s GET (1 disk, mmap): 809 MB/s at 10MB,

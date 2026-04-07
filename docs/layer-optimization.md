@@ -4,7 +4,7 @@ Systematic per-layer performance analysis of the AbixIO PUT and GET paths.
 Each layer is treated as an independent optimization problem: measure it,
 identify the ceiling, find the bottleneck, test a fix, record the result.
 
-Last updated: 2026-04-07, commit `2688069`.
+Last updated: 2026-04-07, commit `ad0506a`.
 
 ## Layer architecture
 
@@ -58,13 +58,14 @@ Operation          Before          After           Change
 -----------        -----------     -----------     -------
 GET 10MB (1d)      1175 MB/s       19098 MB/s      mmap page cache
 GET 1GB (1d)       1244 MB/s       (page cache)    mmap instant
-GET 10MB (4d EC)   774 MB/s        675 MB/s        mmap+RS (4MB blocks)
-GET 1GB (4d EC)    919 MB/s        803 MB/s        mmap+RS (4MB blocks)
+GET 10MB (4d EC)   774 MB/s        1048 MB/s       +35% (zero-alloc mmap)
+GET 1GB (4d EC)    919 MB/s        1236 MB/s       +35% (zero-alloc mmap)
 PUT (all sizes)    unchanged       unchanged       0%
 ```
 
-Note: EC GET is slightly slower because mmap slices are copied to Vec for
-RS decode. The 1+0 fast path (no EC) is where the huge win is.
+EC GET fast path slices directly from mmap into output buffer when all data
+shards are healthy (common case). Zero Vec allocation per block. Only falls
+back to Vec + RS reconstruct when shards are actually missing.
 
 ---
 
@@ -322,8 +323,8 @@ volumes return a real mmap, remote volumes fall back to buffered read.
 - L4 GET (1 disk, mmap): 19,098 MB/s at 10MB (page cache), effectively instant
 - L6 GET (1 disk): 809 MB/s at 10MB, **1048 MB/s at 1GB** (was 833)
 - curl GET (no auth): **1220 MB/s at 1GB** -- faster than MinIO through mc
-- EC GET (4 disk): 675-803 MB/s (slightly lower due to mmap slice->Vec copy
-  for RS decode, but fewer iterations from 4MB blocks)
+- EC GET (4 disk): **1048 MB/s (10MB), 1236 MB/s (1GB)** -- zero-alloc fast
+  path slices from mmap when all shards healthy. +35% over pre-mmap baseline
 
 Files changed:
 - `Cargo.toml` -- added `memmap2`
@@ -342,7 +343,8 @@ Files changed:
 | 2 | Parallel shard writes | L4 | **Regressed** -21%. Sequential faster on same disk | reverted |
 | 3 | Versioning config cache | L6 | **PUT +27%** (10MB) | done |
 | 4 | mmap GET (1+0 fast path) | L4+L6 | **L6 GET 1GB: 833->1048 MB/s (+26%)**. curl: 1220 MB/s | done |
-| 5 | mmap GET (EC, 4MB blocks) | L4 | 4-disk GET ~800 MB/s (4MB blocks, fewer iterations) | done |
+| 5 | mmap GET (EC, 4MB blocks) | L4 | 4-disk GET 675-803 MB/s (regressed from mmap->Vec copy) | superseded by #6 |
+| 6 | Zero-alloc EC GET fast path | L4 | **EC GET +35%** (919->1236 MB/s at 1GB). Slices from mmap, no Vec alloc | done |
 
 ## Remaining gaps
 
@@ -351,7 +353,7 @@ Files changed:
 | L6 PUT vs L4 PUT | 272 vs 439 MB/s | 1.6x | s3s dispatch overhead |
 | L4 PUT vs L3 write | 439 vs 1625 MB/s | 3.7x | hashing + RS + metadata |
 | L6 GET (mc) vs L6 GET (curl) | 354 vs 1220 MB/s | 3.4x | mc client overhead (SigV4, Go HTTP) |
-| EC GET vs 1+0 GET | 803 vs page cache | -- | RS decode + mmap->Vec copy |
+| EC GET vs 1+0 GET | 1236 vs page cache | -- | RS decode (inherent cost of EC) |
 
 The largest remaining gap is the `mc` client bottleneck. AbixIO serves 1GB at
 1220 MB/s via curl, but `mc` can only consume 354 MB/s. MinIO achieves
@@ -412,9 +414,9 @@ buffers. Parity buffers also pre-allocated. Both reused across all 1024 blocks.
 | Path | Allocations per 1GB (before) | Allocations per 1GB (after) | Reduction |
 |------|-----------------------------|-----------------------------|-----------|
 | 1+0 GET | 0 (mmap -> Bytes slices) | 0 | already done |
-| EC GET (healthy) | ~5400 | ~256 (one per 4MB send) | 95% |
-| EC GET (degraded) | ~5400 | ~5400 (reconstruct needs Vecs) | 0% (correctness path) |
-| PUT | ~4096 | ~1 (initial alloc, reused) | 99% |
+| EC GET (healthy) | ~5400 | ~256 (one per 4MB send) | 95% | **done** -- 919->1236 MB/s |
+| EC GET (degraded) | ~5400 | ~5400 (reconstruct needs Vecs) | 0% (correctness path) | by design |
+| PUT | ~4096 | ~1 (initial alloc, reused) | 99% | planned |
 
 ## Future optimization candidates
 

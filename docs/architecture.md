@@ -91,15 +91,17 @@ HTTP GET request
            mmap all shard files in parallel via Backend::mmap_shard()
            spawns background task:
              for each 4MB decode block:
-               slice directly into mmap regions (zero-copy read)
-               RS decode the block
+               if all data shards healthy (fast path):
+                 slice directly from mmap into output buffer (zero alloc)
+               else (degraded path):
+                 allocate Vecs, RS reconstruct, copy to output
                send decoded Bytes via mpsc channel
        -> stream wrapped in SyncStream -> StreamingBlob -> hyper response body
   -> range/versioned: buffered path (read full object, slice, respond)
 ```
 
 1+0 fast path serves files at 1220 MB/s (1GB via curl). EC path decodes
-at 675-803 MB/s (4-disk). See [layer-optimization.md](layer-optimization.md)
+at 1048-1236 MB/s (4-disk, zero-alloc when healthy). See [layer-optimization.md](layer-optimization.md)
 for performance numbers and optimization history.
 
 ## Cluster

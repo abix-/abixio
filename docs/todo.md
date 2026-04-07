@@ -4,7 +4,7 @@
 
 - [ ] mc client throughput gap -- AbixIO serves 1GB at 1220 MB/s via curl but only 354 MB/s through mc. MinIO gets 970 MB/s through the same mc. profile with mc --debug, diff headers, find the bottleneck. this is not a client problem
 - [ ] unwrap() plague -- 252 calls in src/ (volume_pool.rs: 108, local_volume.rs: 53, cluster/mod.rs: 27, heal/worker.rs: 21). every one is a process crash. commit e9a38aa claimed to fix this, they came back. go through each one: impossible? .expect("reason"). possible? propagate with ?
-- [ ] EC GET regression -- mmap optimization regressed 4-disk GET from 919 to 803 MB/s. mmap slice->Vec copy for RS decode is unnecessary. RS works on &[u8] slices. use pre-allocated slab buffers reused across blocks instead of per-block Vec alloc
+- [x] EC GET regression -- fixed. zero-alloc fast path slices directly from mmap when all shards healthy. 4-disk GET: 803->1236 MB/s (+54%), now +35% above pre-mmap baseline (919)
 - [ ] RemoteVolume::bucket_exists() returns false unconditionally -- cluster bucket ops partially broken. this is a shipped bug, not a TODO
 - [x] streaming body support -- unified encode path via ShardWriter trait, inline MD5+blake3, no full-body buffering
 - [x] s3s GET response buffering -- streaming GET via read_and_decode_stream + get_object_stream + mmap fast path. L6 GET: 365->1048 MB/s (1GB). curl: 1220 MB/s
