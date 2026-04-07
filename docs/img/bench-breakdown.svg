@@ -1,64 +1,47 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 160" font-family="system-ui,-apple-system,sans-serif" font-size="13">
-  <style>
-    .title { font-size: 15px; font-weight: 600; fill: #24292f; }
-    .label { fill: #24292f; font-size: 11px; }
-    .value { fill: #fff; font-size: 11px; font-weight: 600; }
-    .value-dark { fill: #24292f; font-size: 11px; font-weight: 600; }
-    .note { fill: #656d76; font-size: 10px; font-style: italic; }
-  </style>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 160" font-family="system-ui,-apple-system,sans-serif">
 
-  <text x="260" y="20" text-anchor="middle" class="title">10MB PUT: where 68ms goes</text>
+  <text x="260" y="20" text-anchor="middle" style="font-size:15px;font-weight:600;fill:#24292f">10MB PUT: where 68ms goes</text>
 
-  <!-- stacked bar: total width 450px = 68ms, so 1ms = 6.6px -->
-  <!-- server portion: 41ms = 271px -->
-  <!-- client SigV4: 27ms = 179px -->
-
-  <!-- MD5 ETag 15ms = 99px -->
+  <!-- stacked bar: 450px = 68ms, 6.6px per ms -->
   <rect x="35" y="35" width="99" height="36" rx="2" fill="#dc2626"/>
-  <text x="84" y="57" text-anchor="middle" class="value">MD5 15ms</text>
+  <text x="84" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">MD5 15ms</text>
 
-  <!-- HTTP + s3s 12ms = 79px -->
   <rect x="134" y="35" width="79" height="36" rx="2" fill="#7c3aed"/>
-  <text x="173" y="57" text-anchor="middle" class="value">HTTP 12ms</text>
+  <text x="173" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">HTTP 12ms</text>
 
-  <!-- Disk I/O 7ms = 46px -->
   <rect x="213" y="35" width="46" height="36" rx="2" fill="#0369a1"/>
-  <text x="236" y="57" text-anchor="middle" class="value">disk 7ms</text>
+  <text x="236" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">disk 7ms</text>
 
-  <!-- RS encode 4ms = 26px -->
   <rect x="259" y="35" width="26" height="36" rx="2" fill="#059669"/>
-  <text x="272" y="57" text-anchor="middle" class="value" font-size="9">RS</text>
+  <text x="272" y="57" text-anchor="middle" style="font-size:9px;font-weight:600;fill:#fff">RS</text>
 
-  <!-- blake3 3ms = 20px -->
   <rect x="285" y="35" width="20" height="36" rx="2" fill="#0891b2"/>
 
-  <!-- Client SigV4 27ms = 179px -->
   <rect x="305" y="35" width="179" height="36" rx="2" fill="#9ca3af"/>
-  <text x="394" y="57" text-anchor="middle" class="value">client SigV4 27ms</text>
+  <text x="394" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">client SigV4 27ms</text>
 
-  <!-- bracket: server 41ms -->
-  <line x1="35" y1="78" x2="35" y2="85" stroke="#24292f" stroke-width="1"/>
-  <line x1="35" y1="85" x2="305" y2="85" stroke="#24292f" stroke-width="1"/>
-  <line x1="305" y1="78" x2="305" y2="85" stroke="#24292f" stroke-width="1"/>
-  <text x="170" y="98" text-anchor="middle" class="label">server 41ms</text>
+  <!-- brackets -->
+  <line x1="35" y1="78" x2="35" y2="85" style="stroke:#24292f;stroke-width:1"/>
+  <line x1="35" y1="85" x2="305" y2="85" style="stroke:#24292f;stroke-width:1"/>
+  <line x1="305" y1="78" x2="305" y2="85" style="stroke:#24292f;stroke-width:1"/>
+  <text x="170" y="98" text-anchor="middle" style="font-size:12px;fill:#24292f">server 41ms</text>
 
-  <!-- bracket: client -->
-  <line x1="305" y1="78" x2="305" y2="85" stroke="#656d76" stroke-width="1"/>
-  <line x1="305" y1="85" x2="484" y2="85" stroke="#656d76" stroke-width="1"/>
-  <line x1="484" y1="78" x2="484" y2="85" stroke="#656d76" stroke-width="1"/>
-  <text x="394" y="98" text-anchor="middle" class="axis" font-size="11" fill="#656d76">client 27ms</text>
+  <line x1="305" y1="78" x2="305" y2="85" style="stroke:#656d76;stroke-width:1"/>
+  <line x1="305" y1="85" x2="484" y2="85" style="stroke:#656d76;stroke-width:1"/>
+  <line x1="484" y1="78" x2="484" y2="85" style="stroke:#656d76;stroke-width:1"/>
+  <text x="394" y="98" text-anchor="middle" style="font-size:11px;fill:#656d76">client 27ms</text>
 
   <!-- legend -->
   <rect x="35" y="115" width="10" height="10" rx="1" fill="#dc2626"/>
-  <text x="49" y="125" class="label">MD5 ETag (inline)</text>
-  <rect x="160" y="115" width="10" height="10" rx="1" fill="#7c3aed"/>
-  <text x="174" y="125" class="label">HTTP + s3s</text>
-  <rect x="260" y="115" width="10" height="10" rx="1" fill="#0369a1"/>
-  <text x="274" y="125" class="label">Disk I/O</text>
-  <rect x="335" y="115" width="10" height="10" rx="1" fill="#059669"/>
-  <text x="349" y="125" class="label">RS encode</text>
-  <rect x="420" y="115" width="10" height="10" rx="1" fill="#0891b2"/>
-  <text x="434" y="125" class="label">blake3</text>
+  <text x="49" y="125" style="font-size:12px;fill:#24292f">MD5 ETag (inline)</text>
+  <rect x="170" y="115" width="10" height="10" rx="1" fill="#7c3aed"/>
+  <text x="184" y="125" style="font-size:12px;fill:#24292f">HTTP + s3s</text>
+  <rect x="270" y="115" width="10" height="10" rx="1" fill="#0369a1"/>
+  <text x="284" y="125" style="font-size:12px;fill:#24292f">Disk I/O</text>
+  <rect x="345" y="115" width="10" height="10" rx="1" fill="#059669"/>
+  <text x="359" y="125" style="font-size:12px;fill:#24292f">RS encode</text>
+  <rect x="430" y="115" width="10" height="10" rx="1" fill="#0891b2"/>
+  <text x="444" y="125" style="font-size:12px;fill:#24292f">blake3</text>
 
-  <text x="260" y="148" text-anchor="middle" class="note">MD5 and blake3 computed inline during stream -- cost overlaps with network I/O for large objects</text>
+  <text x="260" y="148" text-anchor="middle" style="font-size:10px;font-style:italic;fill:#656d76">MD5 and blake3 computed inline during stream -- cost overlaps with network I/O for large objects</text>
 </svg>
