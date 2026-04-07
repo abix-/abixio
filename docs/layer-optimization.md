@@ -122,5 +122,5 @@ Requires L4 streaming decode (above) first.
 | # | Change | Layer | Measured gain | Status |
 |---|--------|-------|---------------|--------|
 | 1 | Streaming GET (decode + response) | L4+L6 | L4: +9-16%. L6: **+105% (10MB), +84% (1GB)**. GET 365->750, 452->833 MB/s | done |
-| 2 | Channel-based parallel shard writes | L4 | Medium (1GB PUT toward L3 ceiling) | planned |
-| 3 | Versioning config cache | L6 | Small-medium (remove disk read per PUT) | planned |
+| 2 | Channel-based parallel shard writes | L4 | **Regressed** (-21% at 4-disk 10MB). Sequential is faster on same physical disk. | reverted |
+| 3 | Versioning config cache | L6 | **+27% PUT** (214->272 MB/s at 10MB). Eliminates per-PUT disk read. | done |

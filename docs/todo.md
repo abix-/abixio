@@ -4,7 +4,7 @@
 
 - [x] streaming body support -- unified encode path via ShardWriter trait, inline MD5+blake3, no full-body buffering
 - [x] s3s GET response buffering -- streaming GET via read_and_decode_stream + get_object_stream. L6 GET: 365->750 MB/s (10MB), 452->833 MB/s (1GB). range/versioned requests still use buffered path
-- [ ] parallel shard writes in streaming path -- write_block calls write_chunk sequentially. FuturesUnordered tested but regressed 10MB (147->74 MB/s). needs size-adaptive approach or different strategy
+- [x] parallel shard writes in streaming path -- tested FuturesUnordered and channel-based tasks, both regressed (-21% at 4-disk 10MB). sequential is faster when all shards are on the same physical disk. only helps with truly separate physical disks
 - [ ] unwrap() regression -- 249 calls in src/ (volume_pool.rs: 104, cluster/mod.rs: 27, heal/worker.rs: 21). commit e9a38aa claimed to eliminate all production unwrap() but they came back. every one is a potential process crash
 - [x] implement sigv4 chunked transfer auth (handled by s3s protocol layer)
 - [x] migrate to s3s protocol layer (replaced 3,137 lines hand-rolled code with 1,243 lines s3s integration)

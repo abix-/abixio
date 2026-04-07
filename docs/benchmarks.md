@@ -53,7 +53,7 @@ L4     VolumePool put_stream (4 disk, 3+1 EC)           2 MB/s     371 MB/s     
 L4     VolumePool get (4 disk, buffered)                1 MB/s     774 MB/s     919 MB/s
 L4     VolumePool get_stream (4 disk, streaming)        -          842 MB/s     983 MB/s
 L5     HTTP transport (hyper, no S3)                   32 MB/s     762 MB/s     800 MB/s
-L6     S3 PUT + storage (s3s, no SigV4)                 3 MB/s     214 MB/s     310 MB/s
+L6     S3 PUT + storage (s3s, no SigV4)                 3 MB/s     272 MB/s     310 MB/s
 L6     S3 GET + storage (streaming)                     -          750 MB/s     833 MB/s
 ```
 
@@ -67,8 +67,8 @@ L6     S3 GET + storage (streaming)                     -          750 MB/s     
   = 3.7x overhead from hashing + RS + metadata writes at 10MB. Streaming GET
   is 9-16% faster than buffered GET (avoids full-body allocation).
 - **L5** -- Raw HTTP transport does 762 MB/s PUT at 10MB. HTTP itself is fast.
-- **L6** -- s3s PUT = 214 MB/s at 10MB. The gap between L4 (439) and L6 (214)
-  is s3s dispatch overhead + per-PUT versioning config reads.
+- **L6** -- s3s PUT = 272 MB/s at 10MB (was 214 before versioning cache).
+  The gap between L4 (439) and L6 (272) is s3s dispatch overhead.
   Streaming GET (750 MB/s at 10MB, 833 MB/s at 1GB) is 2x faster than the
   previous buffered path (365/452) because chunks flow through s3s without
   full-body collection.
