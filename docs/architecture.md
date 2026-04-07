@@ -13,6 +13,8 @@ cluster-control direction.
    interface. `LocalVolume` implements it for local directories. `RemoteVolume`
    implements it over HTTP for volumes on other nodes. The volume pool treats all
    backends identically -- it does not know whether a volume is local or remote.
+   The `ShardWriter` trait provides streaming writes: `LocalShardWriter` writes
+   directly to files, `RemoteShardWriter` buffers per-shard then POSTs on finalize.
 
 3. **Deterministic shard placement.** Each object's key is mapped
    deterministically onto shard locations. The placement planner assigns shards
@@ -25,8 +27,8 @@ cluster-control direction.
 5. **Atomic writes.** Write to `.abixio.tmp/<uuid>/`, rename to final location
    (for local backends; other backends handle atomicity in their own way).
 
-6. **Bitrot detection.** Per-shard SHA256 checksum in metadata. Bad checksums
-   treated as missing shards, reconstructed via Reed-Solomon.
+6. **Bitrot detection.** Per-shard blake3 checksum in metadata (SIMD-accelerated).
+   Bad checksums treated as missing shards, reconstructed via Reed-Solomon.
 
 7. **Single meta.json per object.** All version metadata in one file, matching
    MinIO's `xl.meta` pattern. See [storage-layout.md](storage-layout.md).
@@ -75,15 +77,15 @@ src/
   config.rs               # Config struct (clap derive) + {N...M} range expansion
   query.rs                # URL query string parsing
   storage/
-    mod.rs                # Backend trait, Store trait, StorageError, BackendInfo
+    mod.rs                # Backend trait, ShardWriter trait, Store trait, StorageError
     metadata.rs           # ObjectMetaFile, ObjectMeta, ErasureMeta, PutOptions
-    bitrot.rs             # sha256_hex(), md5_hex()
-    local_volume.rs       # LocalVolume: Backend impl for local directories
-    remote_volume.rs      # RemoteVolume: Backend impl over HTTP (internode RPC)
+    bitrot.rs             # sha256_hex(), md5_hex(), blake3_hex()
+    local_volume.rs       # LocalVolume: Backend + LocalShardWriter (streaming file I/O)
+    remote_volume.rs      # RemoteVolume: Backend + RemoteShardWriter (buffer + HTTP POST)
     storage_server.rs     # Storage REST server: dispatches /_storage/v1/* to local volumes
     internode_auth.rs     # JWT sign/validate for internode RPC
     volume_pool.rs        # VolumePool: volume pool with per-object FTT resolution
-    erasure_encode.rs     # split_data + reed-solomon encode + volume subset selection
+    erasure_encode.rs     # unified streaming encode: encode_and_write via ShardWriter trait
     erasure_decode.rs     # read from backends + bitrot check + reconstruct
     volume.rs             # VolumeFormat: read/write .abixio.sys/volume.json
   s3_service.rs           # impl S3 for AbixioS3: thin adapter to VolumePool (s3s)

@@ -3,7 +3,8 @@
 ## critical
 
 - [x] streaming body support -- unified encode path via ShardWriter trait, inline MD5+blake3, no full-body buffering
-- [ ] parallel shard writes in streaming path -- write_block calls write_chunk sequentially, 1GB PUT is 353 MB/s vs RustFS 464 and MinIO 537. need parallel write_chunk across backends within each block
+- [ ] s3s GET response buffering -- s3s v0.13 Body=Bytes, entire GET response collected before sending. L6 GET ceiling is s3s, not abixio. needs s3s upgrade or GET bypass
+- [ ] parallel shard writes in streaming path -- write_block calls write_chunk sequentially. FuturesUnordered tested but regressed 10MB (147->74 MB/s). needs size-adaptive approach or different strategy
 - [ ] unwrap() regression -- 249 calls in src/ (volume_pool.rs: 104, cluster/mod.rs: 27, heal/worker.rs: 21). commit e9a38aa claimed to eliminate all production unwrap() but they came back. every one is a potential process crash
 - [x] implement sigv4 chunked transfer auth (handled by s3s protocol layer)
 - [x] migrate to s3s protocol layer (replaced 3,137 lines hand-rolled code with 1,243 lines s3s integration)
@@ -31,7 +32,8 @@
 - [ ] release pipeline (dockerfile + github release with binaries). 180 commits, zero releases
 - [ ] changelog -- no release notes exist for 180 commits
 - [ ] encryption at rest (docs/encryption.md is design only, no implementation)
-- [ ] comparative benchmark vs rustfs -- tests/compare_bench.sh written, needs rustfs binary and results
+- [x] comparative benchmark vs rustfs and minio -- tests/compare_bench.sh with SVG charts in docs
+- [x] per-layer benchmark suite (L1-L6) with JSON output and A/B comparison mode
 - [x] basic benchmark suite -- abixio-ui/tests/bench.rs: PUT/GET/HEAD/LIST/DELETE with 1-4 disks
 
 ## low
