@@ -83,6 +83,49 @@ for the standard behavior.
 | aws-sdk-s3 + unsigned | UNSIGNED-PAYLOAD | No | ~147 MB/s |
 | `boto3` / `aws-sdk` (other) | Varies by config | Configurable | ~130-147 MB/s |
 
+## vs RustFS vs MinIO
+
+3-way head-to-head on the same NTFS volume. All servers run single-node,
+single-disk, no EC, tmpdir storage. `mc` client with UNSIGNED-PAYLOAD over HTTP.
+
+Setup: Windows 10, same NTFS drive, sequential requests, 10 iterations.
+RustFS 1.0.0-alpha.90, MinIO RELEASE.2026-04-07 (archived).
+
+### 10MB throughput (10 iterations)
+
+| Operation | AbixIO | RustFS | MinIO |
+|---|---|---|---|
+| PUT | **146 MB/s** (69ms) | 76 MB/s (131ms) | 87 MB/s (115ms) |
+| GET | **151 MB/s** (66ms) | 95 MB/s (106ms) | 126 MB/s (80ms) |
+
+### All sizes (5 iterations)
+
+| Operation | Size | AbixIO | RustFS | MinIO |
+|---|---|---|---|---|
+| PUT | 1KB | 0.0 MB/s (69ms) | 0.0 MB/s (72ms) | 0.0 MB/s (73ms) |
+| GET | 1KB | 0.0 MB/s (65ms) | 0.0 MB/s (70ms) | 0.0 MB/s (68ms) |
+| PUT | 1MB | 15 MB/s (66ms) | 12 MB/s (84ms) | 13 MB/s (78ms) |
+| GET | 1MB | 16 MB/s (64ms) | 13 MB/s (79ms) | 14 MB/s (72ms) |
+| PUT | 10MB | **150 MB/s** (67ms) | 78 MB/s (128ms) | 88 MB/s (113ms) |
+| GET | 10MB | **130 MB/s** (77ms) | 106 MB/s (95ms) | 126 MB/s (79ms) |
+
+### Metadata operations (10 iterations)
+
+| Operation | AbixIO | RustFS | MinIO |
+|---|---|---|---|
+| HEAD | 65ms | 67ms | 64ms |
+| LIST (100 objects) | 64ms | 65ms | 65ms |
+| DELETE | 63ms | 68ms | 66ms |
+
+### Notes
+
+- 1KB throughput is dominated by `mc` process startup (~65ms per call)
+- AbixIO PUT is ~1.9x faster than RustFS and ~1.7x faster than MinIO at 10MB
+- AbixIO GET is ~1.6x faster than RustFS at 10MB; MinIO GET is competitive
+- Metadata operations (HEAD, LIST, DELETE) are within noise across all three
+- 100MB results omitted: AbixIO OOM risk due to Vec<u8> body buffering (see todo)
+- All numbers are page-cache writes (no fsync). Real disk throughput is lower
+
 ## Running benchmarks
 
 Layer isolation (no HTTP overhead):
@@ -97,3 +140,13 @@ cd abixio && cargo build --release
 cd abixio-ui
 ABIXIO_BIN='path/to/release/abixio.exe' cargo test --test bench -- --ignored --nocapture
 ```
+
+Comparative benchmark (AbixIO vs RustFS vs MinIO):
+```
+cd abixio && cargo build --release
+ABIXIO_BIN=./target/release/abixio RUSTFS_BIN=rustfs MINIO_BIN=minio bash tests/compare_bench.sh
+```
+
+Any server binary can be omitted -- that column shows "skip".
+
+Tuning: `ITERS=10` for more stable numbers, `SIZES="10485760"` to test one size.

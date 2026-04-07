@@ -319,7 +319,7 @@ Specific upstream claims this page is anchored to:
 | Weakness | Reality today |
 |---|---|
 | Production credibility | None yet |
-| Benchmarks | None published |
+| Benchmarks | [Published](benchmarks.md#vs-rustfs-vs-minio): 1.7-1.9x faster PUT than RustFS/MinIO at 10MB |
 | Failure injection / long-haul testing | Not there yet |
 | Packaging / deployment story | Not there yet |
 | S3 surface completeness | Incomplete |
