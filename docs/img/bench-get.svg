@@ -28,26 +28,26 @@
 
   <text x="115" y="106" text-anchor="end" style="font-size:12px;fill:#24292f">RustFS</text>
   <rect x="120" y="94" width="50" height="20" rx="2" fill="#d97706"/>
-  <text x="175" y="108" style="font-size:12px;font-weight:600;fill:#24292f">99</text>
+  <text x="175" y="108" style="font-size:12px;font-weight:600;fill:#24292f">99 MB/s</text>
 
   <text x="115" y="132" text-anchor="end" style="font-size:12px;fill:#24292f">MinIO</text>
   <rect x="120" y="120" width="62" height="20" rx="2" fill="#059669"/>
-  <text x="187" y="134" style="font-size:12px;font-weight:600;fill:#24292f">124</text>
+  <text x="187" y="134" style="font-size:12px;font-weight:600;fill:#24292f">124 MB/s</text>
 
   <!-- 1GB group -->
   <text x="60" y="172" text-anchor="middle" style="font-size:12px;font-weight:600;fill:#24292f">1GB</text>
 
   <text x="115" y="194" text-anchor="end" style="font-size:12px;fill:#24292f">AbixIO</text>
   <rect x="120" y="182" width="186" height="20" rx="2" fill="#2563eb"/>
-  <text x="312" y="196" style="font-size:12px;font-weight:600;fill:#24292f">372</text>
+  <text x="312" y="196" style="font-size:12px;font-weight:600;fill:#24292f">372 MB/s</text>
 
   <text x="115" y="220" text-anchor="end" style="font-size:12px;fill:#24292f">RustFS</text>
   <rect x="120" y="208" width="288" height="20" rx="2" fill="#d97706"/>
-  <text x="414" y="222" style="font-size:12px;font-weight:600;fill:#24292f">576</text>
+  <text x="414" y="222" style="font-size:12px;font-weight:600;fill:#24292f">576 MB/s</text>
 
   <text x="115" y="246" text-anchor="end" style="font-size:12px;fill:#24292f">MinIO</text>
   <rect x="120" y="234" width="425" height="20" rx="2" fill="#059669"/>
-  <text x="550" y="248" style="font-size:12px;font-weight:600;fill:#24292f">849</text>
+  <text x="550" y="248" style="font-size:12px;font-weight:600;fill:#24292f">849 MB/s</text>
 
   <!-- legend -->
   <rect x="175" y="268" width="10" height="10" rx="1" fill="#2563eb"/>
