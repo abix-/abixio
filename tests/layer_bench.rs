@@ -172,6 +172,20 @@ async fn bench_layer_2_storage() {
             pool.put_object("bench", &format!("w/{i}"), &data, opts()).await.unwrap();
         }
 
+        // streaming PUT (simulates HTTP body as chunk stream)
+        let mut timings = Vec::new();
+        for i in 0..iters {
+            let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = data
+                .chunks(64 * 1024) // 64KB chunks like TCP
+                .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+                .collect();
+            let stream = futures::stream::iter(chunks);
+            let t = Instant::now();
+            pool.put_object_stream("bench", &format!("s/{i}"), stream, opts()).await.unwrap();
+            timings.push(t.elapsed());
+        }
+        run_n(&format!("VolumePool::put_object_stream ({disks} disk)"), size, iters, &mut timings);
+
         // PUT
         let mut timings = Vec::new();
         for i in 0..iters {

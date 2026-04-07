@@ -353,7 +353,7 @@ where
     let mut total_size: u64 = 0;
 
     // read body in blocks, encode, write
-    let mut block_buf = Vec::with_capacity(STREAM_BLOCK_SIZE);
+    let mut block_buf = Vec::with_capacity(STREAM_BLOCK_SIZE * 2);
 
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(|e| StorageError::Io(e))?;
@@ -363,9 +363,8 @@ where
 
         // process complete blocks
         while block_buf.len() >= STREAM_BLOCK_SIZE {
-            let block: Vec<u8> = block_buf.drain(..STREAM_BLOCK_SIZE).collect();
             write_stream_block(
-                &block,
+                &block_buf[..STREAM_BLOCK_SIZE],
                 data_n,
                 parity_n,
                 &rs,
@@ -373,6 +372,10 @@ where
                 &mut shard_hashers,
             )
             .await?;
+            // shift remaining data to front (avoids alloc)
+            let remaining = block_buf.len() - STREAM_BLOCK_SIZE;
+            block_buf.copy_within(STREAM_BLOCK_SIZE.., 0);
+            block_buf.truncate(remaining);
         }
     }
 
@@ -402,39 +405,48 @@ where
         .map(|h| h.finalize().to_hex().to_string())
         .collect();
 
-    // write meta.json on each disk
-    let mut meta_errs: Vec<Option<StorageError>> = (0..total).map(|_| None).collect();
-    for shard_idx in 0..total {
-        let disk_idx = distribution[shard_idx];
-        let meta = ObjectMeta {
-            size: total_size,
-            etag: etag.clone(),
-            content_type: content_type.clone(),
-            created_at,
-            erasure: ErasureMeta {
-                ftt: parity_n,
-                index: shard_idx,
-                epoch_id: placement.epoch_id,
-                volume_ids: volume_ids.clone(),
-            },
-            checksum: checksums[shard_idx].clone(),
-            user_metadata: opts.user_metadata.clone(),
-            tags: opts.tags.clone(),
-            version_id: String::new(),
-            is_latest: true,
-            is_delete_marker: false,
-            parts: Vec::new(),
-        };
-        let mf = super::metadata::ObjectMetaFile {
-            versions: vec![meta],
-        };
-        let info = disks[disk_idx].info();
-        let disk_root = std::path::PathBuf::from(info.label.strip_prefix("local:").unwrap());
-        let meta_path = super::pathing::object_meta_path(&disk_root, bucket, key)?;
-        if let Err(e) = super::metadata::write_meta_file(&meta_path, &mf).await {
-            meta_errs[shard_idx] = Some(StorageError::Io(e));
-        }
-    }
+    // write meta.json on each disk in parallel
+    let meta_futs: Vec<_> = (0..total)
+        .map(|shard_idx| {
+            let disk_idx = distribution[shard_idx];
+            let meta = ObjectMeta {
+                size: total_size,
+                etag: etag.clone(),
+                content_type: content_type.clone(),
+                created_at,
+                erasure: ErasureMeta {
+                    ftt: parity_n,
+                    index: shard_idx,
+                    epoch_id: placement.epoch_id,
+                    volume_ids: volume_ids.clone(),
+                },
+                checksum: checksums[shard_idx].clone(),
+                user_metadata: opts.user_metadata.clone(),
+                tags: opts.tags.clone(),
+                version_id: String::new(),
+                is_latest: true,
+                is_delete_marker: false,
+                parts: Vec::new(),
+            };
+            let mf = super::metadata::ObjectMetaFile {
+                versions: vec![meta],
+            };
+            let info = disks[disk_idx].info();
+            let disk_root = std::path::PathBuf::from(info.label.strip_prefix("local:").unwrap());
+            async move {
+                let meta_path = super::pathing::object_meta_path(&disk_root, bucket, key)?;
+                super::metadata::write_meta_file(&meta_path, &mf)
+                    .await
+                    .map_err(StorageError::Io)?;
+                Ok::<_, StorageError>(())
+            }
+        })
+        .collect();
+    let meta_results = futures::future::join_all(meta_futs).await;
+    let meta_errs: Vec<Option<StorageError>> = meta_results
+        .into_iter()
+        .map(|r| r.err())
+        .collect();
 
     // check write quorum
     let successes = meta_errs.iter().filter(|e| e.is_none()).count();
@@ -492,10 +504,20 @@ async fn write_stream_block(
             .map_err(|e| StorageError::InvalidConfig(format!("reed-solomon encode: {}", e)))?;
     }
 
-    // write each shard chunk and update running hash
+    // update running hashes (CPU, fast)
     for (i, shard_data) in shards.iter().enumerate() {
         shard_hashers[i].update(shard_data);
-        shard_files[i].write_all(shard_data).await?;
+    }
+
+    // write all shard chunks in parallel
+    let write_futs: Vec<_> = shards
+        .iter()
+        .zip(shard_files.iter_mut())
+        .map(|(data, file)| file.write_all(data))
+        .collect();
+    let results = futures::future::join_all(write_futs).await;
+    for r in results {
+        r?;
     }
 
     Ok(())
