@@ -217,6 +217,8 @@ async fn bench_layer_3_http_transport() {
     let data = vec![0x42u8; size];
     let iters = 10;
 
+    let iters = 30;
+
     eprintln!("\n=== Layer 3: HTTP transport only (10MB) ===\n");
 
     // start a minimal hyper server that just reads the body and returns 200
@@ -259,6 +261,49 @@ async fn bench_layer_3_http_transport() {
         timings.push(t.elapsed());
     }
     run_n("reqwest PUT -> hyper (body discard)", size, iters, &mut timings);
+
+    // raw reqwest GET (server returns 10MB body)
+    // start a server that returns a 10MB response
+    let listener2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr2 = listener2.local_addr().unwrap();
+    let response_data = bytes::Bytes::from(data.clone());
+
+    tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener2.accept().await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let body = response_data.clone();
+            tokio::spawn(async move {
+                let service = hyper::service::service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                    let body = body.clone();
+                    async move {
+                        Ok::<_, hyper::Error>(hyper::Response::new(
+                            http_body_util::Full::new(body),
+                        ))
+                    }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    let url2 = format!("http://{}/test", addr2);
+    // warmup
+    for _ in 0..3 {
+        let r = client.get(&url2).send().await.unwrap();
+        let _ = r.bytes().await.unwrap();
+    }
+
+    let mut timings = Vec::new();
+    for _ in 0..iters {
+        let t = Instant::now();
+        let r = client.get(&url2).send().await.unwrap();
+        let _ = r.bytes().await.unwrap();
+        timings.push(t.elapsed());
+    }
+    run_n("reqwest GET <- hyper (10MB body)", size, iters, &mut timings);
 }
 
 // ============================================================================
