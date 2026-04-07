@@ -17,6 +17,16 @@ pub struct AbixioS3 {
     _cluster: Arc<ClusterManager>,
 }
 
+/// Relaxed bucket name validation that accepts any non-empty name.
+/// abixio does its own validation in the storage layer.
+pub struct RelaxedNameValidation;
+
+impl s3s::validation::NameValidation for RelaxedNameValidation {
+    fn validate_bucket_name(&self, name: &str) -> bool {
+        !name.is_empty()
+    }
+}
+
 impl AbixioS3 {
     pub fn new(store: Arc<VolumePool>, cluster: Arc<ClusterManager>) -> Self {
         Self {

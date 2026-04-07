@@ -30,7 +30,8 @@ async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task:
 
 fn build_dispatch(set: Arc<VolumePool>, cluster: Arc<ClusterManager>) -> Arc<AbixioDispatch> {
     let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&set), Arc::clone(&cluster));
-    let builder = s3s::service::S3ServiceBuilder::new(s3);
+    let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+    builder.set_validation(abixio::s3_service::RelaxedNameValidation);
     let s3_service = builder.build();
     Arc::new(AbixioDispatch::new(s3_service, None, None))
 }
@@ -555,9 +556,9 @@ async fn object_tagging_put_get_delete() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
@@ -565,7 +566,7 @@ async fn object_tagging_put_get_delete() {
 
     // get tags on fresh object -- should return empty TagSet
     let resp = client
-        .get(url(&addr, "/tb/obj?tagging"))
+        .get(url(&addr, "/tbk/obj?tagging"))
         .send()
         .await
         .unwrap();
@@ -576,7 +577,7 @@ async fn object_tagging_put_get_delete() {
     // put tags
     let tag_xml = r#"<Tagging><TagSet><Tag><Key>env</Key><Value>prod</Value></Tag><Tag><Key>team</Key><Value>infra</Value></Tag></TagSet></Tagging>"#;
     let resp = client
-        .put(url(&addr, "/tb/obj?tagging"))
+        .put(url(&addr, "/tbk/obj?tagging"))
         .body(tag_xml)
         .send()
         .await
@@ -585,7 +586,7 @@ async fn object_tagging_put_get_delete() {
 
     // get tags back
     let resp = client
-        .get(url(&addr, "/tb/obj?tagging"))
+        .get(url(&addr, "/tbk/obj?tagging"))
         .send()
         .await
         .unwrap();
@@ -602,7 +603,7 @@ async fn object_tagging_put_get_delete() {
 
     // delete tags
     let resp = client
-        .delete(url(&addr, "/tb/obj?tagging"))
+        .delete(url(&addr, "/tbk/obj?tagging"))
         .send()
         .await
         .unwrap();
@@ -610,7 +611,7 @@ async fn object_tagging_put_get_delete() {
 
     // verify tags are gone
     let resp = client
-        .get(url(&addr, "/tb/obj?tagging"))
+        .get(url(&addr, "/tbk/obj?tagging"))
         .send()
         .await
         .unwrap();
@@ -624,10 +625,10 @@ async fn object_tagging_on_nonexistent_object_returns_404() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .get(url(&addr, "/tb/missing?tagging"))
+        .get(url(&addr, "/tbk/missing?tagging"))
         .send()
         .await
         .unwrap();
@@ -640,16 +641,16 @@ async fn object_tagging_malformed_xml_returns_400() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
         .unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb/obj?tagging"))
+        .put(url(&addr, "/tbk/obj?tagging"))
         .body("not xml at all")
         .send()
         .await
@@ -665,17 +666,17 @@ async fn bucket_tagging_put_get_delete() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // get bucket tags (empty initially)
-    let resp = client.get(url(&addr, "/tb?tagging")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?tagging")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 
     // put bucket tags
     let tag_xml =
         r#"<Tagging><TagSet><Tag><Key>project</Key><Value>alpha</Value></Tag></TagSet></Tagging>"#;
     let resp = client
-        .put(url(&addr, "/tb?tagging"))
+        .put(url(&addr, "/tbk?tagging"))
         .body(tag_xml)
         .send()
         .await
@@ -683,14 +684,14 @@ async fn bucket_tagging_put_get_delete() {
     assert_eq!(resp.status(), 200);
 
     // get bucket tags back
-    let resp = client.get(url(&addr, "/tb?tagging")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?tagging")).send().await.unwrap();
     let body = resp.text().await.unwrap();
     assert!(body.contains("project"), "missing key: {}", body);
     assert!(body.contains("alpha"), "missing value: {}", body);
 
     // delete bucket tags
     let resp = client
-        .delete(url(&addr, "/tb?tagging"))
+        .delete(url(&addr, "/tbk?tagging"))
         .send()
         .await
         .unwrap();
@@ -705,9 +706,9 @@ async fn if_none_match_returns_304() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     let resp = client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
@@ -716,7 +717,7 @@ async fn if_none_match_returns_304() {
 
     // GET with matching If-None-Match -> 304
     let resp = client
-        .get(url(&addr, "/tb/obj"))
+        .get(url(&addr, "/tbk/obj"))
         .header("If-None-Match", &etag)
         .send()
         .await
@@ -725,7 +726,7 @@ async fn if_none_match_returns_304() {
 
     // HEAD with matching If-None-Match -> 304
     let resp = client
-        .head(url(&addr, "/tb/obj"))
+        .head(url(&addr, "/tbk/obj"))
         .header("If-None-Match", &etag)
         .send()
         .await
@@ -739,16 +740,16 @@ async fn if_none_match_different_etag_returns_200() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
         .unwrap();
 
     let resp = client
-        .get(url(&addr, "/tb/obj"))
+        .get(url(&addr, "/tbk/obj"))
         .header("If-None-Match", "\"nonexistent-etag\"")
         .send()
         .await
@@ -762,9 +763,9 @@ async fn if_match_returns_412_on_mismatch() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
@@ -772,7 +773,7 @@ async fn if_match_returns_412_on_mismatch() {
 
     // If-Match with wrong etag -> 412
     let resp = client
-        .get(url(&addr, "/tb/obj"))
+        .get(url(&addr, "/tbk/obj"))
         .header("If-Match", "\"wrong-etag\"")
         .send()
         .await
@@ -786,9 +787,9 @@ async fn if_match_correct_etag_returns_200() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     let resp = client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
@@ -796,7 +797,7 @@ async fn if_match_correct_etag_returns_200() {
     let etag = resp.headers()["etag"].to_str().unwrap().to_string();
 
     let resp = client
-        .get(url(&addr, "/tb/obj"))
+        .get(url(&addr, "/tbk/obj"))
         .header("If-Match", &etag)
         .send()
         .await
@@ -810,9 +811,9 @@ async fn if_modified_since_returns_304_when_not_modified() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
@@ -820,7 +821,7 @@ async fn if_modified_since_returns_304_when_not_modified() {
 
     // use a date far in the future
     let resp = client
-        .get(url(&addr, "/tb/obj"))
+        .get(url(&addr, "/tbk/obj"))
         .header("If-Modified-Since", "Sun, 01 Jan 2090 00:00:00 GMT")
         .send()
         .await
@@ -834,9 +835,9 @@ async fn if_unmodified_since_returns_412_when_modified() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
@@ -844,7 +845,7 @@ async fn if_unmodified_since_returns_412_when_modified() {
 
     // use a date far in the past
     let resp = client
-        .get(url(&addr, "/tb/obj"))
+        .get(url(&addr, "/tbk/obj"))
         .header("If-Unmodified-Since", "Thu, 01 Jan 2000 00:00:00 GMT")
         .send()
         .await
@@ -860,10 +861,10 @@ async fn versioning_disabled_by_default() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .get(url(&addr, "/tb?versioning"))
+        .get(url(&addr, "/tbk?versioning"))
         .send()
         .await
         .unwrap();
@@ -885,11 +886,11 @@ async fn versioning_enable_and_get() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
     let resp = client
-        .put(url(&addr, "/tb?versioning"))
+        .put(url(&addr, "/tbk?versioning"))
         .body(xml)
         .send()
         .await
@@ -897,7 +898,7 @@ async fn versioning_enable_and_get() {
     assert_eq!(resp.status(), 200);
 
     let resp = client
-        .get(url(&addr, "/tb?versioning"))
+        .get(url(&addr, "/tbk?versioning"))
         .send()
         .await
         .unwrap();
@@ -911,11 +912,11 @@ async fn versioning_enable_then_suspend() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
     client
-        .put(url(&addr, "/tb?versioning"))
+        .put(url(&addr, "/tbk?versioning"))
         .body(xml)
         .send()
         .await
@@ -923,7 +924,7 @@ async fn versioning_enable_then_suspend() {
 
     let xml = r#"<VersioningConfiguration><Status>Suspended</Status></VersioningConfiguration>"#;
     let resp = client
-        .put(url(&addr, "/tb?versioning"))
+        .put(url(&addr, "/tbk?versioning"))
         .body(xml)
         .send()
         .await
@@ -931,7 +932,7 @@ async fn versioning_enable_then_suspend() {
     assert_eq!(resp.status(), 200);
 
     let resp = client
-        .get(url(&addr, "/tb?versioning"))
+        .get(url(&addr, "/tbk?versioning"))
         .send()
         .await
         .unwrap();
@@ -949,11 +950,11 @@ async fn versioning_invalid_status_returns_400() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let xml = r#"<VersioningConfiguration><Status>Invalid</Status></VersioningConfiguration>"#;
     let resp = client
-        .put(url(&addr, "/tb?versioning"))
+        .put(url(&addr, "/tbk?versioning"))
         .body(xml)
         .send()
         .await
@@ -969,12 +970,12 @@ async fn versioned_put_returns_version_id() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // enable versioning
     let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
     client
-        .put(url(&addr, "/tb?versioning"))
+        .put(url(&addr, "/tbk?versioning"))
         .body(xml)
         .send()
         .await
@@ -982,7 +983,7 @@ async fn versioned_put_returns_version_id() {
 
     // PUT should return x-amz-version-id
     let resp = client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("v1")
         .send()
         .await
@@ -1000,7 +1001,7 @@ async fn versioned_put_returns_version_id() {
 
     // second PUT should return different version id
     let resp = client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("v2")
         .send()
         .await
@@ -1020,30 +1021,30 @@ async fn list_object_versions_returns_all_versions() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
     client
-        .put(url(&addr, "/tb?versioning"))
+        .put(url(&addr, "/tbk?versioning"))
         .body(xml)
         .send()
         .await
         .unwrap();
 
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("v1")
         .send()
         .await
         .unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("v2")
         .send()
         .await
         .unwrap();
 
-    let resp = client.get(url(&addr, "/tb?versions")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?versions")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(
@@ -1069,9 +1070,9 @@ async fn list_object_versions_empty_bucket() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let resp = client.get(url(&addr, "/tb?versions")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?versions")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("ListVersionsResult"));
@@ -1086,32 +1087,32 @@ async fn versioned_delete_creates_delete_marker() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
     client
-        .put(url(&addr, "/tb?versioning"))
+        .put(url(&addr, "/tbk?versioning"))
         .body(xml)
         .send()
         .await
         .unwrap();
 
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
         .unwrap();
 
     // delete without versionId -> should create delete marker
-    let resp = client.delete(url(&addr, "/tb/obj")).send().await.unwrap();
+    let resp = client.delete(url(&addr, "/tbk/obj")).send().await.unwrap();
     assert_eq!(resp.status(), 204);
     assert!(resp.headers().contains_key("x-amz-delete-marker"));
     assert_eq!(resp.headers()["x-amz-delete-marker"], "true");
     assert!(resp.headers().contains_key("x-amz-version-id"));
 
     // list versions should show the delete marker
-    let resp = client.get(url(&addr, "/tb?versions")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?versions")).send().await.unwrap();
     let body = resp.text().await.unwrap();
     assert!(
         body.contains("<DeleteMarker>"),
@@ -1128,18 +1129,18 @@ async fn get_specific_version() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
     client
-        .put(url(&addr, "/tb?versioning"))
+        .put(url(&addr, "/tbk?versioning"))
         .body(xml)
         .send()
         .await
         .unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("version-one")
         .send()
         .await
@@ -1150,19 +1151,19 @@ async fn get_specific_version() {
         .to_string();
 
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("version-two")
         .send()
         .await
         .unwrap();
 
     // GET without versionId -> latest (version-two)
-    let resp = client.get(url(&addr, "/tb/obj")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/obj")).send().await.unwrap();
     assert_eq!(resp.text().await.unwrap(), "version-two");
 
     // GET with versionId=vid1 -> first version
     let resp = client
-        .get(url_with_query(&addr, "/tb/obj", &[("versionId", &vid1)]))
+        .get(url_with_query(&addr, "/tbk/obj", &[("versionId", &vid1)]))
         .send()
         .await
         .unwrap();
@@ -1176,18 +1177,18 @@ async fn delete_specific_version() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
     client
-        .put(url(&addr, "/tb?versioning"))
+        .put(url(&addr, "/tbk?versioning"))
         .body(xml)
         .send()
         .await
         .unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("v1")
         .send()
         .await
@@ -1198,7 +1199,7 @@ async fn delete_specific_version() {
         .to_string();
 
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("v2")
         .send()
         .await
@@ -1206,7 +1207,7 @@ async fn delete_specific_version() {
 
     // permanently delete v1
     let resp = client
-        .delete(url_with_query(&addr, "/tb/obj", &[("versionId", &vid1)]))
+        .delete(url_with_query(&addr, "/tbk/obj", &[("versionId", &vid1)]))
         .send()
         .await
         .unwrap();
@@ -1215,14 +1216,14 @@ async fn delete_specific_version() {
 
     // GET v1 should now fail
     let resp = client
-        .get(url_with_query(&addr, "/tb/obj", &[("versionId", &vid1)]))
+        .get(url_with_query(&addr, "/tbk/obj", &[("versionId", &vid1)]))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 404);
 
     // latest (v2) should still work
-    let resp = client.get(url(&addr, "/tb/obj")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/obj")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.text().await.unwrap(), "v2");
 }
@@ -1235,12 +1236,12 @@ async fn suspended_versioning_uses_null_version() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // enable then suspend
     let xml = r#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#;
     client
-        .put(url(&addr, "/tb?versioning"))
+        .put(url(&addr, "/tbk?versioning"))
         .body(xml)
         .send()
         .await
@@ -1248,7 +1249,7 @@ async fn suspended_versioning_uses_null_version() {
 
     let xml = r#"<VersioningConfiguration><Status>Suspended</Status></VersioningConfiguration>"#;
     client
-        .put(url(&addr, "/tb?versioning"))
+        .put(url(&addr, "/tbk?versioning"))
         .body(xml)
         .send()
         .await
@@ -1256,7 +1257,7 @@ async fn suspended_versioning_uses_null_version() {
 
     // PUT should return version-id "null"
     let resp = client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
@@ -1282,12 +1283,12 @@ async fn list_objects_rejects_hostile_prefix() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
         .get(url_with_query(
             &addr,
-            "/tb",
+            "/tbk",
             &[("list-type", "2"), ("prefix", "safe/../escape")],
         ))
         .send()
@@ -1304,9 +1305,9 @@ async fn get_object_rejects_invalid_version_id() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
@@ -1315,7 +1316,7 @@ async fn get_object_rejects_invalid_version_id() {
     let resp = client
         .get(url_with_query(
             &addr,
-            "/tb/obj",
+            "/tbk/obj",
             &[("versionId", "../escape")],
         ))
         .send()
@@ -1332,12 +1333,12 @@ async fn multipart_rejects_invalid_upload_id() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
         .put(url_with_query(
             &addr,
-            "/tb/key",
+            "/tbk/key",
             &[("uploadId", "../escape"), ("partNumber", "1")],
         ))
         .body("data")
@@ -1355,10 +1356,10 @@ async fn multipart_rejects_percent_encoded_traversal_upload_id() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // raw URL so %2e%2e in uploadId is not double-encoded
-    let raw = format!("http://{}/tb/key?uploadId=%2e%2e%2fescape&partNumber=1", addr);
+    let raw = format!("http://{}/tbk/key?uploadId=%2e%2e%2fescape&partNumber=1", addr);
     let resp = client
         .put(&raw)
         .body("data")
@@ -1376,7 +1377,7 @@ async fn list_objects_rejects_percent_encoded_traversal_prefix() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // raw URL so %2e%2e is not double-encoded
     let raw = format!("http://{}/tb?list-type=2&prefix=%2e%2e%2fescape", addr);
@@ -1398,9 +1399,9 @@ async fn copy_object_same_bucket() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/src"))
+        .put(url(&addr, "/tbk/src"))
         .header("Content-Type", "text/plain")
         .body("original")
         .send()
@@ -1408,8 +1409,8 @@ async fn copy_object_same_bucket() {
         .unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb/dst"))
-        .header("x-amz-copy-source", "/tb/src")
+        .put(url(&addr, "/tbk/dst"))
+        .header("x-amz-copy-source", "/tbk/src")
         .send()
         .await
         .unwrap();
@@ -1419,7 +1420,7 @@ async fn copy_object_same_bucket() {
     assert!(body.contains("ETag"));
 
     // verify copy
-    let resp = client.get(url(&addr, "/tb/dst")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/dst")).send().await.unwrap();
     assert_eq!(resp.text().await.unwrap(), "original");
 }
 
@@ -1462,21 +1463,21 @@ async fn delete_objects_batch() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/a"))
+        .put(url(&addr, "/tbk/a"))
         .body("1")
         .send()
         .await
         .unwrap();
     client
-        .put(url(&addr, "/tb/b"))
+        .put(url(&addr, "/tbk/b"))
         .body("2")
         .send()
         .await
         .unwrap();
     client
-        .put(url(&addr, "/tb/c"))
+        .put(url(&addr, "/tbk/c"))
         .body("3")
         .send()
         .await
@@ -1485,7 +1486,7 @@ async fn delete_objects_batch() {
     let delete_xml =
         r#"<Delete><Object><Key>a</Key></Object><Object><Key>b</Key></Object></Delete>"#;
     let resp = client
-        .post(url(&addr, "/tb?delete"))
+        .post(url(&addr, "/tbk?delete"))
         .body(delete_xml)
         .send()
         .await
@@ -1497,9 +1498,9 @@ async fn delete_objects_batch() {
     assert!(body.contains("<Key>b</Key>"));
 
     // a and b should be gone, c should remain
-    let resp = client.get(url(&addr, "/tb/a")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/a")).send().await.unwrap();
     assert_eq!(resp.status(), 404);
-    let resp = client.get(url(&addr, "/tb/c")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/c")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
 }
 
@@ -1511,16 +1512,16 @@ async fn range_request_partial_content() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("hello world")
         .send()
         .await
         .unwrap();
 
     let resp = client
-        .get(url(&addr, "/tb/obj"))
+        .get(url(&addr, "/tbk/obj"))
         .header("Range", "bytes=0-4")
         .send()
         .await
@@ -1536,16 +1537,16 @@ async fn range_request_invalid_returns_416() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("small")
         .send()
         .await
         .unwrap();
 
     let resp = client
-        .get(url(&addr, "/tb/obj"))
+        .get(url(&addr, "/tbk/obj"))
         .header("Range", "bytes=100-200")
         .send()
         .await
@@ -1561,9 +1562,9 @@ async fn custom_metadata_round_trip() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .header("x-amz-meta-author", "alice")
         .header("x-amz-meta-version", "42")
         .body("data")
@@ -1571,11 +1572,11 @@ async fn custom_metadata_round_trip() {
         .await
         .unwrap();
 
-    let resp = client.head(url(&addr, "/tb/obj")).send().await.unwrap();
+    let resp = client.head(url(&addr, "/tbk/obj")).send().await.unwrap();
     assert_eq!(resp.headers()["x-amz-meta-author"], "alice");
     assert_eq!(resp.headers()["x-amz-meta-version"], "42");
 
-    let resp = client.get(url(&addr, "/tb/obj")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/obj")).send().await.unwrap();
     assert_eq!(resp.headers()["x-amz-meta-author"], "alice");
 }
 
@@ -1587,15 +1588,15 @@ async fn delete_bucket_non_empty_returns_409() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
         .unwrap();
 
-    let resp = client.delete(url(&addr, "/tb")).send().await.unwrap();
+    let resp = client.delete(url(&addr, "/tbk")).send().await.unwrap();
     assert_eq!(resp.status(), 409);
 }
 
@@ -1605,13 +1606,13 @@ async fn delete_bucket_empty_succeeds() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let resp = client.delete(url(&addr, "/tb")).send().await.unwrap();
+    let resp = client.delete(url(&addr, "/tbk")).send().await.unwrap();
     assert_eq!(resp.status(), 204);
 
     // bucket should be gone
-    let resp = client.head(url(&addr, "/tb")).send().await.unwrap();
+    let resp = client.head(url(&addr, "/tbk")).send().await.unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -1624,7 +1625,7 @@ async fn unsupported_method_returns_405() {
     let client = reqwest::Client::new();
 
     let resp = client
-        .patch(url(&addr, "/tb/obj"))
+        .patch(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
@@ -1640,10 +1641,10 @@ async fn multipart_create_upload_returns_upload_id() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .post(url(&addr, "/tb/bigfile?uploads"))
+        .post(url(&addr, "/tbk/bigfile?uploads"))
         .send()
         .await
         .unwrap();
@@ -1655,7 +1656,7 @@ async fn multipart_create_upload_returns_upload_id() {
         body
     );
     assert!(body.contains("<UploadId>"), "missing UploadId: {}", body);
-    assert!(body.contains("<Bucket>tb</Bucket>"));
+    assert!(body.contains("<Bucket>tbk</Bucket>"));
     assert!(body.contains("<Key>bigfile</Key>"));
 }
 
@@ -1665,11 +1666,11 @@ async fn multipart_full_lifecycle() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // create upload
     let resp = client
-        .post(url(&addr, "/tb/assembled?uploads"))
+        .post(url(&addr, "/tbk/assembled?uploads"))
         .send()
         .await
         .unwrap();
@@ -1684,7 +1685,7 @@ async fn multipart_full_lifecycle() {
     let resp = client
         .put(url_with_query(
             &addr,
-            "/tb/assembled",
+            "/tbk/assembled",
             &[("uploadId", &upload_id), ("partNumber", "1")],
         ))
         .body(part1)
@@ -1697,7 +1698,7 @@ async fn multipart_full_lifecycle() {
     let resp = client
         .put(url_with_query(
             &addr,
-            "/tb/assembled",
+            "/tbk/assembled",
             &[("uploadId", &upload_id), ("partNumber", "2")],
         ))
         .body(part2)
@@ -1710,7 +1711,7 @@ async fn multipart_full_lifecycle() {
     let resp = client
         .put(url_with_query(
             &addr,
-            "/tb/assembled",
+            "/tbk/assembled",
             &[("uploadId", &upload_id), ("partNumber", "3")],
         ))
         .body(part3)
@@ -1724,7 +1725,7 @@ async fn multipart_full_lifecycle() {
     let resp = client
         .get(url_with_query(
             &addr,
-            "/tb/assembled",
+            "/tbk/assembled",
             &[("uploadId", &upload_id)],
         ))
         .send()
@@ -1745,7 +1746,7 @@ async fn multipart_full_lifecycle() {
     let resp = client
         .post(url_with_query(
             &addr,
-            "/tb/assembled",
+            "/tbk/assembled",
             &[("uploadId", &upload_id)],
         ))
         .body(complete_xml)
@@ -1762,7 +1763,7 @@ async fn multipart_full_lifecycle() {
 
     // GET the assembled object
     let resp = client
-        .get(url(&addr, "/tb/assembled"))
+        .get(url(&addr, "/tbk/assembled"))
         .send()
         .await
         .unwrap();
@@ -1777,11 +1778,11 @@ async fn multipart_abort_cleans_up() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // create and upload a part
     let resp = client
-        .post(url(&addr, "/tb/aborted?uploads"))
+        .post(url(&addr, "/tbk/aborted?uploads"))
         .send()
         .await
         .unwrap();
@@ -1791,7 +1792,7 @@ async fn multipart_abort_cleans_up() {
     client
         .put(url_with_query(
             &addr,
-            "/tb/aborted",
+            "/tbk/aborted",
             &[("uploadId", &upload_id), ("partNumber", "1")],
         ))
         .body("data")
@@ -1803,7 +1804,7 @@ async fn multipart_abort_cleans_up() {
     let resp = client
         .delete(url_with_query(
             &addr,
-            "/tb/aborted",
+            "/tbk/aborted",
             &[("uploadId", &upload_id)],
         ))
         .send()
@@ -1815,7 +1816,7 @@ async fn multipart_abort_cleans_up() {
     let resp = client
         .get(url_with_query(
             &addr,
-            "/tb/aborted",
+            "/tbk/aborted",
             &[("uploadId", &upload_id)],
         ))
         .send()
@@ -1835,21 +1836,21 @@ async fn multipart_list_uploads() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // create two uploads
     client
-        .post(url(&addr, "/tb/file1?uploads"))
+        .post(url(&addr, "/tbk/file1?uploads"))
         .send()
         .await
         .unwrap();
     client
-        .post(url(&addr, "/tb/file2?uploads"))
+        .post(url(&addr, "/tbk/file2?uploads"))
         .send()
         .await
         .unwrap();
 
-    let resp = client.get(url(&addr, "/tb?uploads")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?uploads")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(
@@ -1925,11 +1926,11 @@ async fn multipart_each_upload_gets_unique_id() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let id1 = create_upload(&client, &addr, "tb", "key").await;
-    let id2 = create_upload(&client, &addr, "tb", "key").await;
-    let id3 = create_upload(&client, &addr, "tb", "other").await;
+    let id1 = create_upload(&client, &addr, "tbk", "key").await;
+    let id2 = create_upload(&client, &addr, "tbk", "key").await;
+    let id3 = create_upload(&client, &addr, "tbk", "other").await;
     assert_ne!(id1, id2, "same key should get different upload IDs");
     assert_ne!(id1, id3);
     assert_ne!(id2, id3);
@@ -1940,13 +1941,13 @@ async fn multipart_upload_part_returns_correct_etag() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
 
     let data = b"hello world";
     let expected_md5 = format!("\"{}\"", md5_hex(data));
-    let etag = upload_part(&client, &addr, "tb", "key", &uid, 1, data).await;
+    let etag = upload_part(&client, &addr, "tbk", "key", &uid, 1, data).await;
     assert_eq!(etag, expected_md5, "part etag should be MD5 of part data");
 }
 
@@ -1955,14 +1956,14 @@ async fn multipart_overwrite_part_number() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
 
     // upload part 1 twice with different data
-    let _etag1a = upload_part(&client, &addr, "tb", "key", &uid, 1, b"first").await;
-    let etag1b = upload_part(&client, &addr, "tb", "key", &uid, 1, b"second").await;
-    let etag2 = upload_part(&client, &addr, "tb", "key", &uid, 2, b"part2").await;
+    let _etag1a = upload_part(&client, &addr, "tbk", "key", &uid, 1, b"first").await;
+    let etag1b = upload_part(&client, &addr, "tbk", "key", &uid, 1, b"second").await;
+    let etag2 = upload_part(&client, &addr, "tbk", "key", &uid, 2, b"part2").await;
 
     // complete with the overwritten part 1
     let complete_xml = format!(
@@ -1970,7 +1971,7 @@ async fn multipart_overwrite_part_number() {
         etag1b, etag2
     );
     let resp = client
-        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .post(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .body(complete_xml)
         .send()
         .await
@@ -1978,7 +1979,7 @@ async fn multipart_overwrite_part_number() {
     assert_eq!(resp.status(), 200);
 
     // verify content uses second upload of part 1
-    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/key")).send().await.unwrap();
     assert_eq!(resp.text().await.unwrap(), "secondpart2");
 }
 
@@ -1987,14 +1988,14 @@ async fn multipart_non_sequential_part_numbers() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
 
     // upload parts 3, 1, 7 (non-sequential, out of order)
-    let etag3 = upload_part(&client, &addr, "tb", "key", &uid, 3, b"CCC").await;
-    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"AAA").await;
-    let etag7 = upload_part(&client, &addr, "tb", "key", &uid, 7, b"GGG").await;
+    let etag3 = upload_part(&client, &addr, "tbk", "key", &uid, 3, b"CCC").await;
+    let etag1 = upload_part(&client, &addr, "tbk", "key", &uid, 1, b"AAA").await;
+    let etag7 = upload_part(&client, &addr, "tbk", "key", &uid, 7, b"GGG").await;
 
     // complete in order 1, 3, 7
     let complete_xml = format!(
@@ -2002,14 +2003,14 @@ async fn multipart_non_sequential_part_numbers() {
         etag1, etag3, etag7
     );
     let resp = client
-        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .post(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .body(complete_xml)
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/key")).send().await.unwrap();
     assert_eq!(resp.text().await.unwrap(), "AAACCCGGG");
 }
 
@@ -2018,23 +2019,23 @@ async fn multipart_large_parts() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
 
     // 1MB parts
     let part1: Vec<u8> = vec![b'A'; 1024 * 1024];
     let part2: Vec<u8> = vec![b'B'; 1024 * 1024];
 
-    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, &part1).await;
-    let etag2 = upload_part(&client, &addr, "tb", "key", &uid, 2, &part2).await;
+    let etag1 = upload_part(&client, &addr, "tbk", "key", &uid, 1, &part1).await;
+    let etag2 = upload_part(&client, &addr, "tbk", "key", &uid, 2, &part2).await;
 
     let complete_xml = format!(
         r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
         etag1, etag2
     );
     let resp = client
-        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .post(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .body(complete_xml)
         .send()
         .await
@@ -2042,7 +2043,7 @@ async fn multipart_large_parts() {
     assert_eq!(resp.status(), 200);
 
     // verify size and content
-    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/key")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.headers()["content-length"], "2097152"); // 2MB
     let body = resp.bytes().await.unwrap();
@@ -2060,10 +2061,10 @@ async fn multipart_complete_with_missing_part_fails() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
-    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"data").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
+    let etag1 = upload_part(&client, &addr, "tbk", "key", &uid, 1, b"data").await;
 
     // try to complete with part 1 and non-existent part 2
     let complete_xml = format!(
@@ -2071,7 +2072,7 @@ async fn multipart_complete_with_missing_part_fails() {
         etag1
     );
     let resp = client
-        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .post(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .body(complete_xml)
         .send()
         .await
@@ -2084,12 +2085,12 @@ async fn multipart_complete_malformed_xml_fails() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
 
     let resp = client
-        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .post(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .body("not xml")
         .send()
         .await
@@ -2102,14 +2103,14 @@ async fn multipart_list_parts_shows_sizes() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
-    upload_part(&client, &addr, "tb", "key", &uid, 1, b"short").await;
-    upload_part(&client, &addr, "tb", "key", &uid, 2, &vec![b'x'; 10000]).await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
+    upload_part(&client, &addr, "tbk", "key", &uid, 1, b"short").await;
+    upload_part(&client, &addr, "tbk", "key", &uid, 2, &vec![b'x'; 10000]).await;
 
     let resp = client
-        .get(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .get(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .send()
         .await
         .unwrap();
@@ -2122,7 +2123,7 @@ async fn multipart_list_parts_shows_sizes() {
         "should include upload ID: {}",
         body
     );
-    assert!(body.contains("<Bucket>tb</Bucket>"));
+    assert!(body.contains("<Bucket>tbk</Bucket>"));
     assert!(body.contains("<Key>key</Key>"));
 }
 
@@ -2131,14 +2132,14 @@ async fn multipart_abort_then_complete_fails() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
-    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"data").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
+    let etag1 = upload_part(&client, &addr, "tbk", "key", &uid, 1, b"data").await;
 
     // abort
     let resp = client
-        .delete(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .delete(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .send()
         .await
         .unwrap();
@@ -2150,7 +2151,7 @@ async fn multipart_abort_then_complete_fails() {
         etag1
     );
     let resp = client
-        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .post(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .body(complete_xml)
         .send()
         .await
@@ -2163,30 +2164,30 @@ async fn multipart_completed_object_survives_head_and_delete() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
-    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"multipart-data").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
+    let etag1 = upload_part(&client, &addr, "tbk", "key", &uid, 1, b"multipart-data").await;
 
     let complete_xml = format!(
         r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
         etag1
     );
     client
-        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .post(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .body(complete_xml)
         .send()
         .await
         .unwrap();
 
     // HEAD should work
-    let resp = client.head(url(&addr, "/tb/key")).send().await.unwrap();
+    let resp = client.head(url(&addr, "/tbk/key")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.headers()["content-length"], "14");
 
     // object should appear in list
     let resp = client
-        .get(url(&addr, "/tb?list-type=2"))
+        .get(url(&addr, "/tbk?list-type=2"))
         .send()
         .await
         .unwrap();
@@ -2198,11 +2199,11 @@ async fn multipart_completed_object_survives_head_and_delete() {
     );
 
     // delete should work
-    let resp = client.delete(url(&addr, "/tb/key")).send().await.unwrap();
+    let resp = client.delete(url(&addr, "/tbk/key")).send().await.unwrap();
     assert_eq!(resp.status(), 204);
 
     // GET after delete should 404
-    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/key")).send().await.unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -2211,14 +2212,14 @@ async fn multipart_upload_does_not_appear_as_object_until_complete() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "invisible").await;
-    upload_part(&client, &addr, "tb", "invisible", &uid, 1, b"data").await;
+    let uid = create_upload(&client, &addr, "tbk", "invisible").await;
+    upload_part(&client, &addr, "tbk", "invisible", &uid, 1, b"data").await;
 
     // object should NOT appear in listing yet
     let resp = client
-        .get(url(&addr, "/tb?list-type=2"))
+        .get(url(&addr, "/tbk?list-type=2"))
         .send()
         .await
         .unwrap();
@@ -2231,7 +2232,7 @@ async fn multipart_upload_does_not_appear_as_object_until_complete() {
 
     // GET should 404
     let resp = client
-        .get(url(&addr, "/tb/invisible"))
+        .get(url(&addr, "/tbk/invisible"))
         .send()
         .await
         .unwrap();
@@ -2243,13 +2244,13 @@ async fn multipart_list_uploads_after_complete_is_empty() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
-    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"data").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
+    let etag1 = upload_part(&client, &addr, "tbk", "key", &uid, 1, b"data").await;
 
     // should show in list
-    let resp = client.get(url(&addr, "/tb?uploads")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?uploads")).send().await.unwrap();
     let body = resp.text().await.unwrap();
     assert!(
         body.contains(&uid),
@@ -2262,14 +2263,14 @@ async fn multipart_list_uploads_after_complete_is_empty() {
         etag1
     );
     client
-        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .post(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .body(complete_xml)
         .send()
         .await
         .unwrap();
 
     // should NOT show in list after complete
-    let resp = client.get(url(&addr, "/tb?uploads")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?uploads")).send().await.unwrap();
     let body = resp.text().await.unwrap();
     assert!(
         !body.contains(&uid),
@@ -2283,18 +2284,18 @@ async fn multipart_list_uploads_after_abort_is_empty() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
 
     // abort
     client
-        .delete(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .delete(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .send()
         .await
         .unwrap();
 
-    let resp = client.get(url(&addr, "/tb?uploads")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?uploads")).send().await.unwrap();
     let body = resp.text().await.unwrap();
     assert!(
         !body.contains(&uid),
@@ -2308,18 +2309,18 @@ async fn multipart_complete_etag_is_multipart_format() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
-    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"aaa").await;
-    let etag2 = upload_part(&client, &addr, "tb", "key", &uid, 2, b"bbb").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
+    let etag1 = upload_part(&client, &addr, "tbk", "key", &uid, 1, b"aaa").await;
+    let etag2 = upload_part(&client, &addr, "tbk", "key", &uid, 2, b"bbb").await;
 
     let complete_xml = format!(
         r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
         etag1, etag2
     );
     let resp = client
-        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .post(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .body(complete_xml)
         .send()
         .await
@@ -2340,24 +2341,24 @@ async fn multipart_single_part_upload() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
-    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"only-part").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
+    let etag1 = upload_part(&client, &addr, "tbk", "key", &uid, 1, b"only-part").await;
 
     let complete_xml = format!(
         r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
         etag1
     );
     let resp = client
-        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .post(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .body(complete_xml)
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/key")).send().await.unwrap();
     assert_eq!(resp.text().await.unwrap(), "only-part");
 }
 
@@ -2366,25 +2367,25 @@ async fn multipart_empty_part() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let uid = create_upload(&client, &addr, "tb", "key").await;
-    let etag1 = upload_part(&client, &addr, "tb", "key", &uid, 1, b"data").await;
-    let etag2 = upload_part(&client, &addr, "tb", "key", &uid, 2, b"").await;
+    let uid = create_upload(&client, &addr, "tbk", "key").await;
+    let etag1 = upload_part(&client, &addr, "tbk", "key", &uid, 1, b"data").await;
+    let etag2 = upload_part(&client, &addr, "tbk", "key", &uid, 2, b"").await;
 
     let complete_xml = format!(
         r#"<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part><Part><PartNumber>2</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>"#,
         etag1, etag2
     );
     let resp = client
-        .post(url_with_query(&addr, "/tb/key", &[("uploadId", &uid)]))
+        .post(url_with_query(&addr, "/tbk/key", &[("uploadId", &uid)]))
         .body(complete_xml)
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    let resp = client.get(url(&addr, "/tb/key")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/key")).send().await.unwrap();
     assert_eq!(resp.text().await.unwrap(), "data");
 }
 
@@ -2395,13 +2396,13 @@ async fn bucket_lifecycle_put_get_delete() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let lifecycle_xml = r#"<LifecycleConfiguration><Rule><ID>expire-logs</ID><Status>Enabled</Status><Filter><Prefix>logs/</Prefix></Filter><Expiration><Days>30</Days></Expiration></Rule></LifecycleConfiguration>"#;
 
     // PUT
     let resp = client
-        .put(url(&addr, "/tb?lifecycle"))
+        .put(url(&addr, "/tbk?lifecycle"))
         .body(lifecycle_xml)
         .send()
         .await
@@ -2410,7 +2411,7 @@ async fn bucket_lifecycle_put_get_delete() {
 
     // GET
     let resp = client
-        .get(url(&addr, "/tb?lifecycle"))
+        .get(url(&addr, "/tbk?lifecycle"))
         .send()
         .await
         .unwrap();
@@ -2423,7 +2424,7 @@ async fn bucket_lifecycle_put_get_delete() {
 
     // DELETE
     let resp = client
-        .delete(url(&addr, "/tb?lifecycle"))
+        .delete(url(&addr, "/tbk?lifecycle"))
         .send()
         .await
         .unwrap();
@@ -2431,7 +2432,7 @@ async fn bucket_lifecycle_put_get_delete() {
 
     // GET after delete returns 404
     let resp = client
-        .get(url(&addr, "/tb?lifecycle"))
+        .get(url(&addr, "/tbk?lifecycle"))
         .send()
         .await
         .unwrap();
@@ -2449,10 +2450,10 @@ async fn bucket_lifecycle_get_when_none_returns_404() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .get(url(&addr, "/tb?lifecycle"))
+        .get(url(&addr, "/tbk?lifecycle"))
         .send()
         .await
         .unwrap();
@@ -2464,10 +2465,10 @@ async fn bucket_lifecycle_put_invalid_xml_returns_400() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb?lifecycle"))
+        .put(url(&addr, "/tbk?lifecycle"))
         .body("this is not valid xml at all")
         .send()
         .await
@@ -2480,16 +2481,16 @@ async fn bucket_lifecycle_delete_idempotent() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .delete(url(&addr, "/tb?lifecycle"))
+        .delete(url(&addr, "/tbk?lifecycle"))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 204);
     let resp = client
-        .delete(url(&addr, "/tb?lifecycle"))
+        .delete(url(&addr, "/tbk?lifecycle"))
         .send()
         .await
         .unwrap();
@@ -2501,12 +2502,12 @@ async fn bucket_lifecycle_multiple_rules() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let lifecycle_xml = r#"<LifecycleConfiguration><Rule><ID>rule1</ID><Status>Enabled</Status><Filter><Prefix>logs/</Prefix></Filter><Expiration><Days>7</Days></Expiration></Rule><Rule><ID>rule2</ID><Status>Enabled</Status><Filter><Prefix>temp/</Prefix></Filter><Expiration><Days>1</Days></Expiration></Rule></LifecycleConfiguration>"#;
 
     let resp = client
-        .put(url(&addr, "/tb?lifecycle"))
+        .put(url(&addr, "/tbk?lifecycle"))
         .body(lifecycle_xml)
         .send()
         .await
@@ -2514,7 +2515,7 @@ async fn bucket_lifecycle_multiple_rules() {
     assert_eq!(resp.status(), 200);
 
     let resp = client
-        .get(url(&addr, "/tb?lifecycle"))
+        .get(url(&addr, "/tbk?lifecycle"))
         .send()
         .await
         .unwrap();
@@ -2530,9 +2531,9 @@ async fn bucket_cors_get_returns_404() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let resp = client.get(url(&addr, "/tb?cors")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?cors")).send().await.unwrap();
     assert_eq!(resp.status(), 404);
     let body = resp.text().await.unwrap();
     assert!(body.contains("NoSuchCORSConfiguration"), "body: {}", body);
@@ -2543,10 +2544,10 @@ async fn bucket_cors_put_returns_501() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb?cors"))
+        .put(url(&addr, "/tbk?cors"))
         .body("<CORSConfiguration/>")
         .send()
         .await
@@ -2559,9 +2560,9 @@ async fn bucket_cors_delete_returns_501() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let resp = client.delete(url(&addr, "/tb?cors")).send().await.unwrap();
+    let resp = client.delete(url(&addr, "/tbk?cors")).send().await.unwrap();
     assert_eq!(resp.status(), 501);
 }
 
@@ -2572,10 +2573,10 @@ async fn bucket_notification_get_returns_empty_config() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .get(url(&addr, "/tb?notification"))
+        .get(url(&addr, "/tbk?notification"))
         .send()
         .await
         .unwrap();
@@ -2589,10 +2590,10 @@ async fn bucket_notification_put_returns_501() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb?notification"))
+        .put(url(&addr, "/tbk?notification"))
         .body("<NotificationConfiguration/>")
         .send()
         .await
@@ -2607,9 +2608,9 @@ async fn bucket_acl_get_returns_full_control() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let resp = client.get(url(&addr, "/tb?acl")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?acl")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("FULL_CONTROL"), "body: {}", body);
@@ -2621,10 +2622,10 @@ async fn bucket_acl_put_private_succeeds() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb?acl"))
+        .put(url(&addr, "/tbk?acl"))
         .header("x-amz-acl", "private")
         .send()
         .await
@@ -2637,10 +2638,10 @@ async fn bucket_acl_put_public_returns_501() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb?acl"))
+        .put(url(&addr, "/tbk?acl"))
         .header("x-amz-acl", "public-read")
         .send()
         .await
@@ -2653,15 +2654,15 @@ async fn object_acl_get_returns_full_control() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
         .unwrap();
 
-    let resp = client.get(url(&addr, "/tb/obj?acl")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk/obj?acl")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     let body = resp.text().await.unwrap();
     assert!(body.contains("FULL_CONTROL"), "body: {}", body);
@@ -2672,16 +2673,16 @@ async fn object_acl_put_private_succeeds() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
         .unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb/obj?acl"))
+        .put(url(&addr, "/tbk/obj?acl"))
         .header("x-amz-acl", "private")
         .send()
         .await
@@ -2703,13 +2704,13 @@ async fn bucket_policy_put_get_delete() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let policy_json = r#"{"Version":"2012-10-17","Statement":[{"Sid":"PublicRead","Effect":"Allow","Principal":{"AWS":["*"]},"Action":["s3:GetObject"],"Resource":["arn:aws:s3:::tb/*"]}]}"#;
 
     // PUT policy
     let resp = client
-        .put(url(&addr, "/tb?policy"))
+        .put(url(&addr, "/tbk?policy"))
         .body(policy_json)
         .send()
         .await
@@ -2717,7 +2718,7 @@ async fn bucket_policy_put_get_delete() {
     assert_eq!(resp.status(), 204);
 
     // GET policy
-    let resp = client.get(url(&addr, "/tb?policy")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?policy")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.headers()["content-type"], "application/json");
     let body = resp.text().await.unwrap();
@@ -2726,14 +2727,14 @@ async fn bucket_policy_put_get_delete() {
 
     // DELETE policy
     let resp = client
-        .delete(url(&addr, "/tb?policy"))
+        .delete(url(&addr, "/tbk?policy"))
         .send()
         .await
         .unwrap();
     assert_eq!(resp.status(), 204);
 
     // GET after delete returns 404
-    let resp = client.get(url(&addr, "/tb?policy")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?policy")).send().await.unwrap();
     assert_eq!(resp.status(), 404);
 }
 
@@ -2742,9 +2743,9 @@ async fn bucket_policy_get_when_none_returns_404() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    let resp = client.get(url(&addr, "/tb?policy")).send().await.unwrap();
+    let resp = client.get(url(&addr, "/tbk?policy")).send().await.unwrap();
     assert_eq!(resp.status(), 404);
     let body = resp.text().await.unwrap();
     assert!(body.contains("NoSuchBucketPolicy"), "body: {}", body);
@@ -2755,10 +2756,10 @@ async fn bucket_policy_put_invalid_json_returns_400() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb?policy"))
+        .put(url(&addr, "/tbk?policy"))
         .body("not json at all")
         .send()
         .await
@@ -2771,10 +2772,10 @@ async fn bucket_policy_put_missing_version_returns_400() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb?policy"))
+        .put(url(&addr, "/tbk?policy"))
         .body(r#"{"Statement":[]}"#)
         .send()
         .await
@@ -2787,10 +2788,10 @@ async fn bucket_policy_put_empty_version_returns_400() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb?policy"))
+        .put(url(&addr, "/tbk?policy"))
         .body(r#"{"Version":"","Statement":[]}"#)
         .send()
         .await
@@ -2803,11 +2804,11 @@ async fn bucket_policy_delete_idempotent() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // delete when no policy exists -- should still return 204
     let resp = client
-        .delete(url(&addr, "/tb?policy"))
+        .delete(url(&addr, "/tbk?policy"))
         .send()
         .await
         .unwrap();
@@ -2815,7 +2816,7 @@ async fn bucket_policy_delete_idempotent() {
 
     // delete again
     let resp = client
-        .delete(url(&addr, "/tb?policy"))
+        .delete(url(&addr, "/tbk?policy"))
         .send()
         .await
         .unwrap();
@@ -3219,7 +3220,7 @@ async fn put_rejects_dot_dot_key_via_query() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // URL paths get normalized by HTTP clients/servers, so ../
     // in paths may get collapsed before reaching the handler.
@@ -3234,7 +3235,7 @@ async fn put_rejects_dot_dot_key_via_query() {
         let resp = client
             .get(url_with_query(
                 &addr,
-                "/tb",
+                "/tbk",
                 &[("list-type", "2"), ("prefix", hostile_prefix)],
             ))
             .send()
@@ -3255,11 +3256,11 @@ async fn put_rejects_backslash_traversal() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // backslash gets percent-encoded by HTTP clients (%5C), so test
     // via raw URL to ensure encoded backslash reaches validator
-    let raw = format!("http://{}/tb/a%5Cb", addr);
+    let raw = format!("http://{}/tbk/a%5Cb", addr);
     let resp = client.put(&raw).body("data").send().await.unwrap();
     // %5C stays encoded in path (hyper does not decode path segments)
     // so the validator sees literal "%5C" not "\", which is a valid segment.
@@ -3273,11 +3274,11 @@ async fn put_rejects_null_byte_in_key() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // null byte in URL path -- hyper may reject this before reaching handler
     // or it may pass through as %00. Either rejection or 400 is acceptable.
-    let raw = format!("http://{}/tb/a%00b", addr);
+    let raw = format!("http://{}/tbk/a%00b", addr);
     let result = client.put(&raw).body("data").send().await;
     match result {
         Ok(resp) => assert!(
@@ -3294,10 +3295,10 @@ async fn put_rejects_double_slash_in_key() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .put(url(&addr, "/tb/a//b"))
+        .put(url(&addr, "/tbk/a//b"))
         .body("data")
         .send()
         .await
@@ -3382,12 +3383,12 @@ async fn put_rejects_oversized_key() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // key > 1024 chars should be rejected
     let long_key = "a".repeat(1025);
     let resp = client
-        .put(url(&addr, &format!("/tb/{}", long_key)))
+        .put(url(&addr, &format!("/tbk/{}", long_key)))
         .body("data")
         .send()
         .await
@@ -3400,12 +3401,12 @@ async fn put_accepts_reasonable_length_key() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // 100-char key should be accepted (well within 1024 limit)
     let key = "a".repeat(100);
     let resp = client
-        .put(url(&addr, &format!("/tb/{}", key)))
+        .put(url(&addr, &format!("/tbk/{}", key)))
         .body("data")
         .send()
         .await
@@ -3420,13 +3421,13 @@ async fn list_objects_clamps_max_keys() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // max-keys=0 should work (returns nothing or default)
     let resp = client
         .get(url_with_query(
             &addr,
-            "/tb",
+            "/tbk",
             &[("list-type", "2"), ("max-keys", "0")],
         ))
         .send()
@@ -3438,7 +3439,7 @@ async fn list_objects_clamps_max_keys() {
     let resp = client
         .get(url_with_query(
             &addr,
-            "/tb",
+            "/tbk",
             &[("list-type", "2"), ("max-keys", "999999")],
         ))
         .send()
@@ -3450,7 +3451,7 @@ async fn list_objects_clamps_max_keys() {
     let resp = client
         .get(url_with_query(
             &addr,
-            "/tb",
+            "/tbk",
             &[("list-type", "2"), ("max-keys", "-1")],
         ))
         .send()
@@ -3462,7 +3463,7 @@ async fn list_objects_clamps_max_keys() {
     let resp = client
         .get(url_with_query(
             &addr,
-            "/tb",
+            "/tbk",
             &[("list-type", "2"), ("max-keys", "not-a-number")],
         ))
         .send()
@@ -3478,11 +3479,11 @@ async fn multipart_rejects_hostile_part_numbers() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // initiate upload
     let resp = client
-        .post(url_with_query(&addr, "/tb/mpkey", &[("uploads", "")]))
+        .post(url_with_query(&addr, "/tbk/mpkey", &[("uploads", "")]))
         .send()
         .await
         .unwrap();
@@ -3494,7 +3495,7 @@ async fn multipart_rejects_hostile_part_numbers() {
     let resp = client
         .put(url_with_query(
             &addr,
-            "/tb/mpkey",
+            "/tbk/mpkey",
             &[("uploadId", &upload_id), ("partNumber", "0")],
         ))
         .body("data")
@@ -3511,7 +3512,7 @@ async fn multipart_rejects_hostile_part_numbers() {
     let resp = client
         .put(url_with_query(
             &addr,
-            "/tb/mpkey",
+            "/tbk/mpkey",
             &[("uploadId", &upload_id), ("partNumber", "-1")],
         ))
         .body("data")
@@ -3528,7 +3529,7 @@ async fn multipart_rejects_hostile_part_numbers() {
     let resp = client
         .put(url_with_query(
             &addr,
-            "/tb/mpkey",
+            "/tbk/mpkey",
             &[("uploadId", &upload_id), ("partNumber", "10001")],
         ))
         .body("data")
@@ -3545,7 +3546,7 @@ async fn multipart_rejects_hostile_part_numbers() {
     let resp = client
         .put(url_with_query(
             &addr,
-            "/tb/mpkey",
+            "/tbk/mpkey",
             &[("uploadId", &upload_id), ("partNumber", "abc")],
         ))
         .body("data")
@@ -3566,9 +3567,9 @@ async fn get_rejects_all_hostile_version_ids() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
     client
-        .put(url(&addr, "/tb/obj"))
+        .put(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
@@ -3589,7 +3590,7 @@ async fn get_rejects_all_hostile_version_ids() {
 
     for vid in &hostile_versions {
         let resp = client
-            .get(url_with_query(&addr, "/tb/obj", &[("versionId", vid)]))
+            .get(url_with_query(&addr, "/tbk/obj", &[("versionId", vid)]))
             .send()
             .await
             .unwrap();
@@ -3610,7 +3611,7 @@ async fn multipart_rejects_all_hostile_upload_ids() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let long_uid = "a".repeat(256);
     let hostile_ids = vec![
@@ -3627,7 +3628,7 @@ async fn multipart_rejects_all_hostile_upload_ids() {
         let resp = client
             .put(url_with_query(
                 &addr,
-                "/tb/key",
+                "/tbk/key",
                 &[("uploadId", uid), ("partNumber", "1")],
             ))
             .body("data")
@@ -3658,7 +3659,7 @@ async fn windows_forbidden_chars_rejected_at_storage_layer() {
     let dir = tempfile::TempDir::new().unwrap();
     let vol = abixio::storage::local_volume::LocalVolume::new(dir.path()).unwrap();
     use abixio::storage::Backend;
-    vol.make_bucket("tb").await.unwrap();
+    vol.make_bucket("tbk").await.unwrap();
 
     for ch in &[':', '*', '?', '"', '|', '<', '>', '\\'] {
         let key = format!("file{}name", ch);
@@ -3680,7 +3681,7 @@ async fn windows_forbidden_chars_rejected_at_storage_layer() {
             is_delete_marker: false,
             parts: Vec::new(),
         };
-        let result = vol.write_shard("tb", &key, b"data", &meta).await;
+        let result = vol.write_shard("tbk", &key, b"data", &meta).await;
         assert!(
             result.is_err(),
             "key with '{}' should be rejected at storage layer",
@@ -3696,11 +3697,11 @@ async fn deeply_nested_key_round_trips() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let deep_key = "a/b/c/d/e/f/g/h/file.txt";
     let resp = client
-        .put(url(&addr, &format!("/tb/{}", deep_key)))
+        .put(url(&addr, &format!("/tbk/{}", deep_key)))
         .body("nested-content")
         .send()
         .await
@@ -3708,7 +3709,7 @@ async fn deeply_nested_key_round_trips() {
     assert_eq!(resp.status(), 200);
 
     let resp = client
-        .get(url(&addr, &format!("/tb/{}", deep_key)))
+        .get(url(&addr, &format!("/tbk/{}", deep_key)))
         .send()
         .await
         .unwrap();
@@ -3723,10 +3724,10 @@ async fn unsupported_methods_on_bucket_return_405() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .patch(url(&addr, "/tb/obj"))
+        .patch(url(&addr, "/tbk/obj"))
         .body("data")
         .send()
         .await
@@ -3787,12 +3788,12 @@ async fn delete_nonexistent_object_does_not_crash() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // DELETE nonexistent object -- AbixIO returns 404 (not S3-compliant 204,
     // but the important thing is it doesn't crash or return 500)
     let resp = client
-        .delete(url(&addr, "/tb/does-not-exist"))
+        .delete(url(&addr, "/tbk/does-not-exist"))
         .send()
         .await
         .unwrap();
@@ -3810,11 +3811,11 @@ async fn hostile_metadata_headers_do_not_corrupt() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     // user metadata with traversal value (valid header value, hostile content)
     let resp = client
-        .put(url(&addr, "/tb/metaobj"))
+        .put(url(&addr, "/tbk/metaobj"))
         .header("x-amz-meta-evil", "../../../etc/passwd")
         .body("data")
         .send()
@@ -3824,7 +3825,7 @@ async fn hostile_metadata_headers_do_not_corrupt() {
 
     // verify we can read it back without corruption
     let resp = client
-        .head(url(&addr, "/tb/metaobj"))
+        .head(url(&addr, "/tbk/metaobj"))
         .send()
         .await
         .unwrap();
@@ -3845,7 +3846,7 @@ async fn list_prefix_rejects_hostile_prefixes() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let hostile_prefixes = vec![
         "../escape",
@@ -3859,7 +3860,7 @@ async fn list_prefix_rejects_hostile_prefixes() {
         let resp = client
             .get(url_with_query(
                 &addr,
-                "/tb",
+                "/tbk",
                 &[("list-type", "2"), ("prefix", prefix)],
             ))
             .send()
@@ -3882,10 +3883,10 @@ async fn multipart_complete_with_zero_parts_fails() {
     let (_base, paths) = setup();
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
-    client.put(url(&addr, "/tb")).send().await.unwrap();
+    client.put(url(&addr, "/tbk")).send().await.unwrap();
 
     let resp = client
-        .post(url_with_query(&addr, "/tb/mpkey", &[("uploads", "")]))
+        .post(url_with_query(&addr, "/tbk/mpkey", &[("uploads", "")]))
         .send()
         .await
         .unwrap();
@@ -3900,7 +3901,7 @@ async fn multipart_complete_with_zero_parts_fails() {
     let resp = client
         .post(url_with_query(
             &addr,
-            "/tb/mpkey",
+            "/tbk/mpkey",
             &[("uploadId", &upload_id)],
         ))
         .body(complete_xml)

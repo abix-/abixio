@@ -441,7 +441,8 @@ async fn start_server(
         Arc::clone(&cluster),
     ));
     let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&store), Arc::clone(&cluster));
-    let builder = s3s::service::S3ServiceBuilder::new(s3);
+    let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+    builder.set_validation(abixio::s3_service::RelaxedNameValidation);
     let s3_service = builder.build();
     let dispatch = Arc::new(AbixioDispatch::new(s3_service, Some(admin), None));
 

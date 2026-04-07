@@ -205,6 +205,7 @@ async fn main() {
         builder.set_auth(abixio::s3_auth::AbixioAuth::new(&access_key, &secret_key));
     }
     builder.set_access(abixio::s3_access::AbixioAccess::new(Arc::clone(&cluster)));
+    builder.set_validation(abixio::s3_service::RelaxedNameValidation);
     let s3_service = builder.build();
 
     // wrap with dispatch layer for admin + storage RPC

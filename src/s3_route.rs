@@ -32,6 +32,7 @@ impl AbixioDispatch {
     }
 
     pub async fn dispatch(&self, req: Request<Incoming>) -> Response<BoxBody> {
+        let request_id = uuid::Uuid::new_v4().to_string();
         let path = req.uri().path().to_string();
         let trimmed = path.trim_start_matches('/');
 
@@ -60,7 +61,7 @@ impl AbixioDispatch {
 
         // everything else goes to s3s
         let resp = hyper::service::Service::call(&self.s3_service, req).await;
-        match resp {
+        let mut resp = match resp {
             Ok(resp) => convert_s3_response(resp).await,
             Err(e) => {
                 tracing::error!("s3s http error: {:?}", e);
@@ -69,7 +70,13 @@ impl AbixioDispatch {
                     "internal error",
                 )
             }
+        };
+
+        // add request-id to all s3s responses
+        if let Ok(val) = request_id.parse() {
+            resp.headers_mut().insert("x-amz-request-id", val);
         }
+        resp
     }
 }
 
