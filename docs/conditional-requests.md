@@ -2,6 +2,10 @@
 
 How abixio handles S3 conditional request headers on GET and HEAD operations.
 
+> **Status: not yet implemented in s3s migration.** s3s parses these headers
+> into the GetObjectInput/HeadObjectInput DTOs, but `s3_service.rs` does not
+> evaluate them yet. This is a known gap tracked in docs/todo.md.
+
 ## Supported headers
 
 | Header | Effect | HTTP Status |
@@ -11,38 +15,23 @@ How abixio handles S3 conditional request headers on GET and HEAD operations.
 | `If-Match` | Return 412 if ETag does NOT match | 412 Precondition Failed |
 | `If-Unmodified-Since` | Return 412 if modified since date | 412 Precondition Failed |
 
-## Evaluation order
+## Evaluation order (per AWS spec)
 
-Current implementation order in `check_preconditions()`:
+1. **If-Match** -- if present and ETag does NOT match, return 412.
+2. **If-Unmodified-Since** -- if present and object modified after date, return 412.
+3. **If-None-Match** -- if present and ETag matches, return 304.
+4. **If-Modified-Since** -- if present and object not modified after date, return 304.
 
-1. **If-None-Match** -- checked first. If the object's ETag matches the value
-   (with or without surrounding quotes), return 304. Takes precedence over
-   If-Modified-Since.
+## Implementation plan
 
-2. **If-Modified-Since** -- if the object's last-modified time is not after
-   the given date, return 304.
+s3s delivers these headers as fields on `GetObjectInput` and `HeadObjectInput`:
+- `if_match: Option<IfMatch>`
+- `if_modified_since: Option<IfModifiedSince>`
+- `if_none_match: Option<IfNoneMatch>`
+- `if_unmodified_since: Option<IfUnmodifiedSince>`
 
-3. **If-Match** -- if the object's ETag does NOT match the value, return 412.
-   The wildcard `*` matches any ETag.
-
-4. **If-Unmodified-Since** -- if the object's last-modified time is after the
-   given date, return 412.
-
-## Date format
-
-`If-Modified-Since` and `If-Unmodified-Since` expect RFC 7231 HTTP-date format:
-```
-Thu, 01 Jan 2024 00:00:00 GMT
-```
-
-This is the same format returned in the `Last-Modified` response header.
-
-## ETag comparison
-
-ETags are compared with quote stripping. All of these match:
-- `"abc123"` matches `abc123`
-- `"abc123"` matches `"abc123"`
-- `*` matches any ETag for both `If-Match` and `If-None-Match`
+The `get_object` and `head_object` methods in `src/s3_service.rs` need to check
+these fields after reading object metadata and before returning the body.
 
 ## Applies to
 
@@ -50,20 +39,3 @@ ETags are compared with quote stripping. All of these match:
 - `HEAD /{bucket}/{key}` -- conditional HEAD
 
 Does NOT apply to PUT, DELETE, or other operations.
-
-## Implementation
-
-`check_preconditions()` in `src/s3/handlers.rs` takes the request headers,
-object ETag, and last-modified timestamp. Returns `Some(Response)` if a
-precondition triggers, `None` if the request should proceed normally.
-
-Called from both `get_object` and `head_object` handlers after reading object
-metadata.
-
-## Use cases
-
-- **Browser caching**: `If-None-Match` with cached ETag avoids re-downloading
-  unchanged files.
-- **Optimistic concurrency**: `If-Match` ensures you're updating the version
-  you expect.
-- **CDN cache validation**: `If-Modified-Since` checks if content has changed.

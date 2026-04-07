@@ -20,49 +20,33 @@ http://localhost:9000/bucket/key?X-Amz-Algorithm=AWS4-HMAC-SHA256
 
 ## How validation works
 
-When a request arrives, the auth handler checks in order:
+SigV4 authentication (header auth, presigned URLs, and chunked transfer) is
+handled entirely by the s3s protocol layer. abixio provides a credential
+lookup via `impl S3Auth for AbixioAuth` in `src/s3_auth.rs`.
 
-1. **Presigned?** Check if query string contains `X-Amz-Algorithm` or `X-Amz-Credential`
-2. **Header auth?** Check for `Authorization` header
-3. **Anonymous?** If `no_auth` is enabled, allow without credentials
+### Flow
 
-### Presigned validation steps
+1. s3s receives the HTTP request and detects the auth method (header, presigned, or chunked)
+2. s3s calls `AbixioAuth::get_secret_key(access_key)` to look up the secret key
+3. s3s validates the signature using the secret key
+4. if valid, the request proceeds to the S3 operation handler
+5. if invalid, s3s returns an appropriate error (AccessDenied, SignatureDoesNotMatch, etc.)
 
-1. Parse 6 query parameters:
-   - `X-Amz-Algorithm` -- must be `AWS4-HMAC-SHA256`
-   - `X-Amz-Credential` -- `access_key/date/region/s3/aws4_request`
-   - `X-Amz-Date` -- ISO 8601 format (`20240101T000000Z`)
-   - `X-Amz-Expires` -- seconds until expiration (max 604800 = 7 days)
-   - `X-Amz-SignedHeaders` -- semicolon-separated header names
-   - `X-Amz-Signature` -- hex-encoded HMAC signature
+### What s3s handles
 
-2. Validate access key matches server config
-
-3. Check clock skew: request date must not be more than 15 minutes in the future
-
-4. Check expiration: `current_time - request_date > expires` means expired
-
-5. Build canonical request:
-   - HTTP method, canonical URI, canonical query string (all params except `X-Amz-Signature`, sorted)
-   - Canonical headers from signed headers list
-   - Payload hash: `UNSIGNED-PAYLOAD` (presigned URLs don't include body hash)
-
-6. Compute signature using same HMAC chain as header auth:
-   - String to sign = `AWS4-HMAC-SHA256\n<date>\n<scope>\n<canonical_request_hash>`
-   - Signing key = HMAC chain of secret key + date + region + "s3" + "aws4_request"
-
-7. Constant-time compare computed signature with provided `X-Amz-Signature`
+- presigned URL parameter parsing (Algorithm, Credential, Date, Expires, SignedHeaders, Signature)
+- canonical request construction
+- signing key derivation (HMAC chain)
+- signature verification (constant-time compare)
+- expiration checking
+- clock skew validation
+- chunked transfer signature verification
+- trailing checksum verification
 
 ## Implementation
 
-- `src/s3/auth.rs`: `is_presigned()` detects presigned params, `verify_presigned_v4()` validates
-- `src/s3/handlers.rs`: `check_auth()` tries presigned before header auth
-- Reuses all existing SigV4 crypto: `derive_signing_key`, `canonical_uri`, `sha256_hex`, `hmac_sha256_hex`
-
-At the HTTP layer, any presigned validation failure is currently returned as
-`AccessDenied`. The verifier keeps a more specific internal error string
-(`expired`, `signature mismatch`, `access key mismatch`, and so on), but that
-detail is not exposed in the S3 response body.
+- `src/s3_auth.rs`: `AbixioAuth` implements `S3Auth::get_secret_key()` for credential lookup
+- s3s handles all SigV4 crypto internally (no application code needed)
 
 ## Client-side generation
 
@@ -74,6 +58,6 @@ URLs.
 
 | Limit | Value |
 |---|---|
-| Max expiration | 604800 seconds (7 days) |
-| Clock skew tolerance | 15 minutes |
-| Algorithm | AWS4-HMAC-SHA256 only |
+| Max expiration | 604800 seconds (7 days, enforced by s3s) |
+| Clock skew tolerance | per s3s defaults |
+| Algorithm | AWS4-HMAC-SHA256 (SigV4) |
