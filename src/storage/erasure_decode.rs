@@ -162,41 +162,54 @@ pub async fn read_and_decode_stream(
                 let block_size = iter_remaining.min(STREAM_BLOCK_SIZE);
                 let shard_chunk_size = block_size.div_ceil(dn).max(1);
 
-                // slice directly from mmap (zero-copy read)
-                let mut shard_slots: Vec<Option<Vec<u8>>> = vec![None; total];
-                for (i, mmap_opt) in mmap_slots.iter().enumerate() {
-                    if let Some(mmap) = mmap_opt {
+                // check if all data shards are available from mmap
+                let data_shards_ok = (0..dn).all(|i| {
+                    mmap_slots[i].as_ref().map_or(false, |m| shard_read_offset < m.len())
+                });
+
+                if data_shards_ok {
+                    // FAST PATH: all data shards present, slice directly from mmap.
+                    // Zero Vec allocation -- just copy from mmap into output buffer.
+                    let before_len = iter_data.len();
+                    for shard_idx in 0..dn {
+                        let mmap = mmap_slots[shard_idx].as_ref().unwrap();
                         let end = (shard_read_offset + shard_chunk_size).min(mmap.len());
-                        if shard_read_offset < mmap.len() && end > shard_read_offset {
-                            shard_slots[i] = Some(mmap[shard_read_offset..end].to_vec());
+                        iter_data.extend_from_slice(&mmap[shard_read_offset..end]);
+                    }
+                    // truncate to block_size (shards may have padding from split_data)
+                    iter_data.truncate(before_len + block_size);
+                } else {
+                    // SLOW PATH: missing shards, need RS reconstruct (allocates Vecs)
+                    let mut shard_slots: Vec<Option<Vec<u8>>> = vec![None; total];
+                    for (i, mmap_opt) in mmap_slots.iter().enumerate() {
+                        if let Some(mmap) = mmap_opt {
+                            let end = (shard_read_offset + shard_chunk_size).min(mmap.len());
+                            if shard_read_offset < mmap.len() && end > shard_read_offset {
+                                shard_slots[i] = Some(mmap[shard_read_offset..end].to_vec());
+                            }
                         }
                     }
-                }
 
-                let good = shard_slots.iter().filter(|s| s.is_some()).count();
-                if good < dn {
-                    let _ = tx.send(Err(StorageError::ReadQuorum)).await;
-                    return;
-                }
+                    let good = shard_slots.iter().filter(|s| s.is_some()).count();
+                    if good < dn {
+                        let _ = tx.send(Err(StorageError::ReadQuorum)).await;
+                        return;
+                    }
 
-                if pn > 0 && good < total {
                     if let Some(ref rs) = rs {
                         if rs.reconstruct(&mut shard_slots).is_err() {
                             let _ = tx.send(Err(StorageError::ReadQuorum)).await;
                             return;
                         }
                     }
-                }
 
-                let mut block_data = Vec::with_capacity(block_size);
-                for shard in shard_slots.iter().take(dn).flatten() {
-                    block_data.extend_from_slice(shard);
+                    for shard in shard_slots.iter().take(dn).flatten() {
+                        iter_data.extend_from_slice(shard);
+                    }
                 }
-                block_data.truncate(block_size);
 
                 shard_read_offset += shard_chunk_size;
                 iter_remaining -= block_size;
-                iter_data.extend_from_slice(&block_data);
             }
 
             iter_data.truncate(iter_size);
