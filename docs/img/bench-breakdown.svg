@@ -1,41 +1,37 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 520 175" font-family="system-ui,-apple-system,sans-serif">
 
-  <text x="260" y="20" text-anchor="middle" style="font-size:15px;font-weight:600;fill:#24292f">10MB PUT: where 68ms goes</text>
+  <text x="260" y="20" text-anchor="middle" style="font-size:15px;font-weight:600;fill:#24292f">10MB PUT: where 37ms goes</text>
 
-  <!-- stacked bar: 450px = 68ms, 6.6px per ms -->
-  <rect x="35" y="35" width="99" height="36" rx="2" fill="#dc2626"/>
-  <text x="84" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">MD5 15ms</text>
+  <!-- stacked bar: 450px = 37ms, 12.2px per ms -->
+  <rect x="35" y="35" width="183" height="36" rx="2" fill="#dc2626"/>
+  <text x="126" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">MD5 15ms</text>
 
-  <rect x="134" y="35" width="79" height="36" rx="2" fill="#7c3aed"/>
-  <text x="173" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">HTTP 12ms</text>
+  <rect x="218" y="35" width="73" height="36" rx="2" fill="#7c3aed"/>
+  <text x="254" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">HTTP 6ms</text>
 
-  <rect x="213" y="35" width="46" height="36" rx="2" fill="#0369a1"/>
-  <text x="236" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">disk 7ms</text>
+  <rect x="291" y="35" width="85" height="36" rx="2" fill="#0369a1"/>
+  <text x="333" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">disk 7ms</text>
 
-  <rect x="259" y="35" width="26" height="36" rx="2" fill="#059669"/>
-  <text x="272" y="57" text-anchor="middle" style="font-size:9px;font-weight:600;fill:#fff">RS</text>
+  <rect x="376" y="35" width="49" height="36" rx="2" fill="#059669"/>
+  <text x="400" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">RS 4ms</text>
 
-  <rect x="285" y="35" width="20" height="36" rx="2" fill="#0891b2"/>
+  <rect x="425" y="35" width="36" height="36" rx="2" fill="#0891b2"/>
+  <text x="443" y="57" text-anchor="middle" style="font-size:9px;font-weight:600;fill:#fff">b3</text>
 
-  <rect x="305" y="35" width="179" height="36" rx="2" fill="#9ca3af"/>
-  <text x="394" y="57" text-anchor="middle" style="font-size:11px;font-weight:600;fill:#fff">client SigV4 27ms</text>
+  <rect x="461" y="35" width="24" height="36" rx="2" fill="#9ca3af"/>
+  <text x="473" y="57" text-anchor="middle" style="font-size:9px;font-weight:600;fill:#fff">s3s</text>
 
   <!-- brackets -->
   <line x1="35" y1="78" x2="35" y2="85" style="stroke:#24292f;stroke-width:1"/>
-  <line x1="35" y1="85" x2="305" y2="85" style="stroke:#24292f;stroke-width:1"/>
-  <line x1="305" y1="78" x2="305" y2="85" style="stroke:#24292f;stroke-width:1"/>
-  <text x="170" y="98" text-anchor="middle" style="font-size:12px;fill:#24292f">server 41ms</text>
-
-  <line x1="305" y1="78" x2="305" y2="85" style="stroke:#656d76;stroke-width:1"/>
-  <line x1="305" y1="85" x2="484" y2="85" style="stroke:#656d76;stroke-width:1"/>
-  <line x1="484" y1="78" x2="484" y2="85" style="stroke:#656d76;stroke-width:1"/>
-  <text x="394" y="98" text-anchor="middle" style="font-size:11px;fill:#656d76">client 27ms</text>
+  <line x1="35" y1="85" x2="485" y2="85" style="stroke:#24292f;stroke-width:1"/>
+  <line x1="485" y1="78" x2="485" y2="85" style="stroke:#24292f;stroke-width:1"/>
+  <text x="260" y="98" text-anchor="middle" style="font-size:12px;fill:#24292f">server 37ms (272 MB/s at 10MB, no SigV4)</text>
 
   <!-- legend -->
   <rect x="35" y="115" width="10" height="10" rx="1" fill="#dc2626"/>
   <text x="49" y="125" style="font-size:12px;fill:#24292f">MD5 ETag (inline)</text>
   <rect x="170" y="115" width="10" height="10" rx="1" fill="#7c3aed"/>
-  <text x="184" y="125" style="font-size:12px;fill:#24292f">HTTP + s3s</text>
+  <text x="184" y="125" style="font-size:12px;fill:#24292f">HTTP (hyper)</text>
   <rect x="270" y="115" width="10" height="10" rx="1" fill="#0369a1"/>
   <text x="284" y="125" style="font-size:12px;fill:#24292f">Disk I/O</text>
   <rect x="345" y="115" width="10" height="10" rx="1" fill="#059669"/>
@@ -44,4 +40,5 @@
   <text x="444" y="125" style="font-size:12px;fill:#24292f">blake3</text>
 
   <text x="260" y="148" text-anchor="middle" style="font-size:10px;font-style:italic;fill:#656d76">MD5 and blake3 computed inline during stream -- cost overlaps with network I/O for large objects</text>
+  <text x="260" y="162" text-anchor="middle" style="font-size:10px;font-style:italic;fill:#656d76">Versioning config cached in memory (was +27ms disk read per PUT before caching)</text>
 </svg>

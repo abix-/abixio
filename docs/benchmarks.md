@@ -8,7 +8,7 @@
 - 10 iterations per measurement (50 for 4KB, 5 for 1GB)
 - Per-layer numbers from `bench_perf` at commit `122116f`
 - Competitive numbers from `mc` client with UNSIGNED-PAYLOAD over HTTP
-  against AbixIO `037106f`, RustFS 1.0.0-alpha.90, MinIO RELEASE.2026-04-07
+  against AbixIO `122116f`, RustFS 1.0.0-alpha.90, MinIO RELEASE.2026-04-07
 
 For per-layer optimization details, methodology, and failed experiments,
 see [layer-optimization.md](layer-optimization.md).
@@ -17,17 +17,18 @@ see [layer-optimization.md](layer-optimization.md).
 
 ![PUT throughput](img/bench-put.svg)
 
-At 4KB, all three servers are bottlenecked by `mc` process startup (~70ms).
-At 10MB, throughput is comparable across servers (74-90 MB/s).
-At 1GB, AbixIO (375 MB/s) trails RustFS (541) and MinIO (576). The storage
-layer does 478 MB/s at 1GB (see below), so the gap is HTTP/s3s overhead.
+At 4KB, all three servers are bottlenecked by `mc` process startup (~63ms).
+At 10MB, throughput is comparable across servers (80-93 MB/s).
+At 1GB, AbixIO (459 MB/s) trails RustFS (549) and MinIO (598). The storage
+layer does 489 MB/s at 1GB (see below), so the gap is mostly s3s overhead.
 
 ## GET throughput
 
 ![GET throughput](img/bench-get.svg)
 
-MinIO GET scales better at 1GB (801 MB/s) than both Rust servers.
-At 10MB, all three are in the same range (96-122 MB/s).
+AbixIO GET leads at 10MB (138 MB/s) thanks to streaming decode -- ahead of
+MinIO (126) and RustFS (99). At 1GB, MinIO (1151 MB/s) dominates; AbixIO
+(407) still trails due to `mc` client collecting the full response body.
 
 ## Where the time goes (10MB PUT)
 

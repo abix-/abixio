@@ -319,7 +319,7 @@ Specific upstream claims this page is anchored to:
 | Weakness | Reality today |
 |---|---|
 | Production credibility | None yet |
-| Benchmarks | [Published](benchmarks.md): competitive at 10MB, slower at 1GB PUT (sequential shard writes). GET streaming path doubled throughput (750 MB/s at 10MB). See [layer-optimization.md](layer-optimization.md) for per-layer analysis |
+| Benchmarks | [Published](benchmarks.md): fastest GET at 10MB (138 vs 126 MinIO, 99 RustFS). Slower at 1GB PUT/GET (459/407 vs MinIO 598/1151). See [layer-optimization.md](layer-optimization.md) for per-layer analysis |
 | Failure injection / long-haul testing | Not there yet |
 | Packaging / deployment story | Not there yet |
 | S3 surface completeness | Incomplete |
