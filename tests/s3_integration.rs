@@ -6,7 +6,20 @@ use abixio::s3_route::AbixioDispatch;
 use abixio::storage::Backend;
 use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::volume_pool::VolumePool;
+use s3s::S3Result;
+use s3s::auth::{S3Auth, SecretKey};
 use tempfile::TempDir;
+
+/// No-op auth that accepts any access key. Required because s3s only invokes
+/// S3Access::check when an auth provider is set.
+struct AlwaysAllowAuth;
+
+#[async_trait::async_trait]
+impl S3Auth for AlwaysAllowAuth {
+    async fn get_secret_key(&self, _access_key: &str) -> S3Result<SecretKey> {
+        Ok(SecretKey::from("unused".to_string()))
+    }
+}
 
 fn setup() -> (TempDir, Vec<std::path::PathBuf>) {
     setup_n(4)
@@ -31,6 +44,7 @@ async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task:
 fn build_dispatch(set: Arc<VolumePool>, cluster: Arc<ClusterManager>) -> Arc<AbixioDispatch> {
     let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&set), Arc::clone(&cluster));
     let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+    builder.set_auth(AlwaysAllowAuth);
     builder.set_validation(abixio::s3_service::RelaxedNameValidation);
     builder.set_access(abixio::s3_access::AbixioAccess::new(Arc::clone(&cluster)));
     let s3_service = builder.build();

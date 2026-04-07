@@ -14,7 +14,20 @@ use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::volume_pool::VolumePool;
 use abixio::storage::metadata::{BucketSettings, ObjectMeta};
 use abixio::storage::{Backend, BackendInfo, StorageError};
+use s3s::S3Result;
+use s3s::auth::{S3Auth, SecretKey};
 use tempfile::TempDir;
+
+/// No-op auth that accepts any access key. Required because s3s only invokes
+/// S3Access::check when an auth provider is set.
+struct AlwaysAllowAuth;
+
+#[async_trait::async_trait]
+impl S3Auth for AlwaysAllowAuth {
+    async fn get_secret_key(&self, _access_key: &str) -> S3Result<SecretKey> {
+        Ok(SecretKey::from("unused".to_string()))
+    }
+}
 
 #[derive(Clone)]
 struct AvailabilityController {
@@ -442,6 +455,7 @@ async fn start_server(
     ));
     let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&store), Arc::clone(&cluster));
     let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+    builder.set_auth(AlwaysAllowAuth);
     builder.set_validation(abixio::s3_service::RelaxedNameValidation);
     builder.set_access(abixio::s3_access::AbixioAccess::new(Arc::clone(&cluster)));
     let s3_service = builder.build();

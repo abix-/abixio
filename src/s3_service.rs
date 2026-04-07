@@ -42,8 +42,8 @@ fn map_err(e: StorageError) -> s3s::S3Error {
         StorageError::ObjectNotFound => s3_error!(NoSuchKey),
         StorageError::BucketExists => s3_error!(BucketAlreadyOwnedByYou),
         StorageError::BucketNotEmpty => s3_error!(BucketNotEmpty),
-        StorageError::WriteQuorum => s3_error!(InternalError, "write quorum not met"),
-        StorageError::ReadQuorum => s3_error!(InternalError, "read quorum not met"),
+        StorageError::WriteQuorum => s3_error!(ServiceUnavailable, "write quorum not met"),
+        StorageError::ReadQuorum => s3_error!(ServiceUnavailable, "read quorum not met"),
         StorageError::Bitrot => s3_error!(InternalError, "data integrity error"),
         StorageError::InvalidConfig(msg) => s3_error!(InvalidArgument, "{msg}"),
         StorageError::Io(e) => s3_error!(e, InternalError),
@@ -73,6 +73,57 @@ async fn collect_body(body: Option<StreamingBlob>) -> S3Result<Vec<u8>> {
 
 fn timestamp_to_s3(unix_secs: u64) -> Timestamp {
     Timestamp::from(SystemTime::UNIX_EPOCH + Duration::from_secs(unix_secs))
+}
+
+/// Evaluate conditional request headers per RFC 7232.
+/// Returns Err(PreconditionFailed) or Err(NotModified) if a condition fails.
+fn check_conditionals(
+    if_match: &Option<IfMatch>,
+    if_none_match: &Option<IfNoneMatch>,
+    if_modified_since: &Option<IfModifiedSince>,
+    if_unmodified_since: &Option<IfUnmodifiedSince>,
+    etag: &str,
+    last_modified: &Timestamp,
+) -> S3Result<()> {
+    let obj_etag = ETag::Strong(etag.to_string());
+
+    // if-match: 412 if no match
+    if let Some(cond) = if_match {
+        let matches = match cond {
+            ETagCondition::Any => true,
+            ETagCondition::ETag(e) => e.value() == obj_etag.value(),
+        };
+        if !matches {
+            return Err(s3_error!(PreconditionFailed));
+        }
+    }
+
+    // if-unmodified-since: 412 if modified since
+    if let Some(since) = if_unmodified_since {
+        if last_modified > since {
+            return Err(s3_error!(PreconditionFailed));
+        }
+    }
+
+    // if-none-match: 304 if match
+    if let Some(cond) = if_none_match {
+        let matches = match cond {
+            ETagCondition::Any => true,
+            ETagCondition::ETag(e) => e.value() == obj_etag.value(),
+        };
+        if matches {
+            return Err(s3_error!(NotModified));
+        }
+    }
+
+    // if-modified-since: 304 if not modified
+    if let Some(since) = if_modified_since {
+        if last_modified <= since {
+            return Err(s3_error!(NotModified));
+        }
+    }
+
+    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -157,16 +208,39 @@ impl S3 for AbixioS3 {
             ..Default::default()
         };
 
-        let info = self
+        // check versioning state to decide write path
+        let versioning = self
             .store
-            .put_object(&input.bucket, &input.key, &body, opts)
+            .get_versioning_config(&input.bucket)
             .await
-            .map_err(map_err)?;
+            .ok()
+            .flatten();
 
-        Ok(S3Response::new(PutObjectOutput {
+        let info = if versioning.as_ref().map(|v| v.status.as_str()) == Some("Enabled") {
+            let version_id = uuid::Uuid::new_v4().to_string();
+            self.store
+                .put_object_versioned(&input.bucket, &input.key, &body, opts, &version_id)
+                .await
+                .map_err(map_err)?
+        } else {
+            self.store
+                .put_object(&input.bucket, &input.key, &body, opts)
+                .await
+                .map_err(map_err)?
+        };
+
+        let mut output = PutObjectOutput {
             e_tag: Some(ETag::Strong(info.etag)),
             ..Default::default()
-        }))
+        };
+        // set version-id header
+        if !info.version_id.is_empty() {
+            output.version_id = Some(info.version_id);
+        } else if versioning.as_ref().map(|v| v.status.as_str()) == Some("Suspended") {
+            output.version_id = Some("null".to_string());
+        }
+
+        Ok(S3Response::new(output))
     }
 
     async fn get_object(
@@ -187,6 +261,17 @@ impl S3 for AbixioS3 {
                 .await
                 .map_err(map_err)?
         };
+
+        // evaluate conditional headers
+        let last_mod = timestamp_to_s3(info.created_at);
+        check_conditionals(
+            &input.if_match,
+            &input.if_none_match,
+            &input.if_modified_since,
+            &input.if_unmodified_since,
+            &info.etag,
+            &last_mod,
+        )?;
 
         // handle range request
         let (body_data, content_range) = if let Some(range) = input.range {
@@ -251,10 +336,20 @@ impl S3 for AbixioS3 {
             .await
             .map_err(map_err)?;
 
-        Ok(S3Response::new(HeadObjectOutput {
+        let last_mod = timestamp_to_s3(info.created_at);
+        check_conditionals(
+            &input.if_match,
+            &input.if_none_match,
+            &input.if_modified_since,
+            &input.if_unmodified_since,
+            &info.etag,
+            &last_mod,
+        )?;
+
+        let mut output = HeadObjectOutput {
             content_length: Some(info.size as i64),
             content_type: Some(info.content_type),
-            e_tag: Some(ETag::Strong(info.etag)),
+            e_tag: Some(ETag::Strong(info.etag.clone())),
             last_modified: Some(timestamp_to_s3(info.created_at)),
             metadata: if info.user_metadata.is_empty() {
                 None
@@ -262,7 +357,11 @@ impl S3 for AbixioS3 {
                 Some(info.user_metadata)
             },
             ..Default::default()
-        }))
+        };
+        if !info.version_id.is_empty() {
+            output.version_id = Some(info.version_id);
+        }
+        Ok(S3Response::new(output))
     }
 
     async fn delete_object(
@@ -271,17 +370,50 @@ impl S3 for AbixioS3 {
     ) -> S3Result<S3Response<DeleteObjectOutput>> {
         let input = req.input;
         if let Some(vid) = &input.version_id {
+            // delete specific version permanently
             self.store
                 .delete_object_version(&input.bucket, &input.key, vid)
                 .await
                 .map_err(map_err)?;
+            return Ok(S3Response::new(DeleteObjectOutput {
+                version_id: Some(vid.clone()),
+                ..Default::default()
+            }));
+        }
+
+        // check versioning state
+        let versioning = self
+            .store
+            .get_versioning_config(&input.bucket)
+            .await
+            .ok()
+            .flatten();
+
+        let is_versioned = versioning
+            .as_ref()
+            .map(|v| v.status == "Enabled" || v.status == "Suspended")
+            .unwrap_or(false);
+
+        if is_versioned {
+            // create delete marker
+            let info = self
+                .store
+                .add_delete_marker(&input.bucket, &input.key)
+                .await
+                .map_err(map_err)?;
+            Ok(S3Response::new(DeleteObjectOutput {
+                delete_marker: Some(true),
+                version_id: Some(info.version_id),
+                ..Default::default()
+            }))
         } else {
+            // non-versioned: delete permanently
             self.store
                 .delete_object(&input.bucket, &input.key)
                 .await
                 .map_err(map_err)?;
+            Ok(S3Response::new(DeleteObjectOutput::default()))
         }
-        Ok(S3Response::new(DeleteObjectOutput::default()))
     }
 
     async fn copy_object(
@@ -886,12 +1018,21 @@ impl S3 for AbixioS3 {
         req: S3Request<PutBucketPolicyInput>,
     ) -> S3Result<S3Response<PutBucketPolicyOutput>> {
         let input = req.input;
+
+        // validate policy JSON
+        let policy_json: serde_json::Value = serde_json::from_str(&input.policy)
+            .map_err(|_| s3_error!(MalformedPolicy, "invalid JSON"))?;
+        let version = policy_json.get("Version").and_then(|v| v.as_str()).unwrap_or("");
+        if version.is_empty() {
+            return Err(s3_error!(MalformedPolicy, "missing or empty Version field"));
+        }
+
         let mut settings = self
             .store
             .get_bucket_settings(&input.bucket)
             .await
             .unwrap_or_default();
-        settings.policy = Some(serde_json::Value::String(input.policy));
+        settings.policy = Some(policy_json);
         self.store
             .set_bucket_settings(&input.bucket, &settings)
             .await
@@ -927,13 +1068,16 @@ impl S3 for AbixioS3 {
             .get_bucket_settings(&req.input.bucket)
             .await
             .map_err(map_err)?;
-        let lifecycle = settings.lifecycle.unwrap_or_default();
-        if lifecycle.is_empty() {
+        let lifecycle_json = settings.lifecycle.unwrap_or_default();
+        if lifecycle_json.is_empty() {
             return Err(s3_error!(NoSuchLifecycleConfiguration));
         }
-        Ok(S3Response::new(
-            GetBucketLifecycleConfigurationOutput::default(),
-        ))
+        let rules: Vec<LifecycleRule> = serde_json::from_str(&lifecycle_json)
+            .map_err(|_| s3_error!(InternalError, "corrupt lifecycle config"))?;
+        Ok(S3Response::new(GetBucketLifecycleConfigurationOutput {
+            rules: Some(rules),
+            ..Default::default()
+        }))
     }
 
     async fn put_bucket_lifecycle_configuration(
@@ -941,13 +1085,19 @@ impl S3 for AbixioS3 {
         req: S3Request<PutBucketLifecycleConfigurationInput>,
     ) -> S3Result<S3Response<PutBucketLifecycleConfigurationOutput>> {
         let input = req.input;
+        let rules = input
+            .lifecycle_configuration
+            .map(|lc| lc.rules)
+            .unwrap_or_default();
+        let lifecycle_json = serde_json::to_string(&rules)
+            .map_err(|_| s3_error!(InternalError, "failed to serialize lifecycle"))?;
+
         let mut settings = self
             .store
             .get_bucket_settings(&input.bucket)
             .await
             .unwrap_or_default();
-        // store lifecycle as raw JSON string for now
-        settings.lifecycle = Some("configured".to_string());
+        settings.lifecycle = Some(lifecycle_json);
         self.store
             .set_bucket_settings(&input.bucket, &settings)
             .await

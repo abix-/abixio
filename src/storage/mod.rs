@@ -181,6 +181,12 @@ pub trait Store: Send + Sync {
         version_id: &str,
     ) -> Result<(), StorageError>;
 
+    async fn add_delete_marker(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<ObjectInfo, StorageError>;
+
     async fn list_object_versions(
         &self,
         bucket: &str,

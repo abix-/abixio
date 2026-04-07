@@ -4,7 +4,7 @@ use super::Backend;
 use super::erasure_decode::{read_and_decode, read_and_decode_multipart, read_and_decode_versioned};
 use super::erasure_encode::{encode_and_write_versioned, encode_and_write_with_mrf};
 use super::metadata::{
-    BucketInfo, BucketSettings, ListOptions, ListResult, ObjectInfo, ObjectMeta,
+    BucketInfo, BucketSettings, ErasureMeta, ListOptions, ListResult, ObjectInfo, ObjectMeta,
     PutOptions, VersioningConfig,
 };
 use super::pathing;
@@ -136,13 +136,12 @@ impl VolumePool {
 
     /// Resolve EC params for a write operation.
     /// Precedence: per-object FTT > bucket FTT.
-    async fn resolve_ec(&self, bucket: &str, opts: &PutOptions) -> (usize, usize) {
+    /// Returns error if per-object FTT is explicitly set but invalid.
+    async fn resolve_ec(&self, bucket: &str, opts: &PutOptions) -> Result<(usize, usize), StorageError> {
         if let Some(ftt) = opts.ec_ftt {
-            if let Ok((d, p)) = ftt_to_ec(ftt, self.disks.len()) {
-                return (d, p);
-            }
+            return ftt_to_ec(ftt, self.disks.len());
         }
-        self.bucket_ec(bucket).await
+        Ok(self.bucket_ec(bucket).await)
     }
 
     /// Read meta from any available disk to get the object's stored EC params.
@@ -185,7 +184,7 @@ impl Store for VolumePool {
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
-        let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await;
+        let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
         let planner = self.placement_planner()?;
         encode_and_write_with_mrf(
             &self.disks,
@@ -474,7 +473,7 @@ impl Store for VolumePool {
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
-        let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await;
+        let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
         let planner = self.placement_planner()?;
         encode_and_write_versioned(
             &self.disks,
@@ -568,6 +567,68 @@ impl Store for VolumePool {
             let _ = disk.delete_version_data(bucket, key, version_id).await;
         }
         Ok(())
+    }
+
+    async fn add_delete_marker(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<ObjectInfo, StorageError> {
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
+        if !self.head_bucket(bucket).await? {
+            return Err(StorageError::BucketNotFound);
+        }
+
+        let version_id = uuid::Uuid::new_v4().to_string();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let marker = ObjectMeta {
+            size: 0,
+            etag: String::new(),
+            content_type: String::new(),
+            created_at: now,
+            erasure: ErasureMeta {
+                ftt: 0,
+                index: 0,
+                epoch_id: 0,
+                volume_ids: Vec::new(),
+            },
+            checksum: String::new(),
+            user_metadata: std::collections::HashMap::new(),
+            tags: std::collections::HashMap::new(),
+            version_id: version_id.clone(),
+            is_latest: true,
+            is_delete_marker: true,
+            parts: Vec::new(),
+        };
+
+        // add delete marker to meta versions on each disk
+        for disk in &self.disks {
+            let mut versions = disk.read_meta_versions(bucket, key).await.unwrap_or_default();
+            // mark all existing as not latest
+            for v in &mut versions {
+                v.is_latest = false;
+            }
+            versions.insert(0, marker.clone());
+            let _ = disk.write_meta_versions(bucket, key, &versions).await;
+        }
+
+        Ok(ObjectInfo {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            size: 0,
+            etag: String::new(),
+            content_type: String::new(),
+            created_at: now,
+            user_metadata: std::collections::HashMap::new(),
+            tags: std::collections::HashMap::new(),
+            version_id,
+            is_delete_marker: true,
+        })
     }
 
     async fn list_object_versions(
