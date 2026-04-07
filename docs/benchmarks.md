@@ -5,51 +5,27 @@ Windows 10, single machine, NTFS tmpdir, sequential requests, page-cache writes.
 
 ## PUT throughput (via mc)
 
-```mermaid
-xychart-beta horizontal
-    title "PUT throughput (MB/s, higher is better)"
-    x-axis ["10MB", "1GB"]
-    y-axis "MB/s" 0 --> 600
-    bar "AbixIO" [147, 353]
-    bar "RustFS" [77, 464]
-    bar "MinIO" [88, 537]
-```
+![PUT throughput](img/bench-put.svg)
 
 At 10MB, AbixIO PUT is 1.9x RustFS and 1.7x MinIO.
 At 1GB, AbixIO trails -- the storage layer does 468 MB/s but HTTP/s3s overhead reduces it to 353.
 
 ## GET throughput (via mc)
 
-```mermaid
-xychart-beta horizontal
-    title "GET throughput (MB/s, higher is better)"
-    x-axis ["10MB", "1GB"]
-    y-axis "MB/s" 0 --> 900
-    bar "AbixIO" [143, 372]
-    bar "RustFS" [99, 576]
-    bar "MinIO" [124, 849]
-```
+![GET throughput](img/bench-get.svg)
 
 Metadata ops (HEAD, LIST, DELETE) are 63-66ms across all three -- dominated by mc process startup.
 
 ## Where the time goes (10MB PUT)
 
-```mermaid
-pie title "10MB PUT breakdown (68ms total, 1 disk)"
-    "MD5 ETag (inline)" : 15
-    "HTTP + s3s" : 12
-    "Disk I/O" : 7
-    "RS encode (SIMD)" : 4
-    "blake3 checksums (inline)" : 3
-    "Client SigV4" : 27
-```
+![PUT breakdown](img/bench-breakdown.svg)
 
 MD5 and blake3 are computed inline during the streaming read -- their cost
 overlaps with network I/O for large objects. Client SigV4 is not server-side.
 
 ## Storage layer (no HTTP)
 
-VolumePool direct. This is what the encode path does without HTTP overhead.
+VolumePool direct. What the encode path does without HTTP overhead.
 
 ```
                   1 disk                          4 disks (3+1 EC)
