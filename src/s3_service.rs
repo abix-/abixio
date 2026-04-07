@@ -974,7 +974,60 @@ impl S3 for AbixioS3 {
         Ok(S3Response::new(DeleteBucketLifecycleOutput::default()))
     }
 
+    // -- notification stubs --
+
+    async fn get_bucket_notification_configuration(
+        &self,
+        _req: S3Request<GetBucketNotificationConfigurationInput>,
+    ) -> S3Result<S3Response<GetBucketNotificationConfigurationOutput>> {
+        Ok(S3Response::new(GetBucketNotificationConfigurationOutput::default()))
+    }
+
+    async fn put_bucket_notification_configuration(
+        &self,
+        _req: S3Request<PutBucketNotificationConfigurationInput>,
+    ) -> S3Result<S3Response<PutBucketNotificationConfigurationOutput>> {
+        Ok(S3Response::new(PutBucketNotificationConfigurationOutput::default()))
+    }
+
+    // -- CORS stubs --
+
+    async fn get_bucket_cors(
+        &self,
+        _req: S3Request<GetBucketCorsInput>,
+    ) -> S3Result<S3Response<GetBucketCorsOutput>> {
+        Err(s3_error!(NoSuchCORSConfiguration))
+    }
+
+    async fn put_bucket_cors(
+        &self,
+        _req: S3Request<PutBucketCorsInput>,
+    ) -> S3Result<S3Response<PutBucketCorsOutput>> {
+        Err(s3_error!(NotImplemented))
+    }
+
+    async fn delete_bucket_cors(
+        &self,
+        _req: S3Request<DeleteBucketCorsInput>,
+    ) -> S3Result<S3Response<DeleteBucketCorsOutput>> {
+        Err(s3_error!(NotImplemented))
+    }
+
     // -- ACL stubs --
+
+    async fn put_bucket_acl(
+        &self,
+        _req: S3Request<PutBucketAclInput>,
+    ) -> S3Result<S3Response<PutBucketAclOutput>> {
+        Ok(S3Response::new(PutBucketAclOutput::default()))
+    }
+
+    async fn put_object_acl(
+        &self,
+        _req: S3Request<PutObjectAclInput>,
+    ) -> S3Result<S3Response<PutObjectAclOutput>> {
+        Ok(S3Response::new(PutObjectAclOutput::default()))
+    }
 
     async fn get_bucket_acl(
         &self,
