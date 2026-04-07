@@ -5,9 +5,9 @@
 - Windows 10, single machine, all volumes on same NTFS drive (tmpdir)
 - Single-node, 1 disk, no erasure coding (1+0)
 - Sequential requests, no concurrency, page-cache writes (no fsync)
-- 10 iterations per measurement
+- 10 iterations per measurement (50 for 4KB, 5 for 1GB)
 - `mc` client with UNSIGNED-PAYLOAD over HTTP
-- AbixIO `ca601cf`, RustFS 1.0.0-alpha.90, MinIO RELEASE.2026-04-07
+- AbixIO `037106f`, RustFS 1.0.0-alpha.90, MinIO RELEASE.2026-04-07
 
 ## PUT throughput
 
@@ -16,7 +16,7 @@
 At 4KB, all three servers are bottlenecked by `mc` process startup (~70ms).
 At 10MB, throughput is comparable across servers (74-90 MB/s).
 At 1GB, AbixIO (375 MB/s) trails RustFS (541) and MinIO (576). The storage
-layer does 468 MB/s at 1GB (see below), so the gap is HTTP/s3s overhead.
+layer does 478 MB/s at 1GB (see below), so the gap is HTTP/s3s overhead.
 
 ## GET throughput
 
@@ -32,24 +32,37 @@ At 10MB, all three are in the same range (96-122 MB/s).
 MD5 and blake3 are computed inline during the streaming read -- their cost
 overlaps with network I/O for large objects. Client SigV4 is not server-side.
 
-## Storage layer (no HTTP)
+## Per-layer breakdown
 
-VolumePool direct, bypassing HTTP/s3s/mc. This is the encode path ceiling.
-
-```
-                  1 disk                          4 disks (3+1 EC)
-            1MB    10MB    100MB    1GB      1MB    10MB    100MB    1GB
-PUT stream  248    436     480      468      197    377     435      382   MB/s
-GET         715   1164    1143      790       90    736     933      564   MB/s
-```
-
-## Raw disk baseline
+Each layer of the PUT path benchmarked independently at 4KB, 10MB, and 1GB.
+This is how we validate optimizations -- change one layer, measure its impact
+without touching the rest of the stack.
 
 ```
-tokio::fs::write (cached)    1,287 MB/s
-tokio::fs::write + fsync       879 MB/s
-tokio::fs::read  (cached)    2,574 MB/s
+Layer  What it measures                              10MB         1GB
+-----  -------------------------------------------  -----------  -----------
+L1     blake3 hash (shard integrity)                 4418 MB/s    4247 MB/s
+L1     MD5 hash (S3 ETag)                             702 MB/s     688 MB/s
+L2     RS encode 3+1 (reed-solomon, SIMD)            2627 MB/s    2744 MB/s
+L3     tokio::fs::write (disk ceiling)               1373 MB/s    1018 MB/s
+L3     tokio::fs::read                               2236 MB/s    2762 MB/s
+L4     VolumePool put_stream (1 disk, integrated)     424 MB/s     478 MB/s
+L4     VolumePool get (1 disk, integrated)           1191 MB/s    1224 MB/s
+L4     VolumePool put_stream (4 disk, 3+1 EC)         366 MB/s     402 MB/s
+L4     VolumePool get (4 disk, 3+1 EC)                838 MB/s     921 MB/s
 ```
+
+**What each layer tells you:**
+
+- **L1** -- MD5 is 6.3x slower than blake3. If we could drop MD5 from the hot
+  path, hashing overhead nearly disappears. (MD5 is computed inline during
+  the stream, so it overlaps with I/O for large objects.)
+- **L2** -- RS encode at 2627 MB/s is not a bottleneck. SIMD-accel is enabled.
+- **L3** -- Disk write at 1373 MB/s is the ceiling. L4 at 424 MB/s = 3.2x
+  overhead from hashing + RS + metadata writes.
+- **L4** -- The integrated storage path. This is where ShardWriter trait
+  dispatch, buffer management, and parallel writes show up. 4-disk EC adds
+  ~15% overhead vs 1-disk at 10MB (extra RS encode + 4x shard I/O on same drive).
 
 ## Reproducing these benchmarks
 
@@ -72,17 +85,26 @@ ABIXIO_BIN=./target/release/abixio RUSTFS_BIN=./rustfs.exe MINIO_BIN=./minio.exe
     bash tests/compare_bench.sh
 ```
 
-### Internal performance benchmark (storage layer)
+### Per-layer benchmark (storage internals)
 
 No external binaries needed. Saves JSON to `bench-results/` for A/B comparison.
 
 ```bash
-# establish baseline
+# run all layers at all sizes (~3 minutes)
 cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
 
-# after making a change, compare
+# compare against a baseline after making a change
 BENCH_COMPARE=bench-results/baseline.json \
+    cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
+
+# run only specific layers (fast iteration)
+BENCH_LAYERS=L1,L2 \
+    cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
+
+# run only specific sizes
+BENCH_SIZES=10485760 \
     cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
 ```
 
-Tuning: `BENCH_SIZES=10485760` for one size, `BENCH_ITERS=20` for stability.
+The comparison output flags regressions (>5% slower) and improvements (>5% faster)
+per layer, per size, so you can see exactly what a change affected.
