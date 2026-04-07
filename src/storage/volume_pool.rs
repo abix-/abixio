@@ -178,12 +178,16 @@ impl VolumePool {
         key: &str,
         body: S,
         opts: PutOptions,
+        version_id: Option<&str>,
     ) -> Result<ObjectInfo, StorageError>
     where
         S: futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin,
     {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
+        if let Some(vid) = version_id {
+            pathing::validate_version_id(vid)?;
+        }
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
@@ -199,7 +203,7 @@ impl VolumePool {
             body,
             opts,
             self.mrf.as_ref(),
-            None,
+            version_id,
         )
         .await
     }

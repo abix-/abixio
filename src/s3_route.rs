@@ -83,9 +83,7 @@ impl AbixioDispatch {
 async fn convert_s3_response(resp: s3s::HttpResponse) -> Response<BoxBody> {
     use http_body_util::BodyExt;
     let (parts, body) = resp.into_parts();
-    // collect the s3s body stream into bytes
-    let collected = body.collect().await;
-    let body_bytes = match collected {
+    let body_bytes = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
         Err(_) => Bytes::new(),
     };

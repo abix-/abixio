@@ -56,30 +56,19 @@ fn map_err(e: StorageError) -> s3s::S3Error {
 }
 
 async fn collect_body(body: Option<StreamingBlob>) -> S3Result<Vec<u8>> {
-    let (data, _) = collect_body_with_md5(body).await?;
-    Ok(data)
-}
-
-/// Collect body and compute MD5 (ETag) inline during read.
-/// Eliminates the separate md5_hex() pass over the full data.
-async fn collect_body_with_md5(body: Option<StreamingBlob>) -> S3Result<(Vec<u8>, String)> {
     let Some(body) = body else {
-        return Ok((Vec::new(), crate::storage::bitrot::md5_hex(b"")));
+        return Ok(Vec::new());
     };
     use futures::StreamExt;
-    use md5::{Digest, Md5};
     let mut buf = Vec::new();
-    let mut md5 = Md5::new();
     let mut stream = body;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| {
             s3s::S3Error::with_message(s3s::S3ErrorCode::IncompleteBody, e.to_string())
         })?;
-        md5.update(&chunk);
         buf.extend_from_slice(&chunk);
     }
-    let etag = hex::encode(md5.finalize());
-    Ok((buf, etag))
+    Ok(buf)
 }
 
 fn timestamp_to_s3(unix_secs: u64) -> Timestamp {
@@ -226,37 +215,35 @@ impl S3 for AbixioS3 {
             ..Default::default()
         };
 
-        let info = if is_versioned {
-            // versioned: buffer body (needs version metadata)
-            let (body, etag) = collect_body_with_md5(input.body).await?;
-            let mut opts = opts;
-            opts.precomputed_etag = Some(etag);
-            let version_id = uuid::Uuid::new_v4().to_string();
-            self.store
-                .put_object_versioned(&input.bucket, &input.key, &body, opts, &version_id)
-                .await
-                .map_err(map_err)?
-        } else if let Some(body) = input.body {
-            // non-versioned: streaming encode (no full-body buffering)
-            use futures::StreamExt;
-            let stream = body.map(|chunk| -> Result<bytes::Bytes, std::io::Error> {
-                chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-            });
-            self.store
-                .put_object_stream(&input.bucket, &input.key, stream, opts)
-                .await
-                .map_err(map_err)?
+        let version_id = if is_versioned {
+            Some(uuid::Uuid::new_v4().to_string())
         } else {
-            // empty body
-            let opts_with_etag = PutOptions {
-                precomputed_etag: Some(crate::storage::bitrot::md5_hex(b"")),
-                ..opts
-            };
-            self.store
-                .put_object(&input.bucket, &input.key, b"", opts_with_etag)
-                .await
-                .map_err(map_err)?
+            None
         };
+
+        use futures::StreamExt;
+        let stream: std::pin::Pin<
+            Box<dyn futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Send>,
+        > = match input.body {
+            Some(body) => Box::pin(body.map(|chunk| -> Result<bytes::Bytes, std::io::Error> {
+                chunk.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            })),
+            None => Box::pin(futures::stream::once(async {
+                Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::new())
+            })),
+        };
+
+        let info = self
+            .store
+            .put_object_stream(
+                &input.bucket,
+                &input.key,
+                stream,
+                opts,
+                version_id.as_deref(),
+            )
+            .await
+            .map_err(map_err)?;
 
         let mut output = PutObjectOutput {
             e_tag: Some(ETag::Strong(info.etag)),
