@@ -33,17 +33,25 @@ VolumePool -> erasure encode -> LocalVolume -> tokio::fs -> disk.
 
 ## Raw disk baseline
 
-Single `tokio::fs` write/read to tmpdir. No abixio, no HTTP, no encoding.
-This is the ceiling -- OS page cache, not real disk speed.
+Single file write/read via `tokio::fs`. No abixio, no HTTP, no encoding.
 
 | Operation | 1KB | 1MB | 10MB |
 |---|---|---|---|
-| WRITE | 2.6 MB/s (372us) | 593 MB/s (1.7ms) | 1,474 MB/s (6.8ms) |
-| READ | 12.3 MB/s (80us) | 2,032 MB/s (492us) | 2,330 MB/s (4.3ms) |
+| WRITE (cached) | 2.7 MB/s | 785 MB/s | 1,287 MB/s |
+| **WRITE + fsync (real disk)** | - | - | **879 MB/s (11ms)** |
+| READ (cached) | 11.8 MB/s | 2,169 MB/s | 2,574 MB/s |
 
-AbixIO PUT 10MB at 147 MB/s vs raw write at 1,474 MB/s = 10x overhead from
-erasure coding, checksums, metadata, and HTTP protocol. GET at 249 MB/s vs
-raw read at 2,330 MB/s = 9x overhead.
+The cached numbers hit OS page cache (data stays in RAM). The fsync number
+forces data to the physical disk -- this is the honest baseline.
+
+AbixIO also writes without fsync (like most object stores), so the fair
+comparison is against the cached write:
+
+- PUT 10MB at 147 MB/s vs cached write at 1,287 MB/s = **8.8x overhead**
+- GET 10MB at 249 MB/s vs cached read at 2,574 MB/s = **10.3x overhead**
+
+The overhead comes from: erasure coding (4ms), blake3 checksums (3ms),
+MD5 ETag (15ms), metadata writes, HTTP protocol, and s3s SigV4 processing.
 
 ## Where the time goes
 
