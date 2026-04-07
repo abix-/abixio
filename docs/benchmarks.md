@@ -129,9 +129,10 @@ for the gap between these numbers and the mc-based competitive benchmark.
 
 ### Notes
 
-- AbixIO dominates at 10MB via mc: **1.9x faster PUT than RustFS, 1.7x faster than MinIO**
-- At 1GB via mc, AbixIO (353 MB/s) trails RustFS (464) and MinIO (537) due to HTTP overhead
-- Storage layer at 1GB (468 MB/s) is competitive with RustFS's mc throughput
+- At 10MB, AbixIO PUT is 1.9x RustFS and 1.7x MinIO
+- At 1GB, AbixIO PUT (353 MB/s) is slower than RustFS (464) and MinIO (537)
+- Storage layer PUT at 1GB (468 MB/s) is comparable to RustFS's mc throughput,
+  suggesting HTTP/s3s overhead is the 1GB bottleneck, not the encode path
 - Metadata operations (HEAD, LIST, DELETE) are within noise across all three
 - All numbers are page-cache writes (no fsync). Real disk throughput is lower
 - mc benchmark verifies round-trip: PUT then GET, size check before timing
