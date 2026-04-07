@@ -15,6 +15,23 @@ VolumePool -> erasure encode -> LocalVolume -> tokio::fs -> disk.
 
 ## Results (2026-04-07, release build, tokio::fs)
 
+### Raw disk baseline (tokio::fs, no abixio)
+
+Single file write/read to tmpdir via `tokio::fs`. This is the theoretical
+maximum -- OS page cache, no erasure coding, no hashing, no HTTP, no metadata.
+
+| Operation | Size | Ops | Avg | p50 | p99 | Throughput |
+|---|---|---|---|---|---|---|
+| WRITE | 1KB | 200 | 372us | 325us | 860us | 2.6 MB/s |
+| WRITE | 1MB | 50 | 1.7ms | 1.6ms | 3.6ms | 593 MB/s |
+| WRITE | 10MB | 10 | 6.8ms | 6.1ms | 6.7ms | 1,474 MB/s |
+| READ | 1KB | 200 | 80us | 78us | 98us | 12.3 MB/s |
+| READ | 1MB | 50 | 492us | 471us | 630us | 2,032 MB/s |
+| READ | 10MB | 10 | 4.3ms | 4.3ms | 4.7ms | 2,330 MB/s |
+
+Note: high throughput is OS page cache (tmpdir fits in RAM). These numbers
+represent the ceiling, not real disk throughput.
+
 ### 1 disk (EC 1+0, no parity)
 
 | Operation | Size | Ops | Avg | p50 | p99 | Throughput |
@@ -73,17 +90,39 @@ VolumePool -> erasure encode -> LocalVolume -> tokio::fs -> disk.
 
 ## Observations
 
-**GET throughput is excellent.** 127 MB/s on 1 disk, 110 MB/s on 4 disks. The
-bottleneck is disk I/O, not CPU or protocol overhead.
+**Overhead vs raw disk.** The raw baseline shows what the OS can do without
+abixio in the way. The gap is the cost of being a storage server.
 
-**PUT throughput is disk-bound.** ~10-13 MB/s across all disk counts. All volumes
-are on the same physical NTFS drive, so parallel shard writes contend for the
-same I/O. With separate physical disks, PUT throughput should scale linearly.
+| Operation | Raw disk | AbixIO 1 disk | Overhead | Where it goes |
+|---|---|---|---|---|
+| WRITE 10MB | 1,474 MB/s | 12.4 MB/s | 119x | EC encode, SHA256, meta.json, HTTP |
+| READ 10MB | 2,330 MB/s | 127 MB/s | 18x | SHA256 verify, HTTP, body buffering |
+| WRITE 1MB | 593 MB/s | 9.4 MB/s | 63x | same |
+| READ 1MB | 2,032 MB/s | 101 MB/s | 20x | same |
+| WRITE 1KB | 2.6 MB/s | 152 KB/s | 17x | per-request fixed cost dominates |
+| READ 1KB | 12.3 MB/s | 293 KB/s | 42x | per-request fixed cost dominates |
 
-**PUT latency scales with disk count for small objects.** 5.7ms (1 disk) to 10.3ms
-(4 disks) p50 for 1KB. More shards = more metadata writes.
+Raw numbers are inflated by OS page cache (tmpdir fits in RAM). The ratios show
+where the real overhead lives.
 
-**HEAD is consistently fast.** ~2.3ms p50 regardless of disk count.
+**GET is 6x closer to raw than PUT.** GET skips erasure encoding and only reads
+data shards (not parity). The remaining gap is SHA256 verification, HTTP
+serialization, and full-body buffering.
+
+**PUT overhead is dominated by per-shard work.** Each shard requires: SHA256 hash,
+file create (shard.dat), file create (meta.json), directory ensure. With 4 disks
+that's 12 filesystem operations per PUT.
+
+**Small object latency is HTTP-bound.** 1KB PUT at 5.7ms vs raw WRITE at 0.3ms.
+The 5ms gap is HTTP round-trip, SigV4 verification, s3s routing, and response
+serialization. The data itself is negligible.
+
+**PUT throughput is flat across disk counts.** ~10-13 MB/s regardless of 1-4 disks.
+All volumes share one physical drive, so parallel shard writes contend for the
+same I/O. With separate physical disks, PUT should scale linearly.
+
+**HEAD is consistently fast.** ~2.3ms p50 regardless of disk count. Reads one
+metadata file, no shard data.
 
 ## Improvement history
 
