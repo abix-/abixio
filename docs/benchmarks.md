@@ -126,24 +126,38 @@ metadata file, no shard data.
 
 ## Improvement history
 
-| Metric | v1 (debug, sequential, std::fs) | v3 (release, parallel, tokio::fs) | Speedup |
-|---|---|---|---|
-| GET 10MB, 1 disk | 16.7 MB/s | 127 MB/s | **7.6x** |
-| GET 10MB, 4 disks | 11.4 MB/s | 110 MB/s | **9.6x** |
-| PUT 10MB, 4 disks | 4.4 MB/s | 13.0 MB/s | **3.0x** |
-| PUT 1MB, 4 disks | 4.1 MB/s | 10.7 MB/s | **2.6x** |
+| Metric | v1 (debug, seq, std::fs) | v3 (tokio::fs, SHA256) | v4 (blake3) | Total speedup |
+|---|---|---|---|---|
+| GET 10MB, 1 disk | 16.7 MB/s | 127 MB/s | **228 MB/s** | **13.7x** |
+| GET 10MB, 4 disks | 11.4 MB/s | 110 MB/s | **208 MB/s** | **18.2x** |
+| GET 1MB, 4 disks | 4.1 MB/s | 81 MB/s | **162 MB/s** | **39.5x** |
+| PUT 10MB, 4 disks | 4.4 MB/s | 13.0 MB/s | **13.3 MB/s** | **3.0x** |
 
-Contributors: release-mode optimized crypto (SHA256, MD5, Reed-Solomon), parallel
-shard I/O via join_all, non-blocking disk I/O via tokio::fs.
+Contributors:
+- v3: release build, parallel shard I/O (join_all), tokio::fs
+- v4: blake3 shard checksums (15x faster than SHA256, still cryptographic)
+
+### Storage layer timing (direct VolumePool, 1 disk, 10MB)
+
+| Step | Time | Notes |
+|---|---|---|
+| MD5 (ETag) | 14ms | Spec-required, cannot remove |
+| blake3 (shard checksum) | 2.4ms | Was 37ms with SHA256 |
+| Reed-Solomon encode | ~5ms | No SIMD yet |
+| tokio::fs::write | 6ms | OS page cache |
+| **Total storage** | **43ms** | Was 60ms before blake3 |
+| **HTTP overhead** | **~650ms** | Body buffering via collect_body() |
+| **Total through HTTP** | **~700ms** | Storage is only 6% of total time |
 
 ## Remaining bottlenecks
 
-- **Single physical disk**: all test volumes share one NTFS drive. Separate disks
-  would show real parallelism benefits.
-- **SHA256 for shard checksums**: could switch to blake3 for 2-3x faster hashing.
+- **HTTP body buffering (93% of PUT time)**: `collect_body()` reads the entire
+  request body into `Vec<u8>` before processing. A streaming pipeline would
+  eliminate this 650ms penalty on 10MB objects.
+- **MD5 for ETag (33% of storage time)**: spec-required, cannot remove. Could
+  compute inline during body read (single-pass) instead of a separate full pass.
 - **reed-solomon-erasure**: no SIMD. `reed-solomon-simd` would be 2-5x faster.
-- **Full body buffering**: entire object loaded into Vec<u8>. Streaming would
-  reduce memory and enable pipelining.
+- **Single physical disk**: all test volumes share one NTFS drive.
 
 ## Running benchmarks
 
