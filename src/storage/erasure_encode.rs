@@ -268,7 +268,11 @@ pub async fn encode_and_write_bytes(
     encode_and_write(disks, planner, data_n, parity_n, bucket, key, stream, opts, mrf, version_id).await
 }
 
-/// Write one RS-encoded block to all shard writers.
+/// Write one RS-encoded block to all shard writers sequentially.
+/// Parallel approaches (FuturesUnordered, channel-based tasks) were benchmarked
+/// and regressed at 10MB due to task/channel overhead exceeding the benefit
+/// when all shards write to the same physical disk. Parallel writes would only
+/// help with truly separate physical disks, which tmpdir benchmarks don't test.
 async fn write_block(
     block: &[u8],
     data_n: usize,

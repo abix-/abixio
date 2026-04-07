@@ -33,6 +33,7 @@ use crate::storage::StorageError;
 pub struct AbixioS3 {
     store: Arc<VolumePool>,
     _cluster: Arc<ClusterManager>,
+    versioning_cache: std::sync::RwLock<HashMap<String, Option<crate::storage::metadata::VersioningConfig>>>,
 }
 
 /// Relaxed bucket name validation that accepts any non-empty name.
@@ -50,6 +51,33 @@ impl AbixioS3 {
         Self {
             store,
             _cluster: cluster,
+            versioning_cache: std::sync::RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Get versioning config with caching. Avoids disk reads on every PUT.
+    async fn cached_versioning_config(
+        &self,
+        bucket: &str,
+    ) -> Result<Option<crate::storage::metadata::VersioningConfig>, StorageError> {
+        // check cache first
+        if let Ok(cache) = self.versioning_cache.read() {
+            if let Some(config) = cache.get(bucket) {
+                return Ok(config.clone());
+            }
+        }
+        // cache miss: read from storage
+        let config = self.store.get_versioning_config(bucket).await?;
+        if let Ok(mut cache) = self.versioning_cache.write() {
+            cache.insert(bucket.to_string(), config.clone());
+        }
+        Ok(config)
+    }
+
+    /// Invalidate versioning cache for a bucket.
+    fn invalidate_versioning_cache(&self, bucket: &str) {
+        if let Ok(mut cache) = self.versioning_cache.write() {
+            cache.remove(bucket);
         }
     }
 
@@ -290,10 +318,9 @@ impl S3 for AbixioS3 {
         let user_metadata = input.metadata.unwrap_or_default();
         let ec_ftt = user_metadata.get("ec-ftt").and_then(|v| v.parse::<usize>().ok());
 
-        // check versioning state to decide write path
+        // check versioning state to decide write path (cached to avoid per-PUT disk reads)
         let versioning = self
-            .store
-            .get_versioning_config(&input.bucket)
+            .cached_versioning_config(&input.bucket)
             .await
             .ok()
             .flatten();
@@ -467,10 +494,9 @@ impl S3 for AbixioS3 {
             }));
         }
 
-        // check versioning state
+        // check versioning state (cached)
         let versioning = self
-            .store
-            .get_versioning_config(&input.bucket)
+            .cached_versioning_config(&input.bucket)
             .await
             .ok()
             .flatten();
@@ -823,9 +849,10 @@ impl S3 for AbixioS3 {
         &self,
         req: S3Request<GetBucketVersioningInput>,
     ) -> S3Result<S3Response<GetBucketVersioningOutput>> {
+        // invalidate cache so we return fresh state
+        self.invalidate_versioning_cache(&req.input.bucket);
         let config = self
-            .store
-            .get_versioning_config(&req.input.bucket)
+            .cached_versioning_config(&req.input.bucket)
             .await
             .map_err(map_err)?;
         let status = config.map(|c| BucketVersioningStatus::from(c.status));
@@ -857,6 +884,7 @@ impl S3 for AbixioS3 {
             .set_versioning_config(&input.bucket, &vc)
             .await
             .map_err(map_err)?;
+        self.invalidate_versioning_cache(&input.bucket);
         Ok(S3Response::new(PutBucketVersioningOutput::default()))
     }
 
