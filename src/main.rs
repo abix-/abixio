@@ -11,9 +11,7 @@ use abixio::config::Config;
 use abixio::heal::mrf::MrfQueue;
 use abixio::heal::scanner::ScanState;
 use abixio::heal::worker::{mrf_drain_worker, scanner_loop};
-use abixio::s3::auth::AuthConfig;
-use abixio::s3::handlers::S3Handler;
-use abixio::s3::router;
+use abixio::s3_route::AbixioDispatch;
 use abixio::storage::Backend;
 use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::remote_volume::RemoteVolume;
@@ -155,12 +153,6 @@ async fn main() {
         shutdown_rx.clone(),
     ));
 
-    let auth = AuthConfig {
-        access_key: access_key.clone(),
-        secret_key: secret_key.clone(),
-        no_auth: cfg.no_auth,
-    };
-
     let heal_stats = Arc::new(HealStats::new());
     let cluster = Arc::new(
         ClusterManager::new(ClusterConfig {
@@ -201,20 +193,32 @@ async fn main() {
         .collect();
     let storage_server = Arc::new(StorageServer::new(
         local_volumes_map,
-        auth.access_key.clone(),
-        auth.secret_key.clone(),
-        auth.no_auth,
+        access_key.clone(),
+        secret_key.clone(),
+        cfg.no_auth,
     ));
 
-    let mut handler = S3Handler::new(set, auth, cluster);
-    handler.set_admin(admin);
-    handler.set_storage_server(storage_server);
-    let handler = Arc::new(handler);
+    // build s3s service
+    let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&set), Arc::clone(&cluster));
+    let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+    if !cfg.no_auth {
+        builder.set_auth(abixio::s3_auth::AbixioAuth::new(&access_key, &secret_key));
+    }
+    builder.set_access(abixio::s3_access::AbixioAccess::new(Arc::clone(&cluster)));
+    let s3_service = builder.build();
+
+    // wrap with dispatch layer for admin + storage RPC
+    let dispatch = Arc::new(abixio::s3_route::AbixioDispatch::new(
+        s3_service,
+        Some(admin),
+        Some(storage_server),
+    ));
+
     let addr = parse_listen_addr(&cfg.listen);
 
     // run server with graceful shutdown
     tokio::select! {
-        result = router::serve(handler, addr) => {
+        result = serve(dispatch, addr) => {
             if let Err(e) = result {
                 eprintln!("error: {}", e);
                 std::process::exit(1);
@@ -224,6 +228,30 @@ async fn main() {
             tracing::info!("shutting down");
             let _ = shutdown_tx.send(true);
         }
+    }
+}
+
+async fn serve(dispatch: Arc<AbixioDispatch>, addr: SocketAddr) -> anyhow::Result<()> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    tracing::info!("abixio listening on {}", addr);
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let io = hyper_util::rt::TokioIo::new(stream);
+        let dispatch = dispatch.clone();
+
+        tokio::spawn(async move {
+            let service = hyper::service::service_fn(move |req| {
+                let dispatch = dispatch.clone();
+                async move { Ok::<_, hyper::Error>(dispatch.dispatch(req).await) }
+            });
+            if let Err(e) = hyper::server::conn::http1::Builder::new()
+                .serve_connection(io, service)
+                .await
+            {
+                tracing::error!("connection error: {}", e);
+            }
+        });
     }
 }
 
