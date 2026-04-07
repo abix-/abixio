@@ -61,7 +61,7 @@ impl AbixioDispatch {
         // everything else goes to s3s
         let resp = hyper::service::Service::call(&self.s3_service, req).await;
         match resp {
-            Ok(resp) => convert_s3_response(resp),
+            Ok(resp) => convert_s3_response(resp).await,
             Err(e) => {
                 tracing::error!("s3s http error: {:?}", e);
                 error_response(
@@ -73,9 +73,15 @@ impl AbixioDispatch {
     }
 }
 
-fn convert_s3_response(resp: s3s::HttpResponse) -> Response<BoxBody> {
+async fn convert_s3_response(resp: s3s::HttpResponse) -> Response<BoxBody> {
+    use http_body_util::BodyExt;
     let (parts, body) = resp.into_parts();
-    let body_bytes = body.bytes().unwrap_or_default();
+    // collect the s3s body stream into bytes
+    let collected = body.collect().await;
+    let body_bytes = match collected {
+        Ok(collected) => collected.to_bytes(),
+        Err(_) => Bytes::new(),
+    };
     Response::from_parts(parts, Full::new(body_bytes))
 }
 

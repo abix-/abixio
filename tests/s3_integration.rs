@@ -2,8 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use abixio::cluster::{ClusterConfig, ClusterManager};
-use abixio::s3::auth::AuthConfig;
-use abixio::s3::handlers::S3Handler;
+use abixio::s3_route::AbixioDispatch;
 use abixio::storage::Backend;
 use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::volume_pool::VolumePool;
@@ -29,6 +28,37 @@ async fn start_server(paths: &[std::path::PathBuf]) -> (SocketAddr, tokio::task:
     (addr, handle)
 }
 
+fn build_dispatch(set: Arc<VolumePool>, cluster: Arc<ClusterManager>) -> Arc<AbixioDispatch> {
+    let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&set), Arc::clone(&cluster));
+    let builder = s3s::service::S3ServiceBuilder::new(s3);
+    let s3_service = builder.build();
+    Arc::new(AbixioDispatch::new(s3_service, None, None))
+}
+
+async fn spawn_server(dispatch: Arc<AbixioDispatch>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let dispatch = dispatch.clone();
+            tokio::spawn(async move {
+                let service = hyper::service::service_fn(move |req| {
+                    let dispatch = dispatch.clone();
+                    async move { Ok::<_, hyper::Error>(dispatch.dispatch(req).await) }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    (addr, handle)
+}
+
 async fn start_server_with_cluster(
     paths: &[std::path::PathBuf],
 ) -> (SocketAddr, tokio::task::JoinHandle<()>, Arc<ClusterManager>) {
@@ -50,34 +80,8 @@ async fn start_server_with_cluster(
         })
         .unwrap(),
     );
-    let auth = AuthConfig {
-        access_key: String::new(),
-        secret_key: String::new(),
-        no_auth: true,
-    };
-    let handler = Arc::new(S3Handler::new(set, auth, Arc::clone(&cluster)));
-
-    // bind to random port
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    let handle = tokio::spawn(async move {
-        loop {
-            let (stream, _) = listener.accept().await.unwrap();
-            let io = hyper_util::rt::TokioIo::new(stream);
-            let handler = handler.clone();
-            tokio::spawn(async move {
-                let service = hyper::service::service_fn(move |req| {
-                    let handler = handler.clone();
-                    async move { Ok::<_, hyper::Error>(handler.dispatch(req).await) }
-                });
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, service)
-                    .await;
-            });
-        }
-    });
-
+    let dispatch = build_dispatch(set, Arc::clone(&cluster));
+    let (addr, handle) = spawn_server(dispatch).await;
     (addr, handle, cluster)
 }
 
@@ -102,32 +106,8 @@ async fn start_server_pool(
         })
         .unwrap(),
     );
-    let auth = AuthConfig {
-        access_key: String::new(),
-        secret_key: String::new(),
-        no_auth: true,
-    };
-    let handler = Arc::new(S3Handler::new(set, auth, cluster));
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-
-    let handle = tokio::spawn(async move {
-        loop {
-            let (stream, _) = listener.accept().await.unwrap();
-            let io = hyper_util::rt::TokioIo::new(stream);
-            let handler = handler.clone();
-            tokio::spawn(async move {
-                let service = hyper::service::service_fn(move |req| {
-                    let handler = handler.clone();
-                    async move { Ok::<_, hyper::Error>(handler.dispatch(req).await) }
-                });
-                let _ = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, service)
-                    .await;
-            });
-        }
-    });
+    let dispatch = build_dispatch(set, cluster);
+    let (addr, handle) = spawn_server(dispatch).await;
 
     (addr, handle)
 }

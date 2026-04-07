@@ -9,8 +9,7 @@ use abixio::cluster::{ClusterConfig, ClusterVolumeStatus, ClusterManager, Cluste
 use abixio::cluster::placement::PlacementVolume;
 use abixio::cluster::topology::{StaticTopology, TopologyVolume, TopologyNode};
 use abixio::heal::mrf::MrfQueue;
-use abixio::s3::auth::AuthConfig;
-use abixio::s3::handlers::S3Handler;
+use abixio::s3_route::AbixioDispatch;
 use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::volume_pool::VolumePool;
 use abixio::storage::metadata::{BucketSettings, ObjectMeta};
@@ -441,17 +440,10 @@ async fn start_server(
         },
         Arc::clone(&cluster),
     ));
-    let mut handler = S3Handler::new(
-        store,
-        AuthConfig {
-            access_key: String::new(),
-            secret_key: String::new(),
-            no_auth: true,
-        },
-        cluster,
-    );
-    handler.set_admin(admin);
-    let handler = Arc::new(handler);
+    let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&store), Arc::clone(&cluster));
+    let builder = s3s::service::S3ServiceBuilder::new(s3);
+    let s3_service = builder.build();
+    let dispatch = Arc::new(AbixioDispatch::new(s3_service, Some(admin), None));
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -461,11 +453,11 @@ async fn start_server(
                 break;
             };
             let io = hyper_util::rt::TokioIo::new(stream);
-            let handler = handler.clone();
+            let dispatch = dispatch.clone();
             tokio::spawn(async move {
                 let service = hyper::service::service_fn(move |req| {
-                    let handler = handler.clone();
-                    async move { Ok::<_, hyper::Error>(handler.dispatch(req).await) }
+                    let dispatch = dispatch.clone();
+                    async move { Ok::<_, hyper::Error>(dispatch.dispatch(req).await) }
                 });
                 let _ = hyper::server::conn::http1::Builder::new()
                     .serve_connection(io, service)
