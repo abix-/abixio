@@ -5,95 +5,113 @@ VolumePool -> erasure encode -> LocalVolume -> tokio::fs -> disk.
 
 ## Test setup
 
-- Windows 10, debug build (not release-optimized)
+- Windows 10, single machine
 - All volumes on same NTFS drive (tmpdir)
 - Single-node, local disk only
 - aws-sdk-s3 client with SigV4 authentication
 - No concurrent requests (sequential, single client)
+- Parallel shard I/O via `futures::join_all`
 
-## Results (2026-04-07, debug build)
+## Results (2026-04-07, release build)
 
 ### 1 disk (EC 1+0, no parity)
 
 | Operation | Size | Ops | Avg | p50 | p99 | Throughput |
 |---|---|---|---|---|---|---|
-| PUT | 1KB | 100 | 4.8ms | 4.6ms | 7.5ms | 209 KB/s |
-| PUT | 1MB | 20 | 180ms | 178ms | 196ms | 5.6 MB/s |
-| PUT | 10MB | 5 | 1.82s | 1.74s | 1.87s | 5.5 MB/s |
-| GET | 1KB | 100 | 3.9ms | 3.8ms | 5.3ms | 254 KB/s |
-| GET | 1MB | 20 | 60ms | 60ms | 63ms | 16.7 MB/s |
-| GET | 10MB | 5 | 599ms | 593ms | 603ms | 16.7 MB/s |
-| HEAD | - | 100 | 3.2ms | 2.9ms | 4.8ms | - |
-| LIST | 100 obj | 50 | 25.8ms | 25.3ms | 31.3ms | - |
-| DELETE | 1KB | 100 | 3.3ms | 3.2ms | 4.5ms | - |
+| PUT | 1KB | 100 | 6.3ms | 4.4ms | 20.9ms | 160 KB/s |
+| PUT | 1MB | 20 | 95ms | 83ms | 130ms | 10.5 MB/s |
+| PUT | 10MB | 5 | 771ms | 725ms | 769ms | 13.0 MB/s |
+| GET | 1KB | 100 | 2.8ms | 2.7ms | 4.8ms | 352 KB/s |
+| GET | 1MB | 20 | 9.5ms | 9.2ms | 10.7ms | 106 MB/s |
+| GET | 10MB | 5 | 86ms | 74ms | 77ms | 116 MB/s |
+| HEAD | - | 100 | 2.5ms | 2.4ms | 5.6ms | - |
+| LIST | 100 obj | 50 | 20.5ms | 20.1ms | 24.3ms | - |
+| DELETE | 1KB | 100 | 2.7ms | 2.7ms | 3.4ms | - |
 
 ### 2 disks (EC 1+1)
 
 | Operation | Size | Ops | Avg | p50 | p99 | Throughput |
 |---|---|---|---|---|---|---|
-| PUT | 1KB | 100 | 8.7ms | 6.9ms | 35.8ms | 114 KB/s |
-| PUT | 1MB | 20 | 289ms | 277ms | 375ms | 3.5 MB/s |
-| PUT | 10MB | 5 | 2.71s | 2.66s | 2.68s | 3.7 MB/s |
-| GET | 1KB | 100 | 3.8ms | 3.7ms | 5.2ms | 267 KB/s |
-| GET | 1MB | 20 | 121ms | 117ms | 137ms | 8.3 MB/s |
-| GET | 10MB | 5 | 1.22s | 1.14s | 1.20s | 8.2 MB/s |
-| HEAD | - | 100 | 3.6ms | 3.0ms | 18.7ms | - |
-| LIST | 100 obj | 50 | 28.2ms | 27.8ms | 30.3ms | - |
-| DELETE | 1KB | 100 | 4.4ms | 3.8ms | 4.6ms | - |
+| PUT | 1KB | 100 | 8.3ms | 5.2ms | 26.8ms | 120 KB/s |
+| PUT | 1MB | 20 | 95ms | 89ms | 118ms | 10.5 MB/s |
+| PUT | 10MB | 5 | 798ms | 767ms | 823ms | 12.5 MB/s |
+| GET | 1KB | 100 | 3.2ms | 3.1ms | 4.6ms | 310 KB/s |
+| GET | 1MB | 20 | 14ms | 14ms | 16ms | 72 MB/s |
+| GET | 10MB | 5 | 116ms | 111ms | 119ms | 86 MB/s |
+| HEAD | - | 100 | 2.3ms | 2.2ms | 4.8ms | - |
+| LIST | 100 obj | 50 | 25ms | 24ms | 28ms | - |
+| DELETE | 1KB | 100 | 3.3ms | 3.2ms | 4.2ms | - |
 
 ### 3 disks (EC 2+1)
 
 | Operation | Size | Ops | Avg | p50 | p99 | Throughput |
 |---|---|---|---|---|---|---|
-| PUT | 1KB | 100 | 11.4ms | 8.2ms | 63.8ms | 88 KB/s |
-| PUT | 1MB | 20 | 247ms | 243ms | 270ms | 4.0 MB/s |
-| PUT | 10MB | 5 | 2.38s | 2.35s | 2.41s | 4.2 MB/s |
-| GET | 1KB | 100 | 4.2ms | 4.1ms | 5.1ms | 238 KB/s |
-| GET | 1MB | 20 | 92ms | 88ms | 112ms | 10.9 MB/s |
-| GET | 10MB | 5 | 946ms | 907ms | 978ms | 10.6 MB/s |
-| HEAD | - | 100 | 2.9ms | 2.8ms | 3.7ms | - |
-| LIST | 100 obj | 50 | 34.1ms | 33.6ms | 39.6ms | - |
-| DELETE | 1KB | 100 | 4.6ms | 4.5ms | 7.9ms | - |
+| PUT | 1KB | 100 | 9.2ms | 5.9ms | 36.3ms | 108 KB/s |
+| PUT | 1MB | 20 | 96ms | 89ms | 140ms | 10.5 MB/s |
+| PUT | 10MB | 5 | 737ms | 722ms | 749ms | 13.6 MB/s |
+| GET | 1KB | 100 | 3.2ms | 3.0ms | 4.7ms | 317 KB/s |
+| GET | 1MB | 20 | 13ms | 12ms | 18ms | 78 MB/s |
+| GET | 10MB | 5 | 98ms | 93ms | 96ms | 102 MB/s |
+| HEAD | - | 100 | 2.3ms | 2.2ms | 3.3ms | - |
+| LIST | 100 obj | 50 | 28ms | 27ms | 34ms | - |
+| DELETE | 1KB | 100 | 3.9ms | 3.8ms | 4.6ms | - |
 
 ### 4 disks (EC 3+1)
 
 | Operation | Size | Ops | Avg | p50 | p99 | Throughput |
 |---|---|---|---|---|---|---|
-| PUT | 1KB | 100 | 12.9ms | 10.4ms | 32.8ms | 77 KB/s |
-| PUT | 1MB | 20 | 242ms | 234ms | 272ms | 4.1 MB/s |
-| PUT | 10MB | 5 | 2.29s | 2.25s | 2.29s | 4.4 MB/s |
-| GET | 1KB | 100 | 4.3ms | 4.2ms | 5.2ms | 231 KB/s |
-| GET | 1MB | 20 | 82ms | 80ms | 97ms | 12.2 MB/s |
-| GET | 10MB | 5 | 875ms | 825ms | 854ms | 11.4 MB/s |
-| HEAD | - | 100 | 3.2ms | 3.0ms | 4.0ms | - |
-| LIST | 100 obj | 50 | 36.2ms | 36.0ms | 39.3ms | - |
-| DELETE | 1KB | 100 | 5.1ms | 5.0ms | 6.1ms | - |
+| PUT | 1KB | 100 | 10.5ms | 7.4ms | 32.8ms | 95 KB/s |
+| PUT | 1MB | 20 | 88ms | 89ms | 96ms | 11.3 MB/s |
+| PUT | 10MB | 5 | 729ms | 718ms | 746ms | 13.7 MB/s |
+| GET | 1KB | 100 | 3.2ms | 3.0ms | 4.7ms | 317 KB/s |
+| GET | 1MB | 20 | 13ms | 12ms | 15ms | 79 MB/s |
+| GET | 10MB | 5 | 99ms | 93ms | 103ms | 101 MB/s |
+| HEAD | - | 100 | 2.4ms | 2.2ms | 3.6ms | - |
+| LIST | 100 obj | 50 | 31ms | 30ms | 36ms | - |
+| DELETE | 1KB | 100 | 4.5ms | 4.4ms | 6.3ms | - |
 
 ## Observations
 
-**PUT scales with disk count.** 1-disk PUT 1KB at 4.8ms, 4-disk at 12.9ms. This
-is expected: more disks = more erasure shards = more I/O per write. The overhead
-is roughly linear.
+**GET throughput is excellent.** 116 MB/s on 1 disk, 101 MB/s on 4 disks. The
+bottleneck is now disk I/O, not CPU. Reed-Solomon decode only reads `data_n`
+shards (not parity), so the overhead is minimal.
 
-**GET is faster than PUT.** Reed-Solomon decode reads `data_n` shards (not all
-shards), so GET avoids reading parity. GET 10MB at 16.7 MB/s (1 disk) vs PUT
-10MB at 5.5 MB/s.
+**PUT throughput is disk-bound.** ~13 MB/s across all disk counts. All volumes are
+on the same physical NTFS drive, so parallel shard writes don't help much. With
+separate physical disks, PUT throughput should scale linearly with disk count.
 
-**HEAD is consistently fast.** ~3ms regardless of disk count. Only reads metadata,
-no shard data.
+**PUT latency scales with disk count for small objects.** 4.4ms (1 disk) to 7.4ms
+(4 disks) p50 for 1KB. More shards = more metadata writes.
 
-**LIST scales mildly with disk count.** 25ms (1 disk) to 36ms (4 disks). LIST
-reads metadata from all disks and deduplicates.
+**HEAD is consistently fast.** ~2.2ms p50 regardless of disk count.
 
-**Debug build penalty.** These numbers are from `cargo test` (debug profile). A
-release build would be significantly faster due to optimized Reed-Solomon, SHA256,
-and serde.
+**Parallel I/O matters.** Shard reads and writes use `futures::join_all` to issue
+all disk operations concurrently. On separate physical disks, this is the
+difference between N sequential writes and 1 parallel write.
 
-**All volumes on same physical disk.** Real deployments with separate disks would
-see better parallelism for multi-disk writes.
+## Improvement from v1 (debug, sequential) to v2 (release, parallel)
+
+| Metric | v1 | v2 | Speedup |
+|---|---|---|---|
+| GET 10MB, 1 disk | 16.7 MB/s | 116 MB/s | 7x |
+| GET 10MB, 4 disks | 11.4 MB/s | 101 MB/s | 9x |
+| GET 1MB, 4 disks | 12.2 MB/s | 79 MB/s | 6.5x |
+| PUT 10MB, 4 disks | 4.4 MB/s | 13.7 MB/s | 3x |
+| PUT 1MB, 4 disks | 4.1 MB/s | 11.3 MB/s | 2.8x |
+
+Main contributors: release-mode optimized crypto (SHA256, MD5, Reed-Solomon) and
+parallel shard I/O via join_all.
 
 ## Running benchmarks
 
+Release binary (recommended):
+```
+cd abixio && cargo build --release
+cd abixio-ui
+ABIXIO_BIN='C:\code\endless\rust\target\release\abixio.exe' cargo test --test bench -- --ignored --nocapture
+```
+
+Debug binary (for comparison):
 ```
 cd abixio-ui
 cargo test --test bench -- --ignored --nocapture
