@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use reed_solomon_erasure::galois_8::ReedSolomon;
 use tokio::io::AsyncReadExt;
 
@@ -8,6 +10,60 @@ use super::metadata::ObjectMeta;
 
 /// Block size matching the encode path (erasure_encode::STREAM_BLOCK_SIZE).
 const STREAM_BLOCK_SIZE: usize = 1024 * 1024;
+
+/// Buffer pool for EC decode output. Pre-allocates Vecs that are returned
+/// to the pool when the Bytes wrapping them is dropped by hyper.
+/// Eliminates per-chunk allocation after warmup.
+struct BufPool {
+    bufs: std::sync::Mutex<Vec<Vec<u8>>>,
+    capacity: usize,
+}
+
+impl BufPool {
+    fn new(count: usize, capacity: usize) -> Arc<Self> {
+        let bufs = (0..count).map(|_| Vec::with_capacity(capacity)).collect();
+        Arc::new(Self {
+            bufs: std::sync::Mutex::new(bufs),
+            capacity,
+        })
+    }
+
+    fn take(&self) -> Vec<u8> {
+        self.bufs
+            .lock()
+            .ok()
+            .and_then(|mut bufs| bufs.pop())
+            .unwrap_or_else(|| Vec::with_capacity(self.capacity))
+    }
+
+    fn return_buf(&self, mut buf: Vec<u8>) {
+        buf.clear();
+        if let Ok(mut bufs) = self.bufs.try_lock() {
+            bufs.push(buf);
+        }
+        // if lock contended (rare), buf is just dropped -- no leak, no block
+    }
+}
+
+/// Owns a Vec<u8> and returns it to the pool on drop.
+/// Used with Bytes::from_owner so hyper's drop triggers pool return.
+struct PooledBuf {
+    data: Vec<u8>,
+    pool: Arc<BufPool>,
+}
+
+impl AsRef<[u8]> for PooledBuf {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl Drop for PooledBuf {
+    fn drop(&mut self) {
+        let buf = std::mem::take(&mut self.data);
+        self.pool.return_buf(buf);
+    }
+}
 
 pub async fn read_and_decode(
     disks: &[Box<dyn Backend>],
@@ -152,10 +208,12 @@ pub async fn read_and_decode_stream(
         let mut remaining = original_size;
         let mut shard_read_offset = 0usize;
 
+        // pool of 8 buffers: 4 channel slots + ~1 in hyper + headroom
+        let pool = BufPool::new(8, DECODE_BLOCK_SIZE);
+
         while remaining > 0 {
-            // process up to encode_blocks_per_iter encode-blocks in one iteration
             let iter_size = remaining.min(DECODE_BLOCK_SIZE);
-            let mut iter_data = Vec::with_capacity(iter_size);
+            let mut iter_data = pool.take(); // from pool, not new alloc
             let mut iter_remaining = iter_size;
 
             while iter_remaining > 0 {
@@ -215,7 +273,12 @@ pub async fn read_and_decode_stream(
             iter_data.truncate(iter_size);
             remaining -= iter_size;
 
-            if tx.send(Ok(bytes::Bytes::from(iter_data))).await.is_err() {
+            // wrap in PooledBuf so the Vec returns to pool when Bytes is dropped
+            let pooled = PooledBuf {
+                data: iter_data,
+                pool: pool.clone(),
+            };
+            if tx.send(Ok(bytes::Bytes::from_owner(pooled))).await.is_err() {
                 return;
             }
         }
