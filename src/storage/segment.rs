@@ -35,6 +35,9 @@ pub struct ActiveSegment {
     segment_id: u32,
     path: PathBuf,
     file: std::fs::File,
+    /// mmap of the pre-allocated file for zero-copy reads.
+    /// The mmap sees data written via the file handle (page cache coherent).
+    mmap: memmap2::Mmap,
     write_offset: usize,
     capacity: usize,
 }
@@ -84,10 +87,17 @@ impl ActiveSegment {
             writer.flush()?;
         } // drop BufWriter to release borrow
 
+        // mmap the pre-allocated file for reads. Writes via the file handle
+        // are page-cache coherent with the mmap (same file, same pages).
+        let mmap_file = std::fs::File::open(&path)?;
+        let mmap = unsafe { memmap2::Mmap::map(&mmap_file) }
+            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
         Ok(Self {
             segment_id,
             path,
             file,
+            mmap,
             write_offset: SUPERBLOCK_SIZE,
             capacity,
         })
@@ -126,17 +136,22 @@ impl ActiveSegment {
         Ok(Some(location))
     }
 
-    /// Read bytes from the active segment at an offset. No mmap, no seal.
-    /// Uses a separate read handle to avoid disturbing the write cursor.
+    /// Read bytes from the active segment at an offset via mmap.
+    /// The mmap is page-cache coherent with writes via the file handle.
     pub fn read_at(&self, offset: usize, len: usize) -> Result<Vec<u8>, StorageError> {
         if offset + len > self.write_offset {
             return Err(StorageError::Internal("read beyond write offset".into()));
         }
-        let mut reader = std::fs::File::open(&self.path)?;
-        reader.seek(SeekFrom::Start(offset as u64))?;
-        let mut buf = vec![0u8; len];
-        std::io::Read::read_exact(&mut reader, &mut buf)?;
-        Ok(buf)
+        Ok(self.mmap[offset..offset + len].to_vec())
+    }
+
+    /// Get a direct slice from the active segment mmap (zero-copy).
+    pub fn slice(&self, offset: usize, len: usize) -> Option<&[u8]> {
+        if offset + len <= self.write_offset {
+            Some(&self.mmap[offset..offset + len])
+        } else {
+            None
+        }
     }
 
     /// Fsync the segment file to disk.
