@@ -8,20 +8,27 @@ Large objects (>64KB) keep the existing file-per-object layout.
 
 ## Measured performance
 
-All measurements via `127.0.0.1` (never `localhost` on Windows -- DNS
-resolution adds 200ms). Per-request curl with Content-Length header.
+Measured with `tests/bench_4kb.py` -- Python `requests.Session` with HTTP
+keep-alive (persistent connection, 1000 ops). This is how real S3 clients
+work. All via `127.0.0.1` (never `localhost` on Windows).
+
+### vs competitors (4KB, keep-alive)
+
+| Server | PUT obj/s | PUT MB/s | GET obj/s | GET MB/s |
+|--------|-----------|----------|-----------|----------|
+| **AbixIO (log store)** | **1096** | **4.3** | **1315** | **5.1** |
+| AbixIO (file tier) | 578 | 2.3 | 774 | 3.0 |
+| RustFS | 1329 | 5.2 | 1349 | 5.3 |
+| MinIO | 1189 | 4.6 | 1073 | 4.2 |
+
+### log store vs file tier
 
 | | File tier | Log store | Improvement |
 |--|----------|-----------|-------------|
-| **4KB PUT total** | 2.0ms | **1.2ms** | **40% faster** |
-| **4KB GET total** | 1.7ms | **1.0ms** | **41% faster** |
-| **4KB PUT server only** | 1.33ms | **0.53ms** | **60% faster** |
-| **4KB GET server only** | 0.95ms | **0.31ms** | **67% faster** |
+| **4KB PUT** | 578 obj/s, 1.73ms | **1096 obj/s, 0.91ms** | **90% more throughput** |
+| **4KB GET** | 774 obj/s, 1.29ms | **1315 obj/s, 0.76ms** | **70% more throughput** |
 | Filesystem ops per 4KB (4 disks) | 12 | **4** | 3x fewer |
 | Files per 1M small objects | 3M+ | ~3 segments | ~1000x fewer |
-
-"Server only" = total minus TCP connect (0.68ms on Windows, ~0.03ms on Linux).
-With HTTP keep-alive, TCP connect happens once per session.
 
 No fsync on writes -- trust OS page cache, same as MinIO and RustFS.
 Writes go to page cache (RAM), reads from the same pages via mmap.

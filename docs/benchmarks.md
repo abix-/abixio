@@ -1,144 +1,134 @@
 # Benchmarks
 
-## vs RustFS vs MinIO
+## Methodology
 
-All three servers running on Windows 10, same NTFS drive, single disk, no
-erasure coding. `mc` client with SigV4 auth, sequential requests, 15 iterations.
-All connections via `127.0.0.1` (never `localhost` -- Windows DNS resolution
-of `localhost` adds 200ms per request).
+### Hardware
+- Windows 10 Home, single machine, NTFS drive (tmpdir)
+- Single-node, 1 disk, no erasure coding (1+0) unless noted
 
-### PUT
+### Two benchmark modes
 
-![PUT throughput](img/bench-put.svg)
+**Keep-alive** (`tests/bench_4kb.py`): Python `requests.Session` with
+persistent HTTP connection. Measures actual server throughput -- no TCP
+connect overhead, no process startup. This is how real S3 clients work
+(aws-sdk, boto3, rclone all use connection pooling).
 
-At 10MB, all three are within noise (81-92 MB/s). At 1GB, AbixIO (440)
-beats MinIO (376) and trails RustFS (540).
+**Per-process** (`tests/compare_bench.sh`): `mc` client, one process per
+operation. Includes SigV4 signing, `mc` startup (~60ms), and new TCP
+connection per request. Useful for large objects where client overhead is
+negligible relative to transfer time. Useless for 4KB.
 
-### GET
+### What we report
+- **obj/sec**: operations per second (relevant for all sizes)
+- **MB/s**: throughput (relevant for large objects)
+- **ms/op**: per-request latency
 
-![GET throughput](img/bench-get.svg)
-
-At 10MB, all three are close (106-122 MB/s). At 1GB through `mc`, MinIO
-(953) leads. AbixIO (386) is bottlenecked by the `mc` client, not the
-server -- direct curl shows **1220 MB/s** for a 1GB GET.
-
-### What the mc client hides
-
-| Measurement | AbixIO 1GB GET |
-|-------------|---------------|
-| Through `mc` (SigV4, write to disk) | 386 MB/s |
-| Through curl (no auth, /dev/null) | **1220 MB/s** |
-| Internal L6 benchmark (no client) | **568 MB/s** |
-| Internal L4 storage layer | **page cache speed** |
-
-MinIO gets 953 MB/s through the same `mc` because `mc` is a Go binary
-optimized for Go's HTTP stack. This is a client-side gap, not server-side.
+### Windows caveats
+- **Never use `localhost`** -- Windows DNS resolution adds ~200ms per request
+  (IPv6 fallback). Always use `127.0.0.1`.
+- **TCP connect** on Windows localhost = ~0.2ms (vs ~0.03ms on Linux).
+  Keep-alive eliminates this after the first request.
 
 ---
 
 ## 4KB small object performance
 
-The log-structured storage path eliminates filesystem metadata overhead
-for small objects. Measured via curl with `127.0.0.1`, Content-Length header.
+Measured with `tests/bench_4kb.py` (keep-alive, 1000 ops per test).
 
-### Latency breakdown (4KB PUT)
+| Server | PUT | | GET | | PUT ms | GET ms |
+|--------|-----|--|-----|--|--------|--------|
+| **AbixIO (log store)** | **1096 obj/s** | **4.3 MB/s** | **1315 obj/s** | **5.1 MB/s** | 0.91 | 0.76 |
+| AbixIO (file tier) | 578 obj/s | 2.3 MB/s | 774 obj/s | 3.0 MB/s | 1.73 | 1.29 |
+| RustFS | 1329 obj/s | 5.2 MB/s | 1349 obj/s | 5.3 MB/s | 0.75 | 0.74 |
+| MinIO | 1189 obj/s | 4.6 MB/s | 1073 obj/s | 4.2 MB/s | 0.84 | 0.93 |
 
-```
-File tier:                          Log store:
-  TCP connect:     0.68ms             TCP connect:     0.68ms
-  server process:  1.33ms             server process:  0.53ms  <- 60% faster
-  total:           2.01ms             total:           1.21ms
-```
+**AbixIO log store vs file tier**: PUT 90% faster, GET 70% faster.
 
-### Latency breakdown (4KB GET)
+**AbixIO log store vs competitors**: within 20% of RustFS (fastest), ahead
+of MinIO on GET. The log store eliminates NTFS filesystem metadata overhead
+(mkdir + file create) that dominates 4KB operations.
 
-```
-File tier:                          Log store:
-  TCP connect:     0.69ms             TCP connect:     0.69ms
-  server process:  0.95ms             server process:  0.31ms  <- 67% faster
-  total:           1.69ms             total:           1.00ms
-```
+### How the log store wins
 
-### Summary
+| | File tier | Log store |
+|--|----------|-----------|
+| PUT operations per 4KB | mkdir + shard.dat + meta.json = 3 fs ops | 1 append to segment |
+| GET operations per 4KB | file open + read + close | mmap slice (page cache) |
+| On-disk files per 1M objects | 3M+ | ~3 segments |
 
-| | File tier | Log store | Improvement |
-|--|----------|-----------|-------------|
-| **4KB PUT total** | 2.0ms | **1.2ms** | **40% faster** |
-| **4KB GET total** | 1.7ms | **1.0ms** | **41% faster** |
-| **4KB PUT server only** | 1.33ms | **0.53ms** | **60% faster** |
-| **4KB GET server only** | 0.95ms | **0.31ms** | **67% faster** |
-| Filesystem ops (4 disks) | 12 | **4** | 3x fewer |
-| Files per 1M objects | 3M+ | ~3 segments | ~1000x fewer |
+### Reproducing
 
-TCP connect (0.68ms) is 57% of log store total -- fixed cost from Windows
-TCP stack. Linux localhost connect is ~0.03ms (20x faster). With HTTP
-keep-alive (persistent connections), TCP connect happens once per session.
+```bash
+# start servers manually, then:
+python tests/bench_4kb.py --all --ops 1000
 
-### Windows localhost warning
-
-**Never use `localhost` for benchmarks on Windows.** DNS resolution of
-`localhost` on Windows adds ~200ms per request (IPv6 fallback). Always
-use `127.0.0.1`.
-
-```
-curl http://localhost:10000/...    <- 210ms (DNS: 200ms + actual: 10ms)
-curl http://127.0.0.1:10000/...   <- 1.2ms (actual performance)
+# or benchmark a single server:
+python tests/bench_4kb.py --port 10000 --name AbixIO --ops 1000
 ```
 
 ---
 
-## How fast is each layer?
+## Large object throughput (10MB, 1GB)
 
-### GET performance (1 disk, 10MB / 1GB)
+Measured with `tests/compare_bench.sh` (`mc` client, per-process, SigV4).
+MB/s is the relevant metric for large objects.
 
-| Layer | What | 10MB | 1GB | Bottleneck? |
-|-------|------|------|-----|-------------|
-| L6 | Full S3 GET | 253 MB/s | 568 MB/s | s3s overhead |
-| L5 | Raw HTTP (no S3) | 762 MB/s | 800 MB/s | no |
-| L4 | Storage + mmap | 19,031 MB/s | page cache | no |
-| L3 | Disk read (cached) | 2703 MB/s | 2902 MB/s | no |
+### PUT
 
-For 1+0 (no EC), GET is zero-copy: mmap the shard file, yield the entire
-mapping as a single `Bytes` through hyper. Direct curl: 1220 MB/s at 1GB.
+![PUT throughput](img/bench-put.svg)
 
-### GET performance (4 disk, 3+1 EC, 10MB / 1GB)
+| Size | AbixIO | RustFS | MinIO |
+|------|--------|--------|-------|
+| 10MB | 80 MB/s | 81 MB/s | 93 MB/s |
+| 1GB | 441 MB/s | 538 MB/s | 529 MB/s |
 
-| Layer | What | 10MB | 1GB |
-|-------|------|------|-----|
-| L4 | Storage + mmap EC (zero-copy) | 10,937 MB/s | page cache |
-| L4 | Storage (old buffered path) | 774 MB/s | 919 MB/s |
+### GET
 
-EC GET is zero-copy: mmap shard slices yielded directly as `Bytes` frames.
+![GET throughput](img/bench-get.svg)
 
-### PUT performance (1 disk, 10MB)
+| Size | AbixIO | RustFS | MinIO |
+|------|--------|--------|-------|
+| 10MB | 107 MB/s | 109 MB/s | 126 MB/s |
+| 1GB | 396 MB/s | 684 MB/s | 1102 MB/s |
 
-![PUT breakdown](img/bench-breakdown.svg)
+At 1GB through `mc`, MinIO leads. AbixIO's server delivers 1220 MB/s via
+direct curl -- the gap is `mc` client overhead, not server performance.
 
-| Layer | What | Speed | Bottleneck? |
-|-------|------|-------|-------------|
-| L6 | Full S3 PUT | 257 MB/s | s3s overhead |
-| L5 | Raw HTTP | 762 MB/s | no |
-| L4 | Storage pipeline | 483 MB/s | hashing + encode |
-| L3 | Disk write (page cache) | 1625 MB/s | no |
-| L2 | RS encode (SIMD) | 2762 MB/s | no |
-| L1 | MD5 hash (S3 ETag) | 703 MB/s | floor |
-
-PUT is zero-allocation in the per-block encode loop.
-
----
-
-## Reproducing
-
-### Competitive benchmark (vs RustFS, MinIO)
+### Reproducing
 
 ```bash
 cargo build --release
 ABIXIO_BIN=./target/release/abixio RUSTFS_BIN=rustfs MINIO_BIN=minio MC=mc \
-    ITERS=15 SIZES="4096 10485760 1073741824" \
+    ITERS=10 SIZES="4096 10485760 1073741824" \
     bash tests/compare_bench.sh
 ```
 
-### Per-layer benchmark
+---
+
+## Per-layer internal benchmarks
+
+Each layer of the request path benchmarked independently. Not client-visible
+-- used to identify bottlenecks and validate optimizations.
+
+### GET by layer (1 disk)
+
+| Layer | What | 4KB | 10MB | 1GB |
+|-------|------|-----|------|-----|
+| L6 | Full S3 (end to end) | 6.4 MB/s | 269 MB/s | 624 MB/s |
+| L4 | Storage + mmap | 9.2 MB/s | 18,313 MB/s | page cache |
+| L4 | Storage + mmap EC (4 disk) | 5.4 MB/s | 11,766 MB/s | page cache |
+
+### PUT by layer (1 disk)
+
+| Layer | What | 4KB | 10MB | 1GB |
+|-------|------|-----|------|-----|
+| L6 | Full S3 (end to end) | 3.3 MB/s | 247 MB/s | 339 MB/s |
+| L4 | Storage pipeline | 3.7 MB/s | 481 MB/s | 540 MB/s |
+| L3 | Disk write (page cache) | -- | 1625 MB/s | -- |
+| L2 | RS encode (SIMD) | -- | 2762 MB/s | -- |
+| L1 | MD5 hash | -- | 703 MB/s | -- |
+
+### Reproducing
 
 ```bash
 cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
@@ -154,7 +144,6 @@ BENCH_LAYERS=L4,L6 BENCH_SIZES=10485760 \
 
 ---
 
-For optimization history, allocation audit, and failed experiments, see
-[layer-optimization.md](layer-optimization.md).
+For optimization history and allocation audit, see [layer-optimization.md](layer-optimization.md).
 
 For log-structured storage design, see [write-log.md](write-log.md).
