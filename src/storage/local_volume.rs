@@ -11,7 +11,11 @@ use super::{Backend, BackendInfo, MmapOrVec, ShardWriter, StorageError};
 pub struct LocalVolume {
     root: PathBuf,
     volume_id: String,
+    log_store: Option<std::sync::Mutex<super::log_store::LogStore>>,
 }
+
+/// Default threshold: objects <= 64KB use log-structured storage.
+const LOG_THRESHOLD: usize = 64 * 1024;
 
 const META_FILE: &str = "meta.json";
 const BUCKET_SETTINGS_FILE: &str = "settings.json";
@@ -31,14 +35,102 @@ impl LocalVolume {
         let volume_id = crate::storage::volume::read_volume_format(root)
             .map(|f| f.volume_id)
             .unwrap_or_default();
+        // log-structured store for small objects
+        // enabled when .abixio.sys/log directory exists (opt-in per volume)
+        let log_dir = root.join(".abixio.sys").join("log");
+        let log_store = if log_dir.is_dir() {
+            match super::log_store::LogStore::open(&log_dir, super::segment::DEFAULT_SEGMENT_SIZE) {
+                Ok(ls) => Some(std::sync::Mutex::new(ls)),
+                Err(e) => {
+                    tracing::warn!("log store init failed: {}", e);
+                    None
+                }
+            }
+        } else {
+            None
+        };
         Ok(Self {
             root: root.to_path_buf(),
             volume_id,
+            log_store,
         })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Enable the log-structured store for this volume.
+    /// Creates the log directory if it doesn't exist.
+    pub fn enable_log_store(&mut self) -> Result<(), StorageError> {
+        if self.log_store.is_some() {
+            return Ok(());
+        }
+        let log_dir = self.root.join(".abixio.sys").join("log");
+        std::fs::create_dir_all(&log_dir)?;
+        let ls = super::log_store::LogStore::open(&log_dir, super::segment::DEFAULT_SEGMENT_SIZE)?;
+        self.log_store = Some(std::sync::Mutex::new(ls));
+        Ok(())
+    }
+
+    /// Write a shard to the log store (for small objects).
+    /// Returns the needle location, or None if log store not available.
+    pub fn write_shard_to_log(
+        &self,
+        bucket: &str,
+        key: &str,
+        data: &[u8],
+        meta: &ObjectMeta,
+    ) -> Result<Option<super::needle::NeedleLocation>, StorageError> {
+        let Some(ref log_mutex) = self.log_store else {
+            return Ok(None);
+        };
+        let needle = super::needle::Needle::new(bucket, key, meta, data)?;
+        let mut log = log_mutex.lock().map_err(|e| {
+            StorageError::Internal(format!("log store lock: {}", e))
+        })?;
+        let loc = log.append(&needle)?;
+        log.fsync()?;
+        // seal for reads so mmap is available
+        log.seal_active_for_reads()?;
+        Ok(Some(loc))
+    }
+
+    /// Read shard data from the log store.
+    /// Returns (data_slice, ObjectMeta) or None if not in log.
+    pub fn read_shard_from_log(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<Option<(Vec<u8>, ObjectMeta)>, StorageError> {
+        let Some(ref log_mutex) = self.log_store else {
+            return Ok(None);
+        };
+        let log = log_mutex.lock().map_err(|e| {
+            StorageError::Internal(format!("log store lock: {}", e))
+        })?;
+        let Some(loc) = log.get(bucket, key) else {
+            return Ok(None);
+        };
+        let loc = *loc;
+        let data = log.read_data(&loc)
+            .ok_or(StorageError::ObjectNotFound)?
+            .to_vec();
+        let meta = log.read_meta(&loc)?;
+        Ok(Some((data, meta)))
+    }
+
+    /// Check if an object exists in the log store.
+    pub fn is_in_log(&self, bucket: &str, key: &str) -> bool {
+        self.log_store
+            .as_ref()
+            .and_then(|m| m.lock().ok())
+            .map_or(false, |log| log.contains(bucket, key))
+    }
+
+    /// Whether the log store is available and the object size is below threshold.
+    pub fn should_use_log(&self, data_len: usize) -> bool {
+        self.log_store.is_some() && data_len <= LOG_THRESHOLD
     }
 
     async fn walk_keys(
@@ -209,10 +301,20 @@ impl Backend for LocalVolume {
         data: &[u8],
         meta: &ObjectMeta,
     ) -> Result<(), StorageError> {
+        // validate key (same checks for both paths)
+        pathing::validate_bucket_name(bucket)?;
+        pathing::validate_object_key(key)?;
+
+        // small objects: log-structured path (one append instead of mkdir + 2 file creates)
+        if self.should_use_log(data.len()) {
+            self.write_shard_to_log(bucket, key, data, meta)?;
+            return Ok(());
+        }
+
+        // large objects: file path (existing)
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         tokio::fs::create_dir_all(&obj_dir).await?;
 
-        // write shard data directly to key/shard.dat
         tokio::fs::write(pathing::object_shard_path(&self.root, bucket, key)?, data).await?;
 
         // update meta.json: single version entry (unversioned = overwrite)
@@ -228,6 +330,12 @@ impl Backend for LocalVolume {
     }
 
     async fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
+        // check log store first (small objects)
+        if let Ok(Some((data, meta))) = self.read_shard_from_log(bucket, key) {
+            return Ok((data, meta));
+        }
+
+        // fall through to file tier
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
@@ -307,6 +415,17 @@ impl Backend for LocalVolume {
     }
 
     async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+        // check log store first
+        if self.is_in_log(bucket, key) {
+            if let Some(ref log_mutex) = self.log_store {
+                if let Ok(mut log) = log_mutex.lock() {
+                    log.delete(bucket, key)?;
+                    return Ok(());
+                }
+            }
+        }
+
+        // file tier
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
@@ -317,11 +436,24 @@ impl Backend for LocalVolume {
 
     async fn list_objects(&self, bucket: &str, prefix: &str) -> Result<Vec<String>, StorageError> {
         let bucket_dir = pathing::bucket_dir(&self.root, bucket)?;
-        if !bucket_dir.is_dir() {
-            return Err(StorageError::BucketNotFound);
-        }
         let mut keys = Vec::new();
-        Self::walk_keys(&bucket_dir, &bucket_dir, prefix, &mut keys).await?;
+
+        // file tier
+        if bucket_dir.is_dir() {
+            Self::walk_keys(&bucket_dir, &bucket_dir, prefix, &mut keys).await?;
+        }
+
+        // log store
+        if let Some(ref log_mutex) = self.log_store {
+            if let Ok(log) = log_mutex.lock() {
+                for k in log.list_keys(bucket, prefix) {
+                    if !keys.contains(&k) {
+                        keys.push(k);
+                    }
+                }
+            }
+        }
+
         keys.sort();
         Ok(keys)
     }
@@ -386,6 +518,17 @@ impl Backend for LocalVolume {
     }
 
     async fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
+        // check log store first
+        if let Some(ref log_mutex) = self.log_store {
+            if let Ok(log) = log_mutex.lock() {
+                if let Some(loc) = log.get(bucket, key) {
+                    if let Ok(meta) = log.read_meta(loc) {
+                        return Ok(meta);
+                    }
+                }
+            }
+        }
+
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
@@ -784,5 +927,121 @@ mod tests {
         let info = disk.info();
         assert_eq!(info.backend_type, "local");
         assert!(info.label.starts_with("local:"));
+    }
+
+    #[tokio::test]
+    async fn log_store_small_object_round_trip() {
+        let dir = TempDir::new().unwrap();
+        let mut disk = LocalVolume::new(dir.path()).unwrap();
+        disk.enable_log_store().unwrap();
+        disk.make_bucket("test").await.unwrap();
+
+        let meta = ObjectMeta {
+            size: 11,
+            etag: "abc".to_string(),
+            content_type: "text/plain".to_string(),
+            created_at: 1700000000,
+            erasure: ErasureMeta {
+                ftt: 0, index: 0, epoch_id: 1,
+                volume_ids: vec!["v1".to_string()],
+            },
+            checksum: "dead".to_string(),
+            user_metadata: std::collections::HashMap::new(),
+            tags: std::collections::HashMap::new(),
+            version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+        };
+
+        // write via log store (small object)
+        disk.write_shard("test", "hello.txt", b"hello world", &meta).await.unwrap();
+
+        // should be in log, not in file tier
+        assert!(disk.is_in_log("test", "hello.txt"));
+        let shard_path = pathing::object_shard_path(dir.path(), "test", "hello.txt").unwrap();
+        assert!(!shard_path.exists(), "small object should NOT be in shard.dat");
+
+        // read back
+        let (data, got_meta) = disk.read_shard("test", "hello.txt").await.unwrap();
+        assert_eq!(data, b"hello world");
+        assert_eq!(got_meta.etag, "abc");
+
+        // stat
+        let stat = disk.stat_object("test", "hello.txt").await.unwrap();
+        assert_eq!(stat.size, 11);
+
+        // delete
+        disk.delete_object("test", "hello.txt").await.unwrap();
+        assert!(!disk.is_in_log("test", "hello.txt"));
+        assert!(disk.read_shard("test", "hello.txt").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn log_store_large_object_bypasses_log() {
+        let dir = TempDir::new().unwrap();
+        let mut disk = LocalVolume::new(dir.path()).unwrap();
+        disk.enable_log_store().unwrap();
+        disk.make_bucket("test").await.unwrap();
+
+        let meta = ObjectMeta {
+            size: 100_000,
+            etag: "big".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            created_at: 1700000000,
+            erasure: ErasureMeta {
+                ftt: 0, index: 0, epoch_id: 1,
+                volume_ids: vec!["v1".to_string()],
+            },
+            checksum: "beef".to_string(),
+            user_metadata: std::collections::HashMap::new(),
+            tags: std::collections::HashMap::new(),
+            version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+        };
+
+        let big_data = vec![0x42u8; 100_000]; // 100KB > 64KB threshold
+        disk.write_shard("test", "big.bin", &big_data, &meta).await.unwrap();
+
+        // should NOT be in log (too large)
+        assert!(!disk.is_in_log("test", "big.bin"));
+        // should be in file tier
+        let shard_path = pathing::object_shard_path(dir.path(), "test", "big.bin").unwrap();
+        assert!(shard_path.exists());
+    }
+
+    #[tokio::test]
+    async fn log_store_list_includes_log_objects() {
+        let dir = TempDir::new().unwrap();
+        let mut disk = LocalVolume::new(dir.path()).unwrap();
+        disk.enable_log_store().unwrap();
+        disk.make_bucket("test").await.unwrap();
+
+        let meta = ObjectMeta {
+            size: 5,
+            etag: "e".to_string(),
+            content_type: "text/plain".to_string(),
+            created_at: 1700000000,
+            erasure: ErasureMeta {
+                ftt: 0, index: 0, epoch_id: 1,
+                volume_ids: vec!["v1".to_string()],
+            },
+            checksum: "c".to_string(),
+            user_metadata: std::collections::HashMap::new(),
+            tags: std::collections::HashMap::new(),
+            version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+        };
+
+        disk.write_shard("test", "a.txt", b"aaaaa", &meta).await.unwrap();
+        disk.write_shard("test", "b.txt", b"bbbbb", &meta).await.unwrap();
+
+        let keys = disk.list_objects("test", "").await.unwrap();
+        assert!(keys.contains(&"a.txt".to_string()));
+        assert!(keys.contains(&"b.txt".to_string()));
     }
 }
