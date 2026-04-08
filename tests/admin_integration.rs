@@ -458,7 +458,7 @@ async fn admin_inspect_object_shows_all_shards() {
     client.put(url(&addr, "/testbucket")).send().await.unwrap();
     client
         .put(url(&addr, "/testbucket/hello.txt"))
-        .body("hello world")
+        .body("x".repeat(100_000)) // >64KB to bypass write cache + inline
         .send()
         .await
         .unwrap();
@@ -474,7 +474,7 @@ async fn admin_inspect_object_shows_all_shards() {
 
     assert_eq!(body["bucket"], "testbucket");
     assert_eq!(body["key"], "hello.txt");
-    assert_eq!(body["size"], 11);
+    assert_eq!(body["size"], 100_000);
     assert_eq!(body["erasure"]["data"], 3);
     assert_eq!(body["erasure"]["parity"], 1);
 

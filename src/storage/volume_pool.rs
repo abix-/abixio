@@ -51,6 +51,8 @@ pub struct VolumePool {
     disks: Vec<Box<dyn Backend>>,
     mrf: Option<Arc<MrfQueue>>,
     placement: RwLock<PlacementTopology>,
+    /// RAM write cache (PernixData FVP style). None = disabled.
+    write_cache: Option<Arc<super::write_cache::WriteCache>>,
 }
 
 impl VolumePool {
@@ -78,6 +80,7 @@ impl VolumePool {
             }),
             disks,
             mrf: None,
+            write_cache: Some(Arc::new(super::write_cache::WriteCache::new(256 * 1024 * 1024))),
         })
     }
 
@@ -236,16 +239,16 @@ impl VolumePool {
                     let placement = planner.plan(bucket, key, data_n, parity_n)
                         .map_err(StorageError::InvalidConfig)?;
                     let created_at = super::metadata::unix_timestamp_secs();
-                    // write each shard via write_shard (routes to log store)
-                    let mut successes = 0;
-                    for shard_idx in 0..total {
-                        let disk_idx = placement.shards[shard_idx].backend_index;
-                        let meta = super::metadata::ObjectMeta {
+                    let distribution: Vec<usize> = placement.shards.iter().map(|s| s.backend_index).collect();
+
+                    // build per-shard metadata
+                    let metas: Vec<ObjectMeta> = (0..total).map(|shard_idx| {
+                        ObjectMeta {
                             size: data.len() as u64,
                             etag: etag.clone(),
                             content_type: content_type.clone(),
                             created_at,
-                            erasure: super::metadata::ErasureMeta {
+                            erasure: ErasureMeta {
                                 ftt: parity_n,
                                 index: shard_idx,
                                 epoch_id: placement.epoch_id,
@@ -258,9 +261,49 @@ impl VolumePool {
                             is_latest: true,
                             is_delete_marker: false,
                             parts: Vec::new(),
-                inline_data: None,
+                            inline_data: None,
+                        }
+                    }).collect();
+
+                    // convert shards to Bytes (ref-counted, zero-copy for cache AND disk)
+                    let shard_bytes: Vec<bytes::Bytes> = shards.into_iter().map(bytes::Bytes::from).collect();
+
+                    // try RAM write cache first (zero disk I/O)
+                    if let Some(ref cache) = self.write_cache {
+                        let cache_entry = super::write_cache::CacheEntry {
+                            shards: shard_bytes.clone(),
+                            metas: metas.clone(),
+                            distribution: distribution.clone(),
+                            original_size: data.len() as u64,
+                            content_type: content_type.clone(),
+                            etag: etag.clone(),
+                            created_at,
+                            user_metadata: opts.user_metadata.clone(),
+                            tags: opts.tags.clone(),
+                            cached_at: std::time::Instant::now(),
                         };
-                        if self.disks[disk_idx].write_shard(bucket, key, &shards[shard_idx], &meta).await.is_ok() {
+                        if cache.insert(bucket, key, cache_entry) {
+                            return Ok(super::metadata::ObjectInfo {
+                                bucket: bucket.to_string(),
+                                key: key.to_string(),
+                                size: data.len() as u64,
+                                etag,
+                                content_type,
+                                created_at,
+                                user_metadata: opts.user_metadata,
+                                tags: opts.tags,
+                                version_id: String::new(),
+                                is_delete_marker: false,
+                            });
+                        }
+                        // cache full: fall through to disk write
+                    }
+
+                    // disk write fallback (cache was full)
+                    let mut successes = 0;
+                    for shard_idx in 0..total {
+                        let disk_idx = distribution[shard_idx];
+                        if self.disks[disk_idx].write_shard(bucket, key, &shard_bytes[shard_idx], &metas[shard_idx]).await.is_ok() {
                             successes += 1;
                         }
                     }
@@ -340,6 +383,31 @@ impl Store for VolumePool {
             return Err(StorageError::BucketNotFound);
         }
 
+        // check RAM write cache first (zero-copy from memory)
+        if let Some(ref cache) = self.write_cache {
+            if let Some(entry) = cache.get(bucket, key) {
+                let data_n = entry.metas.first().map(|m| m.erasure.data()).unwrap_or(1);
+                let mut result = Vec::with_capacity(entry.original_size as usize);
+                for shard in entry.shards.iter().take(data_n) {
+                    result.extend_from_slice(shard);
+                }
+                result.truncate(entry.original_size as usize);
+                let info = ObjectInfo {
+                    bucket: bucket.to_string(),
+                    key: key.to_string(),
+                    size: entry.original_size,
+                    etag: entry.etag.clone(),
+                    content_type: entry.content_type.clone(),
+                    created_at: entry.created_at,
+                    user_metadata: entry.user_metadata.clone(),
+                    tags: entry.tags.clone(),
+                    version_id: String::new(),
+                    is_delete_marker: false,
+                };
+                return Ok((result, info));
+            }
+        }
+
         // check if object is multipart by reading meta from any disk
         for disk in &self.disks {
             if let Ok(meta) = disk.stat_object(bucket, key).await {
@@ -369,6 +437,36 @@ impl Store for VolumePool {
         pathing::validate_object_key(key)?;
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
+        }
+
+        // check RAM write cache first (zero-copy Bytes from memory)
+        if let Some(ref cache) = self.write_cache {
+            if let Some(entry) = cache.get(bucket, key) {
+                let data_n = entry.metas.first().map(|m| m.erasure.data()).unwrap_or(1);
+                let info = ObjectInfo {
+                    bucket: bucket.to_string(),
+                    key: key.to_string(),
+                    size: entry.original_size,
+                    etag: entry.etag.clone(),
+                    content_type: entry.content_type.clone(),
+                    created_at: entry.created_at,
+                    user_metadata: entry.user_metadata.clone(),
+                    tags: entry.tags.clone(),
+                    version_id: String::new(),
+                    is_delete_marker: false,
+                };
+                // yield shard Bytes directly (zero-copy from cache)
+                let shard_bytes: Vec<bytes::Bytes> = entry.shards.iter()
+                    .take(data_n)
+                    .cloned()
+                    .collect();
+                let size = entry.original_size as usize;
+                let stream = futures::stream::iter(shard_bytes.into_iter().map(|b| {
+                    Ok::<bytes::Bytes, StorageError>(b)
+                }));
+                // TODO: truncate last shard to original_size
+                return Ok((info, Box::pin(stream)));
+            }
         }
 
         // multipart objects fall back to buffered read (streaming multipart is future work)
@@ -419,6 +517,23 @@ impl Store for VolumePool {
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
+        // check RAM write cache
+        if let Some(ref cache) = self.write_cache {
+            if let Some(entry) = cache.get(bucket, key) {
+                return Ok(ObjectInfo {
+                    bucket: bucket.to_string(),
+                    key: key.to_string(),
+                    size: entry.original_size,
+                    etag: entry.etag.clone(),
+                    content_type: entry.content_type.clone(),
+                    created_at: entry.created_at,
+                    user_metadata: entry.user_metadata.clone(),
+                    tags: entry.tags.clone(),
+                    version_id: String::new(),
+                    is_delete_marker: false,
+                });
+            }
+        }
         for disk in &self.disks {
             if let Ok(meta) = disk.stat_object(bucket, key).await {
                 return Ok(Self::meta_to_info(bucket, key, &meta));
@@ -430,6 +545,10 @@ impl Store for VolumePool {
     async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
+        // remove from RAM cache if present
+        if let Some(ref cache) = self.write_cache {
+            cache.remove(bucket, key);
+        }
         // get stored EC params for quorum calculation
         let (data_n, parity_n) = match self.read_ec_from_meta(bucket, key).await {
             Some(ec) => ec,

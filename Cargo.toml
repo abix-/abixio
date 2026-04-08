@@ -28,6 +28,7 @@ futures = "0.3"
 s3s = "0.13"
 form_urlencoded = "1"
 base64 = "0.22"
+dashmap = "6"
 memmap2 = "0.9"
 rmp-serde = "1"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }

@@ -4,6 +4,7 @@ pub mod local_volume;
 pub mod log_store;
 pub mod needle;
 pub mod segment;
+pub mod write_cache;
 pub mod remote_volume;
 pub mod storage_server;
 pub mod erasure_decode;
