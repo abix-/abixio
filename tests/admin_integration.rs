@@ -537,7 +537,7 @@ async fn admin_heal_healthy_object_returns_healthy() {
     client.put(url(&addr, "/testbucket")).send().await.unwrap();
     client
         .put(url(&addr, "/testbucket/hello.txt"))
-        .body("hello")
+        .body("x".repeat(100_000))
         .send()
         .await
         .unwrap();
@@ -650,7 +650,7 @@ async fn admin_endpoints_accept_encoded_bucket_and_key() {
     client.put(url(&addr, "/testbucket")).send().await.unwrap();
     client
         .put(url(&addr, "/testbucket/dir-one/inspect-me.txt"))
-        .body("encoded admin object")
+        .body("x".repeat(100_000))
         .send()
         .await
         .unwrap();
@@ -669,7 +669,7 @@ async fn admin_endpoints_accept_encoded_bucket_and_key() {
         .unwrap();
     assert_eq!(inspect["bucket"], "testbucket");
     assert_eq!(inspect["key"], key);
-    assert_eq!(inspect["size"], "encoded admin object".len() as u64);
+    assert_eq!(inspect["size"], 100_000u64);
 
     let heal: serde_json::Value = client
         .post(url_with_query(
@@ -912,7 +912,7 @@ async fn admin_bucket_ec_config_affects_new_objects() {
     // write object (no per-object EC headers -- should use bucket default)
     client
         .put(url(&addr, "/ecobj/mykey"))
-        .body("bucket ec test")
+        .body("x".repeat(100_000))
         .send()
         .await
         .unwrap();
@@ -929,7 +929,7 @@ async fn admin_bucket_ec_config_affects_new_objects() {
     // read back
     let resp = client.get(url(&addr, "/ecobj/mykey")).send().await.unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"bucket ec test");
+    assert_eq!(resp.bytes().await.unwrap().len(), 100_000);
 }
 
 #[tokio::test]
@@ -944,7 +944,7 @@ async fn admin_inspect_object_shows_per_object_ec() {
     client
         .put(url(&addr, "/insp/key"))
         .header("x-amz-meta-ec-ftt", "5")
-        .body("inspect me")
+        .body("x".repeat(100_000))
         .send()
         .await
         .unwrap();

@@ -35,17 +35,20 @@ impl LocalVolume {
         let volume_id = crate::storage::volume::read_volume_format(root)
             .map(|f| f.volume_id)
             .unwrap_or_default();
-        // log-structured store for small objects (always enabled)
+        // log-structured store for small objects
+        // auto-enable when .abixio.sys/log/ already exists (e.g. server restart)
+        // create with enable_log_store() or --log-store CLI flag
         let log_dir = root.join(".abixio.sys").join("log");
-        let log_store = match super::log_store::LogStore::open(
-            &log_dir,
-            super::segment::DEFAULT_SEGMENT_SIZE,
-        ) {
-            Ok(ls) => Some(std::sync::Mutex::new(ls)),
-            Err(e) => {
-                tracing::warn!("log store init failed (falling back to file tier): {}", e);
-                None
+        let log_store = if log_dir.is_dir() {
+            match super::log_store::LogStore::open(&log_dir, super::segment::DEFAULT_SEGMENT_SIZE) {
+                Ok(ls) => Some(std::sync::Mutex::new(ls)),
+                Err(e) => {
+                    tracing::warn!("log store init failed: {}", e);
+                    None
+                }
             }
+        } else {
+            None
         };
         Ok(Self {
             root: root.to_path_buf(),
@@ -89,8 +92,6 @@ impl LocalVolume {
         })?;
         let loc = log.append(&needle)?;
         log.fsync()?;
-        // seal for reads so mmap is available
-        log.seal_active_for_reads()?;
         Ok(Some(loc))
     }
 
@@ -104,9 +105,14 @@ impl LocalVolume {
         let Some(ref log_mutex) = self.log_store else {
             return Ok(None);
         };
-        let log = log_mutex.lock().map_err(|e| {
+        let mut log = log_mutex.lock().map_err(|e| {
             StorageError::Internal(format!("log store lock: {}", e))
         })?;
+        if !log.contains(bucket, key) {
+            return Ok(None);
+        }
+        // seal active segment so recently-written data is mmap-readable
+        log.seal_active_for_reads()?;
         let Some(loc) = log.get(bucket, key) else {
             return Ok(None);
         };
@@ -391,6 +397,12 @@ impl Backend for LocalVolume {
         bucket: &str,
         key: &str,
     ) -> Result<(MmapOrVec, super::metadata::ObjectMeta), StorageError> {
+        // check log store first (small objects)
+        if let Ok(Some((data, meta))) = self.read_shard_from_log(bucket, key) {
+            return Ok((MmapOrVec::Vec(data), meta));
+        }
+
+        // file tier
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         if !obj_dir.is_dir() {
             return Err(StorageError::ObjectNotFound);
@@ -520,10 +532,13 @@ impl Backend for LocalVolume {
     async fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
         // check log store first
         if let Some(ref log_mutex) = self.log_store {
-            if let Ok(log) = log_mutex.lock() {
-                if let Some(loc) = log.get(bucket, key) {
-                    if let Ok(meta) = log.read_meta(loc) {
-                        return Ok(meta);
+            if let Ok(mut log) = log_mutex.lock() {
+                if log.contains(bucket, key) {
+                    log.seal_active_for_reads()?;
+                    if let Some(loc) = log.get(bucket, key) {
+                        if let Ok(meta) = log.read_meta(loc) {
+                            return Ok(meta);
+                        }
                     }
                 }
             }

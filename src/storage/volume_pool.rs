@@ -203,13 +203,82 @@ impl VolumePool {
         if !is_versioned {
             if let Some(len) = content_length {
                 if len <= Self::LOG_THRESHOLD {
+                    // small object: collect body, RS encode, write shards directly
+                    // via write_shard (which routes to log store on LocalVolume)
                     use futures::StreamExt;
+                    use md5::Digest;
                     let mut data = Vec::with_capacity(len);
                     while let Some(chunk) = body.next().await {
                         let chunk = chunk.map_err(StorageError::Io)?;
                         data.extend_from_slice(&chunk);
                     }
-                    return self.put_object(bucket, key, &data, opts).await;
+                    let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
+                    let total = data_n + parity_n;
+                    let etag = hex::encode(md5::Md5::digest(&data));
+                    let content_type = if opts.content_type.is_empty() {
+                        "application/octet-stream".to_string()
+                    } else {
+                        opts.content_type.clone()
+                    };
+                    // RS encode
+                    let mut shards = super::erasure_encode::split_data(&data, data_n);
+                    if parity_n > 0 {
+                        let shard_size = shards[0].len();
+                        for _ in 0..parity_n {
+                            shards.push(vec![0u8; shard_size]);
+                        }
+                        let rs = reed_solomon_erasure::galois_8::ReedSolomon::new(data_n, parity_n)
+                            .map_err(|e| StorageError::InvalidConfig(format!("rs: {}", e)))?;
+                        rs.encode(&mut shards)
+                            .map_err(|e| StorageError::InvalidConfig(format!("rs encode: {}", e)))?;
+                    }
+                    let planner = self.placement_planner()?;
+                    let placement = planner.plan(bucket, key, data_n, parity_n)
+                        .map_err(StorageError::InvalidConfig)?;
+                    let created_at = super::metadata::unix_timestamp_secs();
+                    // write each shard via write_shard (routes to log store)
+                    let mut successes = 0;
+                    for shard_idx in 0..total {
+                        let disk_idx = placement.shards[shard_idx].backend_index;
+                        let meta = super::metadata::ObjectMeta {
+                            size: data.len() as u64,
+                            etag: etag.clone(),
+                            content_type: content_type.clone(),
+                            created_at,
+                            erasure: super::metadata::ErasureMeta {
+                                ftt: parity_n,
+                                index: shard_idx,
+                                epoch_id: placement.epoch_id,
+                                volume_ids: placement.shards.iter().map(|s| s.volume_id.clone()).collect(),
+                            },
+                            checksum: super::bitrot::blake3_hex(&shards[shard_idx]),
+                            user_metadata: opts.user_metadata.clone(),
+                            tags: opts.tags.clone(),
+                            version_id: String::new(),
+                            is_latest: true,
+                            is_delete_marker: false,
+                            parts: Vec::new(),
+                        };
+                        if self.disks[disk_idx].write_shard(bucket, key, &shards[shard_idx], &meta).await.is_ok() {
+                            successes += 1;
+                        }
+                    }
+                    let write_quorum = if parity_n == 0 { data_n } else { data_n + 1 };
+                    if successes < write_quorum {
+                        return Err(StorageError::WriteQuorum);
+                    }
+                    return Ok(super::metadata::ObjectInfo {
+                        bucket: bucket.to_string(),
+                        key: key.to_string(),
+                        size: data.len() as u64,
+                        etag,
+                        content_type,
+                        created_at,
+                        user_metadata: opts.user_metadata,
+                        tags: opts.tags,
+                        version_id: String::new(),
+                        is_delete_marker: false,
+                    });
                 }
             }
         }
