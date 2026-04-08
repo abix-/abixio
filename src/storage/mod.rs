@@ -1,6 +1,7 @@
 pub mod bitrot;
 pub mod internode_auth;
 pub mod local_volume;
+pub mod needle;
 pub mod remote_volume;
 pub mod storage_server;
 pub mod erasure_decode;
