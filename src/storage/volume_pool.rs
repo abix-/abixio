@@ -302,14 +302,12 @@ impl Store for VolumePool {
             for disk in &self.disks {
                 if let Ok((mmap, meta)) = disk.mmap_shard(bucket, key).await {
                     let info = Self::meta_to_info(bucket, key, &meta);
-                    let size = info.size as usize;
-                    // Bytes::from_owner owns the mmap, slices are zero-copy
+                    // yield entire mmap as one Bytes -- zero slice, zero Arc overhead.
+                    // hyper writes to TCP in kernel-sized chunks internally.
                     let owned = bytes::Bytes::from_owner(mmap);
-                    let chunk_size = 4 * 1024 * 1024; // 4MB chunks
-                    let stream = futures::stream::iter((0..size).step_by(chunk_size).map(move |offset| {
-                        let end = (offset + chunk_size).min(size);
-                        Ok::<bytes::Bytes, StorageError>(owned.slice(offset..end))
-                    }));
+                    let stream = futures::stream::once(async move {
+                        Ok::<bytes::Bytes, StorageError>(owned)
+                    });
                     return Ok((info, Box::pin(stream)));
                 }
             }
