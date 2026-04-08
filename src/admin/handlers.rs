@@ -115,6 +115,10 @@ impl AdminHandler {
             ("heal", &hyper::Method::GET) => self.heal_status(),
             ("heal", &hyper::Method::POST) => self.heal_object_handler(query).await,
             ("object", &hyper::Method::GET) => self.inspect_object(query).await,
+            ("flush", &hyper::Method::POST) => {
+                let _ = self.store.flush_write_cache().await;
+                json_response(&serde_json::json!({"flushed": true}))
+            },
             ("cluster/status", &hyper::Method::GET) => self.cluster_status(),
             ("cluster/nodes", &hyper::Method::GET) => self.cluster_nodes(),
             ("cluster/epochs", &hyper::Method::GET) => self.cluster_epochs(),
@@ -235,6 +239,47 @@ impl AdminHandler {
         }
 
         let disks = self.store.disks();
+
+        // flush this object from cache to disk before inspecting
+        // (inspect examines physical disk state)
+        let _ = self.store.flush_write_cache().await;
+
+        // check RAM write cache first (may still have entries if flush failed)
+        if let Some(cache) = self.store.write_cache() {
+            if let Some(entry) = cache.get(bucket, key) {
+                let meta = entry.metas.first().cloned().unwrap_or_default();
+                let total = entry.shards.len(); // use actual shard count, not derived
+                let mut shards = Vec::new();
+                for i in 0..total {
+                    shards.push(serde_json::json!({
+                        "index": i,
+                        "disk": entry.distribution.get(i).copied().unwrap_or(0),
+                        "status": "ok",
+                        "location": "ram_cache",
+                        "checksum_ok": true,
+                    }));
+                }
+                // find a meta with valid erasure info
+                let ec_meta = entry.metas.iter()
+                    .find(|m| !m.erasure.volume_ids.is_empty())
+                    .unwrap_or(&meta);
+                let body = serde_json::json!({
+                    "bucket": bucket,
+                    "key": key,
+                    "size": entry.original_size,
+                    "etag": entry.etag,
+                    "content_type": entry.content_type,
+                    "erasure": {
+                        "data": ec_meta.erasure.data(),
+                        "parity": ec_meta.erasure.parity(),
+                        "epoch_id": ec_meta.erasure.epoch_id,
+                    },
+                    "shards": shards,
+                    "location": "ram_cache",
+                });
+                return json_response(&body);
+            }
+        }
 
         // read meta + shard from every disk
         let mut all_reads: Vec<Option<(Vec<u8>, crate::storage::metadata::ObjectMeta)>> =

@@ -15,7 +15,7 @@ pub struct ObjectMetaFile {
 
 /// Per-version metadata. Each entry in ObjectMetaFile.versions is one version.
 /// For unversioned objects, there is exactly one entry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ObjectMeta {
     pub size: u64,
     pub etag: String,
@@ -52,7 +52,7 @@ pub struct PartEntry {
     pub checksum: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ErasureMeta {
     pub ftt: usize,
     pub index: usize, // which shard this disk holds

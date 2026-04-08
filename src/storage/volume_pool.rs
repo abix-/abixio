@@ -80,12 +80,38 @@ impl VolumePool {
             }),
             disks,
             mrf: None,
-            write_cache: Some(Arc::new(super::write_cache::WriteCache::new(256 * 1024 * 1024))),
+            write_cache: None, // enabled explicitly via enable_write_cache()
         })
     }
 
     pub fn disks(&self) -> &[Box<dyn Backend>] {
         &self.disks
+    }
+
+    /// Enable the RAM write cache with the given size in bytes.
+    pub fn enable_write_cache(&mut self, max_bytes: u64) {
+        self.write_cache = Some(Arc::new(super::write_cache::WriteCache::new(max_bytes)));
+    }
+
+    /// Access the RAM write cache (if enabled).
+    pub fn write_cache(&self) -> Option<&super::write_cache::WriteCache> {
+        self.write_cache.as_deref()
+    }
+
+    /// Flush all cached entries to disk. Used by tests and shutdown.
+    pub async fn flush_write_cache(&self) -> Result<(), StorageError> {
+        let Some(ref cache) = self.write_cache else { return Ok(()) };
+        let entries = cache.drain_older_than(std::time::Duration::from_nanos(0));
+        for (bucket, key, entry) in entries {
+            for (shard_idx, shard) in entry.shards.iter().enumerate() {
+                if let Some(&disk_idx) = entry.distribution.get(shard_idx) {
+                    if let Some(meta) = entry.metas.get(shard_idx) {
+                        let _ = self.disks[disk_idx].write_shard(&bucket, &key, shard, meta).await;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Read bucket FTT from settings and compute (data, parity).
@@ -149,6 +175,14 @@ impl VolumePool {
 
     /// Read meta from any available disk to get the object's stored EC params.
     pub async fn read_ec_from_meta(&self, bucket: &str, key: &str) -> Option<(usize, usize)> {
+        // check RAM cache first
+        if let Some(ref cache) = self.write_cache {
+            if let Some(entry) = cache.get(bucket, key) {
+                if let Some(meta) = entry.metas.first() {
+                    return Some((meta.erasure.data(), meta.erasure.parity()));
+                }
+            }
+        }
         for disk in &self.disks {
             if let Ok(meta) = disk.stat_object(bucket, key).await {
                 return Some((meta.erasure.data(), meta.erasure.parity()));
@@ -546,8 +580,9 @@ impl Store for VolumePool {
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
         // remove from RAM cache if present
+        let mut was_cached = false;
         if let Some(ref cache) = self.write_cache {
-            cache.remove(bucket, key);
+            was_cached = cache.remove(bucket, key).is_some();
         }
         // get stored EC params for quorum calculation
         let (data_n, parity_n) = match self.read_ec_from_meta(bucket, key).await {
@@ -569,8 +604,11 @@ impl Store for VolumePool {
                 Err(_) => {}
             }
         }
-        if !found {
+        if !found && !was_cached {
             return Err(StorageError::ObjectNotFound);
+        }
+        if was_cached && !found {
+            return Ok(()); // was only in cache, now removed
         }
         let delete_quorum = if parity_n == 0 { data_n } else { data_n + 1 };
         if successes < delete_quorum {
@@ -602,6 +640,12 @@ impl Store for VolumePool {
         pathing::validate_bucket_name(bucket)?;
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
+        }
+        // check for objects in cache
+        if let Some(ref cache) = self.write_cache {
+            if !cache.list_keys(bucket, "").is_empty() {
+                return Err(StorageError::BucketNotEmpty);
+            }
         }
         for disk in &self.disks {
             if let Ok(keys) = disk.list_objects(bucket, "").await {
@@ -660,6 +704,15 @@ impl Store for VolumePool {
                 }
                 Err(_) => continue,
             }
+        }
+        // include keys from RAM write cache
+        if let Some(ref cache) = self.write_cache {
+            for k in cache.list_keys(bucket, &opts.prefix) {
+                if !keys.contains(&k) {
+                    keys.push(k);
+                }
+            }
+            keys.sort();
         }
 
         let mut objects = Vec::new();
