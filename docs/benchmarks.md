@@ -2,148 +2,189 @@
 
 ## Methodology
 
-### Hardware
-- Windows 10 Home, single machine, NTFS drive (tmpdir)
-- Single-node, 1 disk, no erasure coding (1+0) unless noted
+### Test infrastructure
 
-### Two benchmark modes
+All benchmarks run through `abixio-ui/tests/bench.rs` -- a Rust test harness
+that starts real server processes, creates temp dirs, and benchmarks through
+`aws-sdk-s3` (Rust) and `mc` (MinIO client). No synthetic tests, no mocked
+storage. Real servers, real S3 clients, real data.
 
-**Keep-alive** (`tests/bench_4kb.py`): Python `requests.Session` with
-persistent HTTP connection. Measures actual server throughput -- no TCP
-connect overhead, no process startup. This is how real S3 clients work
-(aws-sdk, boto3, rclone all use connection pooling).
+### Clients
 
-**Per-process** (`tests/compare_bench.sh`): `mc` client, one process per
-operation. Includes SigV4 signing, `mc` startup (~60ms), and new TCP
-connection per request. Useful for large objects where client overhead is
-negligible relative to transfer time. Useless for 4KB.
+| Client | Type | Auth | Connection | When to use |
+|--------|------|------|-----------|-------------|
+| **aws-sdk-s3** (Rust) | In-process | SigV4, UNSIGNED-PAYLOAD | Keep-alive | Primary benchmark. Real SDK, real auth, connection reuse. |
+| **mc** (MinIO client) | Per-process | SigV4 | New connection per op | Shows per-process overhead. Each `mc cp` = process spawn + TCP connect + transfer. |
+
+aws-sdk-s3 uses UNSIGNED-PAYLOAD for PUT (same as mc, rclone, AWS CLI over
+HTTPS). This skips client-side SHA256 of the body. All S3 benchmarks in
+the wild use unsigned payloads.
+
+### Servers
+
+All servers run single-node, 1 disk, NTFS tmpdir, same machine (Windows 10).
+
+- **AbixIO** -- our server with RAM write cache, log-structured storage, mmap GET
+- **RustFS** 1.0.0-alpha.90 -- Rust S3 server (MinIO-compatible)
+- **MinIO** RELEASE.2026-04-07 -- Go S3 server (reference implementation)
 
 ### What we report
-- **obj/sec**: operations per second (relevant for all sizes)
-- **MB/s**: throughput (relevant for large objects)
-- **ms/op**: per-request latency
+
+- **obj/sec** -- operations per second (primary metric for small objects)
+- **MB/s** -- throughput (primary metric for large objects)
+- **latency** -- per-request time in microseconds or milliseconds
 
 ### Windows caveats
-- **Never use `localhost`** -- Windows DNS resolution adds ~200ms per request
-  (IPv6 fallback). Always use `127.0.0.1`.
-- **TCP connect** on Windows localhost = ~0.2ms (vs ~0.03ms on Linux).
-  Keep-alive eliminates this after the first request.
+
+- Always use `127.0.0.1`, never `localhost` (Windows DNS adds ~200ms)
+- TCP connect on Windows localhost = ~0.2ms (Linux = ~0.03ms)
+- aws-sdk-s3 keep-alive eliminates TCP connect after first request
+- mc spawns a new process per operation (~40ms overhead)
 
 ---
 
-## 4KB small object performance
+## Comprehensive matrix
 
-Measured with `tests/bench_4kb.py` (keep-alive, 1000 ops per test).
+3 servers x 2 clients x 3 sizes x 2 operations.
+Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --nocapture bench_matrix`
 
-| Server | PUT | | GET | | PUT ms | GET ms |
-|--------|-----|--|-----|--|--------|--------|
-| **AbixIO (log store)** | **1096 obj/s** | **4.3 MB/s** | **1315 obj/s** | **5.1 MB/s** | 0.91 | 0.76 |
-| AbixIO (file tier) | 578 obj/s | 2.3 MB/s | 774 obj/s | 3.0 MB/s | 1.73 | 1.29 |
-| RustFS | 1329 obj/s | 5.2 MB/s | 1349 obj/s | 5.3 MB/s | 0.75 | 0.74 |
-| MinIO | 1189 obj/s | 4.6 MB/s | 1073 obj/s | 4.2 MB/s | 0.84 | 0.93 |
+### 4KB -- small object performance (obj/sec)
 
-**AbixIO log store vs file tier**: PUT 90% faster, GET 70% faster.
+| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
+|--------|---------------|---------------|--------|--------|
+| **AbixIO** | **442** | 578 | 23 | 24 |
+| MinIO | 420 | **1463** | 23 | 25 |
+| RustFS | 361 | 959 | 23 | 24 |
 
-**AbixIO log store vs competitors**: within 20% of RustFS (fastest), ahead
-of MinIO on GET. The log store eliminates NTFS filesystem metadata overhead
-(mkdir + file create) that dominates 4KB operations.
+**AbixIO has the fastest 4KB PUT** thanks to the RAM write cache and
+log-structured storage. MinIO leads GET (2.5x faster than AbixIO).
+mc shows ~23 obj/s for all servers -- process spawn overhead dominates.
 
-### How the log store wins
+### 10MB -- medium object throughput (MB/s)
 
-| | File tier | Log store |
-|--|----------|-----------|
-| PUT operations per 4KB | mkdir + shard.dat + meta.json = 3 fs ops | 1 append to segment |
-| GET operations per 4KB | file open + read + close | mmap slice (page cache) |
-| On-disk files per 1M objects | 3M+ | ~3 segments |
+| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
+|--------|---------------|---------------|--------|--------|
+| AbixIO | 50 | 241 | 15 | 153 |
+| **RustFS** | **319** | 301 | 100 | 138 |
+| MinIO | 165 | **775** | **116** | **204** |
 
-### Reproducing
+AbixIO 10MB PUT is slow through aws-sdk-s3 (50 MB/s). The streaming encode
+path through s3s has overhead that RustFS and MinIO don't pay. This is the
+primary optimization target for large objects.
 
-```bash
-# start servers manually, then:
-python tests/bench_4kb.py --all --ops 1000
+### 1GB -- large object throughput (MB/s)
 
-# or benchmark a single server:
-python tests/bench_4kb.py --port 10000 --name AbixIO --ops 1000
+| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
+|--------|---------------|---------------|--------|--------|
+| AbixIO | 52 | 577 | 60 | 431 |
+| RustFS | 383 | 682 | 557 | 736 |
+| **MinIO** | **415** | **817** | **689** | **868** |
+
+AbixIO 1GB PUT is 7x slower than MinIO (52 vs 415 MB/s). GET is
+respectable (577 MB/s, 71% of MinIO) thanks to mmap zero-copy.
+mc is faster than aws-sdk-s3 for large PUT on RustFS/MinIO because
+mc handles connection and transfer more efficiently for bulk data.
+
+---
+
+## Single-server detailed benchmark
+
+AbixIO 1-disk, all operations, all sizes.
+Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --nocapture bench_1_disk`
+
+```
+OP       SIZE          ops         avg         p50         p99          MB/s     obj/sec
+PUT      4KB       500 ops     565.0us     534.9us     897.8us      6.9 MB/s        1770
+GET      4KB       500 ops     344.8us     333.0us     492.1us     11.3 MB/s        2900
+HEAD     4KB       500 ops     356.5us     355.3us     466.3us             -        2805
+DELETE   4KB       500 ops     489.0us     445.0us     737.8us             -        2045
+PUT      1KB       100 ops     503.6us     489.2us     661.5us      1.9 MB/s        1986
+PUT      1MB        20 ops      13.1ms      12.9ms      13.9ms     76.0 MB/s          76
+PUT      10MB        5 ops     104.0ms     102.4ms     104.9ms     96.1 MB/s          10
+PUT*     10MB        5 ops      39.7ms      32.7ms      47.2ms    251.8 MB/s          25
+GET      1KB       100 ops     411.2us     410.9us     509.1us      2.4 MB/s        2432
+GET      1MB        20 ops       2.7ms       2.7ms       3.0ms    365.8 MB/s         366
+GET      10MB        5 ops      42.2ms      40.4ms      45.9ms    236.8 MB/s          24
+HEAD     -         100 ops     373.2us     349.3us     475.3us             -        2679
+LIST     100obj     50 ops       4.9ms       4.9ms       5.1ms             -         205
+DELETE   1KB       100 ops     467.4us     443.1us     695.1us             -        2140
 ```
 
+`PUT*` = UNSIGNED-PAYLOAD (skips client-side SHA256). Note the 2.5x
+speedup vs signed PUT at 10MB (252 vs 96 MB/s).
+
 ---
 
-## Large object throughput (10MB, 1GB)
+## Client comparison
 
-Measured with `tests/compare_bench.sh` (`mc` client, per-process, SigV4).
-MB/s is the relevant metric for large objects.
+Same AbixIO server, different S3 clients.
+Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --nocapture bench_clients`
 
-### PUT
+| Client | 4KB PUT | 4KB GET | Latency |
+|--------|---------|---------|---------|
+| **aws-sdk-s3 (Rust)** | **414 obj/s** | **624 obj/s** | 2.4ms / 1.6ms |
+| curl (unsigned) | 55 obj/s | 67 obj/s | 18ms / 15ms |
+| mc (per-process) | 23 obj/s | 24 obj/s | 43ms / 41ms |
 
-![PUT throughput](img/bench-put.svg)
+aws-sdk-s3 is 18x faster than mc for 4KB. mc process spawn (~40ms)
+dominates small-object latency. For large objects, mc's overhead is
+amortized and it's competitive.
 
-| Size | AbixIO | RustFS | MinIO |
-|------|--------|--------|-------|
-| 10MB | 80 MB/s | 81 MB/s | 93 MB/s |
-| 1GB | 441 MB/s | 538 MB/s | 529 MB/s |
+---
 
-### GET
+## Server-side profiling
 
-![GET throughput](img/bench-get.svg)
+Debug header `x-debug-s3s-ms` shows actual server processing time
+(excludes client overhead, TCP, HTTP parsing):
 
-| Size | AbixIO | RustFS | MinIO |
-|------|--------|--------|-------|
-| 10MB | 107 MB/s | 109 MB/s | 126 MB/s |
-| 1GB | 396 MB/s | 684 MB/s | 1102 MB/s |
-
-At 1GB through `mc`, MinIO leads. AbixIO's server delivers 1220 MB/s via
-direct curl -- the gap is `mc` client overhead, not server performance.
-
-### Reproducing
-
-```bash
-cargo build --release
-ABIXIO_BIN=./target/release/abixio RUSTFS_BIN=rustfs MINIO_BIN=minio MC=mc \
-    ITERS=10 SIZES="4096 10485760 1073741824" \
-    bash tests/compare_bench.sh
+```
+4KB PUT server processing:  0.28ms
+4KB GET server processing:  0.08ms
+4KB HEAD server processing: 0.08ms
 ```
 
+The server processes 4KB GET in 80 microseconds. The remaining latency
+in benchmarks is client overhead (SigV4 signing, HTTP, connection management).
+
 ---
 
-## Per-layer internal benchmarks
+## Internal per-layer benchmarks
 
-Each layer of the request path benchmarked independently. Not client-visible
--- used to identify bottlenecks and validate optimizations.
+Tests each layer of the storage stack independently (no HTTP client).
+Run with: `cd abixio && cargo test --release --test layer_bench -- --ignored bench_perf --nocapture`
 
-### GET by layer (1 disk)
+These measure the storage engine directly and are used for optimization
+work. See [layer-optimization.md](layer-optimization.md) for details.
 
-| Layer | What | 4KB | 10MB | 1GB |
-|-------|------|-----|------|-----|
-| L6 | Full S3 (end to end) | 6.4 MB/s | 269 MB/s | 624 MB/s |
-| L4 | Storage + mmap | 9.2 MB/s | 18,313 MB/s | page cache |
-| L4 | Storage + mmap EC (4 disk) | 5.4 MB/s | 11,766 MB/s | page cache |
+---
 
-### PUT by layer (1 disk)
-
-| Layer | What | 4KB | 10MB | 1GB |
-|-------|------|-----|------|-----|
-| L6 | Full S3 (end to end) | 3.3 MB/s | 247 MB/s | 339 MB/s |
-| L4 | Storage pipeline | 3.7 MB/s | 481 MB/s | 540 MB/s |
-| L3 | Disk write (page cache) | -- | 1625 MB/s | -- |
-| L2 | RS encode (SIMD) | -- | 2762 MB/s | -- |
-| L1 | MD5 hash | -- | 703 MB/s | -- |
-
-### Reproducing
+## Running benchmarks
 
 ```bash
+# build AbixIO release binary first
+cd /path/to/abixio && cargo build --release
+
+# comprehensive matrix (3 servers, 2 clients, 3 sizes)
+cd /path/to/abixio-ui
+ABIXIO_BIN=/path/to/abixio/target/release/abixio \
+    cargo test --release --test bench -- --ignored --nocapture bench_matrix
+
+# single server detailed
+cargo test --release --test bench -- --ignored --nocapture bench_1_disk
+
+# client comparison
+cargo test --release --test bench -- --ignored --nocapture bench_clients
+
+# internal per-layer (runs in abixio repo, no external binaries)
+cd /path/to/abixio
 cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
-
-# compare after a change
-BENCH_COMPARE=bench-results/baseline.json \
-    cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
-
-# specific layers or sizes
-BENCH_LAYERS=L4,L6 BENCH_SIZES=10485760 \
-    cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
 ```
+
+RustFS and MinIO binaries auto-detected at `C:\tools\rustfs.exe` and
+`C:\tools\minio.exe`. Override with `RUSTFS_BIN` and `MINIO_BIN` env vars.
 
 ---
 
 For optimization history and allocation audit, see [layer-optimization.md](layer-optimization.md).
-
 For log-structured storage design, see [write-log.md](write-log.md).
+For RAM write cache design, see [write-cache.md](write-cache.md).
