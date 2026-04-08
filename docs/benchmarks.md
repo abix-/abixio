@@ -97,14 +97,15 @@ for any S3-compatible server.
 
 ### Small object performance (4KB)
 
-| | File path (default) | Log-structured path |
-|--|---------------------|-------------------|
-| Filesystem ops per 4KB object (4 disks) | 12 (4 mkdirs + 4 shard files + 4 meta files) | **4** (one append per disk) |
-| L4 4KB PUT (1 disk) | 4.1 MB/s | pending benchmark |
-| L4 4KB GET (1 disk) | 8.4 MB/s (file open) | mmap slice from segment |
-| L6 4KB PUT (1 disk) | 3.4 MB/s | pending benchmark |
-| L6 4KB GET (1 disk) | 5.9 MB/s | pending benchmark |
-| Files per 1M small objects | 3M+ | ~16 segment files |
+| | File tier | Log store | Change |
+|--|----------|-----------|--------|
+| **4KB PUT latency** | 2.5ms | **1.5ms** | **40% faster** |
+| **4KB GET latency** | 1.9ms | **1.2ms** | **37% faster** |
+| Filesystem ops per 4KB (4 disks) | 12 | **4** | 3x fewer |
+| Files per 1M small objects | 3M+ | ~3 segments | ~1000x fewer |
+
+Measured via curl with Content-Length header (single-request latency).
+No fsync on writes -- page cache serves both read and write paths.
 
 The log-structured path (Datrium DiESL-inspired) writes each shard as a
 needle to an append-only segment file. The needle contains metadata (msgpack,

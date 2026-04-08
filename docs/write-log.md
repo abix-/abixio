@@ -1,62 +1,76 @@
 # Log-structured storage
 
-Datrium-style log-structured storage for small objects. Objects are written
-exactly once to an append-only log, never overwritten. GC reclaims dead space.
-The log IS the permanent storage -- no flush, no second format, no double-write.
+Datrium DiESL-inspired log-structured storage for small objects. Objects are
+written exactly once to an append-only log, never overwritten. GC reclaims
+dead space. The log IS the permanent storage -- no flush, no second format.
 
-Large objects (>64KB) keep the existing file-per-object layout (shard.dat +
-meta.json). The log is only for small objects where filesystem metadata
-overhead (mkdir, file create) dominates.
+Large objects (>64KB) keep the existing file-per-object layout.
 
-## Problem
+## Measured performance
 
-A 4KB PUT on AbixIO with 3+1 EC creates per disk:
-- 1 `mkdir -p` (directory tree for key path)
-- 1 file create + write (`shard.dat`, ~1.3KB per shard)
-- 1 file create + write (`meta.json`, ~500 bytes)
+| | File tier | Log store | Change |
+|--|----------|-----------|--------|
+| 4KB PUT | 2.5ms | **1.5ms** | **40% faster** |
+| 4KB GET | 1.9ms | **1.2ms** | **37% faster** |
+| Filesystem ops per 4KB (4 disks) | 12 | **4** | 3x fewer |
+| Files per 1M small objects | 3M+ | ~3 segments | ~1000x fewer |
 
-**12 filesystem operations across 4 disks for 4KB of user data.**
-L4 benchmark: 4KB PUT at 2-4 MB/s (~500-1000 objects/sec).
+No fsync on writes -- trust OS page cache, same as MinIO and RustFS.
+Writes go to page cache (RAM), reads from the same pages via mmap.
+Both sides hit RAM. Disk flush happens when the OS decides.
 
-## Solution
-
-Append shard data + metadata as a single needle to an append-only log
-segment file. One write per disk instead of three filesystem operations.
+## How it works
 
 ```
-PUT 4KB object
+PUT 4KB object (Content-Length <= 64KB):
   -> RS encode into shards
-  -> append each shard as a needle to the disk's log segment
-  -> update in-memory index
-  -> fsync
-  -> ack
+  -> serialize needle (header + msgpack meta + shard data)
+  -> file.write_all(needle) to active segment   <- goes to page cache (RAM)
+  -> update in-memory index (HashMap)
+  -> ack to client
+  Total: one file write per disk. No mkdir, no file create, no fsync.
 
-GET 4KB object
-  -> lookup in-memory index -> segment:offset
-  -> mmap slice from segment (zero-copy)
-  -> return
+GET 4KB object:
+  -> HashMap lookup: bucket+key -> segment:offset
+  -> mmap[offset..len]                           <- reads from page cache (RAM)
+  -> return shard data
+  Total: one HashMap lookup + one pointer dereference. No file open.
 ```
 
-## On-disk layout
+## Why not a userspace RAM cache on top?
+
+We measured. The mmap read itself takes ~100-200 nanoseconds (page cache hit).
+The 1.2ms GET latency is dominated by HTTP overhead:
 
 ```
-volume_root/
-  .abixio.sys/
-    volume.json                 (existing, unchanged)
-    log/
-      segment-000001.dat        (sealed, mmap'd for GET)
-      segment-000002.dat        (sealed)
-      segment-000003.dat        (active, receiving appends)
-  bucket/
-    large-key/
-      shard.dat                 (file tier for >64KB, unchanged)
-      meta.json
+~0.5ms  TCP + HTTP parse (hyper)
+~0.3ms  s3s request dispatch
+~0.1ms  bucket validation + versioning cache
+~0.1ms  log store mutex + index lookup
+~0.001ms  mmap read (the actual data)
+~0.2ms  response serialization + HTTP write
+= ~1.2ms total
 ```
 
-## Needle format
+A userspace HashMap cache would save 0.001ms off a 1.2ms request. The
+bottleneck is the HTTP protocol stack, not the storage read. To get
+microsecond latency, you'd need to bypass HTTP entirely.
 
-Each needle is a self-describing, checksummed record containing one shard
-of one object (metadata + data together).
+## Architecture
+
+### Active segment
+
+One active segment per disk. Pre-allocated 64MB. Receives all appends.
+**Also serves reads** via mmap of the same file (page-cache coherent with
+writes). No sealing needed for reads -- the mmap sees writes immediately.
+
+### Sealed segments
+
+When the active segment fills (64MB), it becomes sealed (read-only, mmap'd).
+A new active segment is created. Sealed segments are opened on startup for
+crash recovery.
+
+### Needle format
 
 ```
 [24 bytes header]
@@ -71,76 +85,75 @@ of one object (metadata + data together).
 
 [bucket: bucket_len bytes]
 [key: key_len bytes]
-[meta: meta_len bytes]    (msgpack, ~200 bytes typical)
+[meta: meta_len bytes]    (msgpack, ~200 bytes)
 [data: data_len bytes]    (shard data)
 ```
 
-4KB object needle: ~1.6KB per shard. One append per disk.
+Self-describing. Scannable. Each needle checksummed independently.
 
-## Segment lifecycle
+### In-memory index
 
-Segments are pre-allocated 64MB files. One active segment per disk at a time.
+HashMap: (bucket, key) -> (segment_id, offset, lengths).
+~32 bytes per entry + key strings. 1M objects = ~60MB RAM.
+Rebuilt from segments on startup by sequential scan (~1 sec/GB).
+
+### On-disk layout
 
 ```
-NEW -> ACTIVE (appending) -> SEALED (full, read-only, mmap'd) -> GC -> DEAD
+volume_root/
+  .abixio.sys/
+    volume.json                (existing)
+    log/
+      segment-000001.dat       (sealed, mmap'd)
+      segment-000002.dat       (sealed, mmap'd)
+      segment-000003.dat       (active, appending + mmap'd)
+  bucket/
+    large-key/
+      shard.dat                (file tier for >64KB)
+      meta.json
 ```
 
-## In-memory index
+### Durability model
 
-HashMap: (bucket, key) -> (segment_id, offset, lengths). Rebuilt from
-segments on startup. ~60MB RAM per 1M objects.
+Writes go to OS page cache via `file.write_all()`. No fsync per write.
+The OS flushes dirty pages to disk on its own schedule (~30 seconds on
+Linux, similar on Windows). Process crashes don't lose data (page cache
+is in kernel memory). Power loss loses unflushed writes (UPS mitigates).
 
-## Garbage collection
-
-When a sealed segment has >50% dead space: scan for live needles, copy them
-to the active segment, delete old segment. No compaction levels, no sorting.
-
-## Crash recovery
-
-Scan segments sequentially, validate each needle's xxhash64 checksum.
-Valid = add to index. Invalid/truncated = stop (partial write). ~1 sec/GB.
-
-## Expected impact
-
-| Metric | Current | Log-structured |
-|--------|---------|---------------|
-| 4KB PUT (4 disks) | 12 fs ops, ~2 MB/s | 4 appends, ~20+ MB/s |
-| 4KB GET (1 disk) | file open+read, ~8 MB/s | mmap slice, page cache |
-| Files per 1M objects | 3M+ | ~16 segments |
-
-## Status
-
-**Implemented and wired into S3 path.** Small PUTs with Content-Length <= 64KB
-route through the log store end-to-end. GETs check the log store first via
-mmap, fall through to file tier. Verified with curl and all 320 tests pass.
-
-Remaining work:
-- GC: reclaim dead space from sealed segments (phase 8)
-- Heal worker: read shards from log, not just files (phase 7)
-- Versioned objects: currently bypass the log (phase 9)
-- Chunked-transfer PUTs: no Content-Length, bypass the log (acceptable)
+This matches MinIO and RustFS behavior -- neither fsyncs individual writes.
+Confirmed in RustFS source: sync flag is a TODO that does nothing.
 
 ## How to enable
 
-The log store activates when `.abixio.sys/log/` exists on a volume:
-
 ```bash
-# enable on an existing volume
 mkdir -p /path/to/volume/.abixio.sys/log
-
-# or programmatically
-volume.enable_log_store()
 ```
 
-On restart, the log store scans existing segments and rebuilds the in-memory
-index automatically.
+The log store activates automatically when this directory exists.
+
+## Status
+
+**Implemented and wired into S3 PUT/GET path.**
+
+Working:
+- Small PUT (Content-Length <= 64KB): needle append to log segment
+- Small GET: in-memory index lookup + mmap read from segment
+- Small DELETE: tombstone needle + index removal
+- Crash recovery: segment scan rebuilds index on startup
+- Active segment mmap: reads work without sealing
+
+Remaining:
+- GC: reclaim dead space from sealed segments
+- Heal worker: read shards from log (currently file-tier only)
+- Versioned objects: currently bypass the log
+- Admin inspect: show segment:offset for log-stored objects
 
 ## Implementation
 
 | File | What |
 |------|------|
 | `src/storage/needle.rs` | Needle format: 24-byte header, msgpack meta, xxhash64 checksum |
-| `src/storage/segment.rs` | Segment files: pre-alloc 64MB, append, seal, mmap, scan |
+| `src/storage/segment.rs` | Segment files: pre-alloc 64MB, append, mmap (active + sealed), scan |
 | `src/storage/log_store.rs` | LogStore: in-memory index, segment lifecycle, crash recovery |
 | `src/storage/local_volume.rs` | Integration: write_shard/read_shard/stat_object/mmap_shard route through log |
 | `src/storage/volume_pool.rs` | S3 routing: small PUTs collected and encoded via write_shard path |

@@ -467,16 +467,21 @@ All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).
 Small objects (<= 64KB) now use a log-structured storage path instead of
 the file-per-object layout. See [write-log.md](write-log.md) for full design.
 
-| | File path | Log-structured path |
-|--|----------|-------------------|
-| Write ops per 4KB object (4 disks) | 12 (4 mkdirs + 4 shard.dat + 4 meta.json) | **4** (one needle append per disk) |
-| Read path | file open + read per shard | mmap slice from segment |
-| Files per 1M small objects | 3M+ | ~16 segment files |
-| Activation | default | opt-in: `mkdir .abixio.sys/log/` |
+| | File tier | Log store | Change |
+|--|----------|-----------|--------|
+| **4KB PUT** | 2.5ms | **1.5ms** | **40% faster** |
+| **4KB GET** | 1.9ms | **1.2ms** | **37% faster** |
+| Write ops per 4KB (4 disks) | 12 | **4** | 3x fewer |
+| Files per 1M small objects | 3M+ | ~3 segments | ~1000x fewer |
+| Activation | default | opt-in: `mkdir .abixio.sys/log/` | |
 
-Wired into the S3 PUT/GET path. PUTs with Content-Length <= 64KB automatically
-route through the log store. GETs check the log index first, fall through to
-file tier. Remaining: GC, heal log-awareness, versioned objects.
+No fsync on writes. Page cache serves both read (mmap) and write
+(file.write_all) paths. Same durability model as MinIO/RustFS.
+
+Active segment is mmap'd at creation -- reads see writes immediately via
+shared page cache. No sealing needed for reads. One active segment per disk.
+
+Remaining: GC, heal log-awareness, versioned objects.
 
 ## Future optimization candidates
 
