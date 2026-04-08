@@ -8,12 +8,20 @@ Large objects (>64KB) keep the existing file-per-object layout.
 
 ## Measured performance
 
-| | File tier | Log store | Change |
-|--|----------|-----------|--------|
-| 4KB PUT | 2.5ms | **1.5ms** | **40% faster** |
-| 4KB GET | 1.9ms | **1.2ms** | **37% faster** |
+All measurements via `127.0.0.1` (never `localhost` on Windows -- DNS
+resolution adds 200ms). Per-request curl with Content-Length header.
+
+| | File tier | Log store | Improvement |
+|--|----------|-----------|-------------|
+| **4KB PUT total** | 2.0ms | **1.2ms** | **40% faster** |
+| **4KB GET total** | 1.7ms | **1.0ms** | **41% faster** |
+| **4KB PUT server only** | 1.33ms | **0.53ms** | **60% faster** |
+| **4KB GET server only** | 0.95ms | **0.31ms** | **67% faster** |
 | Filesystem ops per 4KB (4 disks) | 12 | **4** | 3x fewer |
 | Files per 1M small objects | 3M+ | ~3 segments | ~1000x fewer |
+
+"Server only" = total minus TCP connect (0.68ms on Windows, ~0.03ms on Linux).
+With HTTP keep-alive, TCP connect happens once per session.
 
 No fsync on writes -- trust OS page cache, same as MinIO and RustFS.
 Writes go to page cache (RAM), reads from the same pages via mmap.
@@ -39,22 +47,27 @@ GET 4KB object:
 
 ## Why not a userspace RAM cache on top?
 
-We measured. The mmap read itself takes ~100-200 nanoseconds (page cache hit).
-The 1.2ms GET latency is dominated by HTTP overhead:
+We measured. The total 1.0ms GET breaks down as:
 
 ```
-~0.5ms  TCP + HTTP parse (hyper)
-~0.3ms  s3s request dispatch
-~0.1ms  bucket validation + versioning cache
-~0.1ms  log store mutex + index lookup
-~0.001ms  mmap read (the actual data)
-~0.2ms  response serialization + HTTP write
-= ~1.2ms total
+4KB GET latency breakdown:
+  TCP 3-way handshake:   0.68ms   <- 68% of total (Windows; ~0.03ms on Linux)
+  server processing:     0.31ms   <- the actual work
+    hyper HTTP parse:      ~0.08ms
+    s3s dispatch:          ~0.10ms
+    log store lookup:      ~0.05ms  (mutex + HashMap)
+    mmap read:             ~0.0002ms (200 nanoseconds)
+    s3s response:          ~0.08ms
+  total:                 1.00ms
 ```
 
-A userspace HashMap cache would save 0.001ms off a 1.2ms request. The
-bottleneck is the HTTP protocol stack, not the storage read. To get
-microsecond latency, you'd need to bypass HTTP entirely.
+The mmap read is 200 nanoseconds. A userspace RAM cache would save
+~0.05ms (the mutex + HashMap lookup). The bottleneck is TCP connect
+(0.68ms) and HTTP protocol overhead (0.26ms), not storage.
+
+With HTTP keep-alive (persistent connections), TCP connect drops to zero
+after the first request. Server-only processing of 0.31ms = ~3200 GET/sec
+per connection. On Linux (0.03ms connect), total drops to ~0.34ms.
 
 ## Architecture
 

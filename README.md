@@ -52,7 +52,7 @@ Same `--nodes` on every node. Identity resolves automatically. You now have 5 vo
 | **S3 coverage** | 41 of 72 operations ([details](docs/s3-compliance.md)) |
 | **Protocol** | [s3s](https://crates.io/crates/s3s) v0.13 (SigV4, chunked auth, smithy XML) |
 | **GET perf** | 1220 MB/s at 1GB (mmap, zero-copy). Zero-alloc EC decode ([benchmarks](docs/benchmarks.md)) |
-| **Small objects** | Log-structured: 4KB PUT 1.5ms (40% faster), GET 1.2ms (37% faster) ([design](docs/write-log.md)) |
+| **Small objects** | Log-structured: 4KB server processing 0.53ms PUT / 0.31ms GET, 60-67% faster than file tier ([design](docs/write-log.md)) |
 | **Releases** | None yet |
 
 ### Docs

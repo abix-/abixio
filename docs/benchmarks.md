@@ -4,13 +4,15 @@
 
 All three servers running on Windows 10, same NTFS drive, single disk, no
 erasure coding. `mc` client with SigV4 auth, sequential requests, 15 iterations.
+All connections via `127.0.0.1` (never `localhost` -- Windows DNS resolution
+of `localhost` adds 200ms per request).
 
 ### PUT
 
 ![PUT throughput](img/bench-put.svg)
 
-At 10MB all three are within noise (78-91 MB/s, limited by `mc` startup).
-At 1GB, AbixIO (426) trails RustFS (520) and MinIO (543).
+At 10MB, all three are within noise (81-92 MB/s). At 1GB, AbixIO (440)
+beats MinIO (376) and trails RustFS (540).
 
 ### GET
 
@@ -22,13 +24,11 @@ server -- direct curl shows **1220 MB/s** for a 1GB GET.
 
 ### What the mc client hides
 
-The `mc` client dominates timing at 1GB. The server itself is fast:
-
 | Measurement | AbixIO 1GB GET |
 |-------------|---------------|
 | Through `mc` (SigV4, write to disk) | 386 MB/s |
 | Through curl (no auth, /dev/null) | **1220 MB/s** |
-| Internal L6 benchmark (no client) | **1048 MB/s** |
+| Internal L6 benchmark (no client) | **568 MB/s** |
 | Internal L4 storage layer | **page cache speed** |
 
 MinIO gets 953 MB/s through the same `mc` because `mc` is a Go binary
@@ -36,24 +36,60 @@ optimized for Go's HTTP stack. This is a client-side gap, not server-side.
 
 ---
 
+## 4KB small object performance
+
+The log-structured storage path eliminates filesystem metadata overhead
+for small objects. Measured via curl with `127.0.0.1`, Content-Length header.
+
+### Latency breakdown (4KB PUT)
+
+```
+File tier:                          Log store:
+  TCP connect:     0.68ms             TCP connect:     0.68ms
+  server process:  1.33ms             server process:  0.53ms  <- 60% faster
+  total:           2.01ms             total:           1.21ms
+```
+
+### Latency breakdown (4KB GET)
+
+```
+File tier:                          Log store:
+  TCP connect:     0.69ms             TCP connect:     0.69ms
+  server process:  0.95ms             server process:  0.31ms  <- 67% faster
+  total:           1.69ms             total:           1.00ms
+```
+
+### Summary
+
+| | File tier | Log store | Improvement |
+|--|----------|-----------|-------------|
+| **4KB PUT total** | 2.0ms | **1.2ms** | **40% faster** |
+| **4KB GET total** | 1.7ms | **1.0ms** | **41% faster** |
+| **4KB PUT server only** | 1.33ms | **0.53ms** | **60% faster** |
+| **4KB GET server only** | 0.95ms | **0.31ms** | **67% faster** |
+| Filesystem ops (4 disks) | 12 | **4** | 3x fewer |
+| Files per 1M objects | 3M+ | ~3 segments | ~1000x fewer |
+
+TCP connect (0.68ms) is 57% of log store total -- fixed cost from Windows
+TCP stack. Linux localhost connect is ~0.03ms (20x faster). With HTTP
+keep-alive (persistent connections), TCP connect happens once per session.
+
+### Windows localhost warning
+
+**Never use `localhost` for benchmarks on Windows.** DNS resolution of
+`localhost` on Windows adds ~200ms per request (IPv6 fallback). Always
+use `127.0.0.1`.
+
+```
+curl http://localhost:10000/...    <- 210ms (DNS: 200ms + actual: 10ms)
+curl http://127.0.0.1:10000/...   <- 1.2ms (actual performance)
+```
+
+---
+
 ## How fast is each layer?
 
-AbixIO's request path has 6 layers. Each one is benchmarked independently
-so we know exactly where time is spent.
-
-### What a GET request goes through
-
-```
-Client request
-  -> L6  S3 protocol (s3s)       parse HTTP, auth, dispatch
-  -> L5  HTTP transport (hyper)   TCP read/write
-  -> L4  Storage pipeline         read shards, decode, reassemble
-  -> L3  Disk I/O                 tokio::fs / mmap
-  -> L2  RS decode                reed-solomon (SIMD)
-  -> L1  Checksum verify          blake3 / MD5
-```
-
-### GET performance by layer (1 disk, 10MB / 1GB)
+### GET performance (1 disk, 10MB / 1GB)
 
 | Layer | What | 10MB | 1GB | Bottleneck? |
 |-------|------|------|-----|-------------|
@@ -63,59 +99,31 @@ Client request
 | L3 | Disk read (cached) | 2703 MB/s | 2902 MB/s | no |
 
 For 1+0 (no EC), GET is zero-copy: mmap the shard file, yield the entire
-mapping as a single `Bytes` through hyper. No decode, no allocation, no
-memcpy. Direct curl test: 1220 MB/s at 1GB.
+mapping as a single `Bytes` through hyper. Direct curl: 1220 MB/s at 1GB.
 
-### GET performance by layer (4 disk, 3+1 EC, 10MB / 1GB)
+### GET performance (4 disk, 3+1 EC, 10MB / 1GB)
 
-| Layer | What | 10MB | 1GB | Bottleneck? |
-|-------|------|------|-----|-------------|
-| L4 | Storage + mmap EC (zero-copy) | 10,937 MB/s | page cache | no |
-| L4 | Storage (old buffered path) | 774 MB/s | 919 MB/s | was the bottleneck |
+| Layer | What | 10MB | 1GB |
+|-------|------|------|-----|
+| L4 | Storage + mmap EC (zero-copy) | 10,937 MB/s | page cache |
+| L4 | Storage (old buffered path) | 774 MB/s | 919 MB/s |
 
-For EC objects, GET is also zero-copy in the common case: mmap all shard
-files, yield shard slices directly as `Bytes` frames. No memcpy reassembly.
-RS decode only runs when shards are missing (degraded mode).
+EC GET is zero-copy: mmap shard slices yielded directly as `Bytes` frames.
 
-### PUT performance by layer (1 disk, 10MB)
+### PUT performance (1 disk, 10MB)
 
 ![PUT breakdown](img/bench-breakdown.svg)
 
 | Layer | What | Speed | Bottleneck? |
 |-------|------|-------|-------------|
-| L6 | Full S3 PUT (end to end) | 257 MB/s | s3s overhead |
-| L5 | Raw HTTP (no S3) | 762 MB/s | no |
+| L6 | Full S3 PUT | 257 MB/s | s3s overhead |
+| L5 | Raw HTTP | 762 MB/s | no |
 | L4 | Storage pipeline | 483 MB/s | hashing + encode |
 | L3 | Disk write (page cache) | 1625 MB/s | no |
 | L2 | RS encode (SIMD) | 2762 MB/s | no |
-| L1 | MD5 hash (required for S3 ETag) | 703 MB/s | floor |
-| L1 | blake3 hash (shard integrity) | 4303 MB/s | no |
+| L1 | MD5 hash (S3 ETag) | 703 MB/s | floor |
 
-PUT is zero-allocation in the per-block loop (pre-allocated shard buffers
-reused across all 1MB blocks). MD5 at 703 MB/s is the theoretical floor
-for any S3-compatible server.
-
-### Small object performance (4KB)
-
-| | File tier | Log store | Change |
-|--|----------|-----------|--------|
-| **4KB PUT latency** | 2.5ms | **1.5ms** | **40% faster** |
-| **4KB GET latency** | 1.9ms | **1.2ms** | **37% faster** |
-| Filesystem ops per 4KB (4 disks) | 12 | **4** | 3x fewer |
-| Files per 1M small objects | 3M+ | ~3 segments | ~1000x fewer |
-
-Measured via curl with Content-Length header (single-request latency).
-No fsync on writes -- page cache serves both read and write paths.
-
-The log-structured path (Datrium DiESL-inspired) writes each shard as a
-needle to an append-only segment file. The needle contains metadata (msgpack,
-~200 bytes) + shard data in one contiguous record with an xxhash64 checksum.
-The in-memory index maps bucket+key to segment:offset for zero-copy mmap
-reads. See [write-log.md](write-log.md) for the full design.
-
-Enabled per volume when `.abixio.sys/log/` directory exists. Objects > 64KB
-bypass the log and use the file path. Wired into the S3 PUT/GET path:
-PUTs with Content-Length <= 64KB automatically route through the log store.
+PUT is zero-allocation in the per-block encode loop.
 
 ---
 
@@ -123,11 +131,8 @@ PUTs with Content-Length <= 64KB automatically route through the log store.
 
 ### Competitive benchmark (vs RustFS, MinIO)
 
-Requires server binaries + `mc`. Any server can be omitted.
-
 ```bash
 cargo build --release
-
 ABIXIO_BIN=./target/release/abixio RUSTFS_BIN=rustfs MINIO_BIN=minio MC=mc \
     ITERS=15 SIZES="4096 10485760 1073741824" \
     bash tests/compare_bench.sh
@@ -135,11 +140,7 @@ ABIXIO_BIN=./target/release/abixio RUSTFS_BIN=rustfs MINIO_BIN=minio MC=mc \
 
 ### Per-layer benchmark
 
-No external binaries. Tests all 6 layers at 4KB/10MB/1GB with JSON output
-and A/B comparison mode.
-
 ```bash
-# run all layers
 cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
 
 # compare after a change
@@ -151,9 +152,9 @@ BENCH_LAYERS=L4,L6 BENCH_SIZES=10485760 \
     cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
 ```
 
-Flags regressions (>5% slower) and improvements (>5% faster) per layer.
-
 ---
 
 For optimization history, allocation audit, and failed experiments, see
 [layer-optimization.md](layer-optimization.md).
+
+For log-structured storage design, see [write-log.md](write-log.md).

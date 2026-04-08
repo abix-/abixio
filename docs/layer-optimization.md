@@ -467,19 +467,28 @@ All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).
 Small objects (<= 64KB) now use a log-structured storage path instead of
 the file-per-object layout. See [write-log.md](write-log.md) for full design.
 
-| | File tier | Log store | Change |
-|--|----------|-----------|--------|
-| **4KB PUT** | 2.5ms | **1.5ms** | **40% faster** |
-| **4KB GET** | 1.9ms | **1.2ms** | **37% faster** |
+| | File tier | Log store | Improvement |
+|--|----------|-----------|-------------|
+| **4KB PUT total** | 2.0ms | **1.2ms** | **40% faster** |
+| **4KB GET total** | 1.7ms | **1.0ms** | **41% faster** |
+| **4KB PUT server only** | 1.33ms | **0.53ms** | **60% faster** |
+| **4KB GET server only** | 0.95ms | **0.31ms** | **67% faster** |
 | Write ops per 4KB (4 disks) | 12 | **4** | 3x fewer |
 | Files per 1M small objects | 3M+ | ~3 segments | ~1000x fewer |
 | Activation | default | opt-in: `mkdir .abixio.sys/log/` | |
+
+"Server only" = total minus TCP connect. Windows TCP localhost = 0.68ms
+(57% of total). Linux TCP localhost = ~0.03ms. With keep-alive, connect
+cost is zero after first request.
 
 No fsync on writes. Page cache serves both read (mmap) and write
 (file.write_all) paths. Same durability model as MinIO/RustFS.
 
 Active segment is mmap'd at creation -- reads see writes immediately via
 shared page cache. No sealing needed for reads. One active segment per disk.
+
+**Windows `localhost` warning**: never use `localhost` for benchmarks.
+Windows DNS resolution adds ~200ms per request. Always use `127.0.0.1`.
 
 Remaining: GC, heal log-awareness, versioned objects.
 
