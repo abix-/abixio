@@ -16,10 +16,9 @@ At 1GB, AbixIO (426) trails RustFS (520) and MinIO (543).
 
 ![GET throughput](img/bench-get.svg)
 
-At 10MB, all three are close (116-131 MB/s). At 1GB through `mc`, MinIO
-(1057) leads. AbixIO (366) is bottlenecked by the `mc` client, not the
-server -- direct curl shows **1220 MB/s** for a 1GB GET (faster than
-MinIO through `mc`).
+At 10MB, all three are close (106-122 MB/s). At 1GB through `mc`, MinIO
+(953) leads. AbixIO (386) is bottlenecked by the `mc` client, not the
+server -- direct curl shows **1220 MB/s** for a 1GB GET.
 
 ### What the mc client hides
 
@@ -27,12 +26,12 @@ The `mc` client dominates timing at 1GB. The server itself is fast:
 
 | Measurement | AbixIO 1GB GET |
 |-------------|---------------|
-| Through `mc` (SigV4, write to disk) | 366 MB/s |
+| Through `mc` (SigV4, write to disk) | 386 MB/s |
 | Through curl (no auth, /dev/null) | **1220 MB/s** |
 | Internal L6 benchmark (no client) | **1048 MB/s** |
 | Internal L4 storage layer | **page cache speed** |
 
-MinIO gets 1057 MB/s through the same `mc` because `mc` is a Go binary
+MinIO gets 953 MB/s through the same `mc` because `mc` is a Go binary
 optimized for Go's HTTP stack. This is a client-side gap, not server-side.
 
 ---
@@ -54,26 +53,25 @@ Client request
   -> L1  Checksum verify          blake3 / MD5
 ```
 
-### GET performance by layer (1 disk, 10MB)
+### GET performance by layer (1 disk, 10MB / 1GB)
 
-| Layer | What | Speed | Bottleneck? |
-|-------|------|-------|-------------|
-| L6 | Full S3 GET (end to end) | 809 MB/s | -- |
-| L5 | Raw HTTP (no S3) | 762 MB/s | no |
-| L4 | Storage + mmap (1 disk) | page cache | no |
-| L3 | Disk read (cached) | 2703 MB/s | no |
-| L1 | blake3 verify | 4303 MB/s | no |
+| Layer | What | 10MB | 1GB | Bottleneck? |
+|-------|------|------|-----|-------------|
+| L6 | Full S3 GET | 253 MB/s | 568 MB/s | s3s overhead |
+| L5 | Raw HTTP (no S3) | 762 MB/s | 800 MB/s | no |
+| L4 | Storage + mmap | 19,031 MB/s | page cache | no |
+| L3 | Disk read (cached) | 2703 MB/s | 2902 MB/s | no |
 
 For 1+0 (no EC), GET is zero-copy: mmap the shard file, yield the entire
 mapping as a single `Bytes` through hyper. No decode, no allocation, no
-memcpy. Page cache speed.
+memcpy. Direct curl test: 1220 MB/s at 1GB.
 
-### GET performance by layer (4 disk, 3+1 EC, 10MB)
+### GET performance by layer (4 disk, 3+1 EC, 10MB / 1GB)
 
-| Layer | What | Speed | Bottleneck? |
-|-------|------|-------|-------------|
-| L4 | Storage + mmap EC | 11,938 MB/s | no |
-| L4 | Storage (old buffered path) | 774 MB/s | was the bottleneck |
+| Layer | What | 10MB | 1GB | Bottleneck? |
+|-------|------|------|-----|-------------|
+| L4 | Storage + mmap EC (zero-copy) | 10,937 MB/s | page cache | no |
+| L4 | Storage (old buffered path) | 774 MB/s | 919 MB/s | was the bottleneck |
 
 For EC objects, GET is also zero-copy in the common case: mmap all shard
 files, yield shard slices directly as `Bytes` frames. No memcpy reassembly.
@@ -85,9 +83,9 @@ RS decode only runs when shards are missing (degraded mode).
 
 | Layer | What | Speed | Bottleneck? |
 |-------|------|-------|-------------|
-| L6 | Full S3 PUT (end to end) | 272 MB/s | s3s overhead |
+| L6 | Full S3 PUT (end to end) | 257 MB/s | s3s overhead |
 | L5 | Raw HTTP (no S3) | 762 MB/s | no |
-| L4 | Storage pipeline | 439 MB/s | hashing + encode |
+| L4 | Storage pipeline | 483 MB/s | hashing + encode |
 | L3 | Disk write (page cache) | 1625 MB/s | no |
 | L2 | RS encode (SIMD) | 2762 MB/s | no |
 | L1 | MD5 hash (required for S3 ETag) | 703 MB/s | floor |
@@ -99,11 +97,13 @@ for any S3-compatible server.
 
 ### Small object performance (4KB)
 
-| | File path (current default) | Log-structured path |
-|--|---------------------------|-------------------|
+| | File path (default) | Log-structured path |
+|--|---------------------|-------------------|
 | Filesystem ops per 4KB object (4 disks) | 12 (4 mkdirs + 4 shard files + 4 meta files) | **4** (one append per disk) |
-| 4KB PUT bottleneck | NTFS MFT allocation, directory entries | sequential append (fast) |
-| 4KB GET | file open + read per shard | mmap slice from segment (page cache) |
+| L4 4KB PUT (1 disk) | 4.1 MB/s | pending benchmark |
+| L4 4KB GET (1 disk) | 8.4 MB/s (file open) | mmap slice from segment |
+| L6 4KB PUT (1 disk) | 3.4 MB/s | pending benchmark |
+| L6 4KB GET (1 disk) | 5.9 MB/s | pending benchmark |
 | Files per 1M small objects | 3M+ | ~16 segment files |
 
 The log-structured path (Datrium DiESL-inspired) writes each shard as a

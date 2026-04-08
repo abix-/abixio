@@ -39,30 +39,30 @@
 
   <text x="115" y="224" text-anchor="end" style="font-size:13px;fill:currentColor">AbixIO</text>
   <rect x="120" y="210" width="58" height="24" rx="3" fill="#2563eb"/>
-  <text x="184" y="227" style="font-size:13px;font-weight:600;fill:currentColor">78 MB/s</text>
+  <text x="184" y="227" style="font-size:13px;font-weight:600;fill:currentColor">81 MB/s</text>
 
   <text x="115" y="254" text-anchor="end" style="font-size:13px;fill:currentColor">RustFS</text>
   <rect x="120" y="240" width="59" height="24" rx="3" fill="#d97706"/>
-  <text x="185" y="257" style="font-size:13px;font-weight:600;fill:currentColor">79 MB/s</text>
+  <text x="185" y="257" style="font-size:13px;font-weight:600;fill:currentColor">81 MB/s</text>
 
   <text x="115" y="284" text-anchor="end" style="font-size:13px;fill:currentColor">MinIO</text>
   <rect x="120" y="270" width="68" height="24" rx="3" fill="#059669"/>
-  <text x="194" y="287" style="font-size:13px;font-weight:600;fill:currentColor">91 MB/s</text>
+  <text x="194" y="287" style="font-size:13px;font-weight:600;fill:currentColor">92 MB/s</text>
 
   <!-- 1GB group -->
   <text x="60" y="328" text-anchor="middle" style="font-size:13px;font-weight:600;fill:currentColor">1GB</text>
 
   <text x="115" y="352" text-anchor="end" style="font-size:13px;fill:currentColor">AbixIO</text>
-  <rect x="120" y="338" width="319" height="24" rx="3" fill="#2563eb"/>
-  <text x="445" y="355" style="font-size:13px;font-weight:600;fill:currentColor">426 MB/s</text>
+  <rect x="120" y="338" width="330" height="24" rx="3" fill="#2563eb"/>
+  <text x="456" y="355" style="font-size:13px;font-weight:600;fill:currentColor">440 MB/s</text>
 
   <text x="115" y="382" text-anchor="end" style="font-size:13px;fill:currentColor">RustFS</text>
-  <rect x="120" y="368" width="390" height="24" rx="3" fill="#d97706"/>
-  <text x="516" y="385" style="font-size:13px;font-weight:600;fill:currentColor">520 MB/s</text>
+  <rect x="120" y="368" width="405" height="24" rx="3" fill="#d97706"/>
+  <text x="531" y="385" style="font-size:13px;font-weight:600;fill:currentColor">540 MB/s</text>
 
   <text x="115" y="412" text-anchor="end" style="font-size:13px;fill:currentColor">MinIO</text>
-  <rect x="120" y="398" width="407" height="24" rx="3" fill="#059669"/>
-  <text x="533" y="415" style="font-size:13px;font-weight:600;fill:currentColor">543 MB/s</text>
+  <rect x="120" y="398" width="282" height="24" rx="3" fill="#059669"/>
+  <text x="408" y="415" style="font-size:13px;font-weight:600;fill:currentColor">376 MB/s</text>
 
   <!-- legend -->
   <rect x="205" y="430" width="12" height="12" rx="2" fill="#2563eb"/>
