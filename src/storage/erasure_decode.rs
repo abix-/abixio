@@ -136,13 +136,10 @@ pub async fn read_and_decode(
     Ok((result, good_meta))
 }
 
-/// Decode block size for streaming. Larger = fewer iterations and syscalls.
-/// 4MB matches RustFS's duplex buffer size and gives good throughput.
-const DECODE_BLOCK_SIZE: usize = 4 * 1024 * 1024;
-
 /// Streaming decode using mmap: returns metadata + a stream of decoded chunks.
-/// Shard files are memory-mapped for zero-copy reads. Decoded data flows
-/// through a tokio duplex pipe (4MB buffer) to avoid per-chunk allocation.
+/// Fast path (all shards healthy): yields shard slices directly from mmap as
+/// Bytes -- zero copy, zero allocation. Each shard slice is a ref-counted view.
+/// Slow path (missing shards): allocates Vecs for RS reconstruct.
 pub async fn read_and_decode_stream(
     disks: &[Box<dyn Backend>],
     data_n: usize,
@@ -190,7 +187,8 @@ pub async fn read_and_decode_stream(
     let original_size = good_meta.size as usize;
     let meta_clone = good_meta.clone();
 
-    let (tx, rx) = futures::channel::mpsc::channel(4);
+    // wider channel: fast path yields data_n slices per encode block (not 1 big chunk)
+    let (tx, rx) = futures::channel::mpsc::channel(16);
 
     let dn = data_n;
     let pn = parity_n;
@@ -208,79 +206,95 @@ pub async fn read_and_decode_stream(
         let mut remaining = original_size;
         let mut shard_read_offset = 0usize;
 
-        // pool of 8 buffers: 4 channel slots + ~1 in hyper + headroom
-        let pool = BufPool::new(8, DECODE_BLOCK_SIZE);
+        // create Bytes handles for each data shard mmap (zero-copy, ref-counted)
+        let shard_bytes: Vec<Option<bytes::Bytes>> = mmap_slots
+            .iter_mut()
+            .enumerate()
+            .map(|(i, slot)| {
+                if i < dn {
+                    slot.take().map(bytes::Bytes::from_owner)
+                } else {
+                    // keep parity mmaps as MmapOrVec for slow path
+                    None
+                }
+            })
+            .collect();
+
+        // keep parity mmaps separately for slow path RS reconstruct
+        // (data mmaps were taken by shard_bytes above, parity still in mmap_slots)
 
         while remaining > 0 {
-            let iter_size = remaining.min(DECODE_BLOCK_SIZE);
-            let mut iter_data = pool.take(); // from pool, not new alloc
-            let mut iter_remaining = iter_size;
+            let block_size = remaining.min(STREAM_BLOCK_SIZE);
+            let shard_chunk_size = block_size.div_ceil(dn).max(1);
 
-            while iter_remaining > 0 {
-                let block_size = iter_remaining.min(STREAM_BLOCK_SIZE);
-                let shard_chunk_size = block_size.div_ceil(dn).max(1);
+            // check if all data shards are available
+            let data_shards_ok = (0..dn).all(|i| {
+                shard_bytes[i].as_ref().map_or(false, |b| shard_read_offset < b.len())
+            });
 
-                // check if all data shards are available from mmap
-                let data_shards_ok = (0..dn).all(|i| {
-                    mmap_slots[i].as_ref().map_or(false, |m| shard_read_offset < m.len())
-                });
+            if data_shards_ok {
+                // FAST PATH: yield shard slices directly from mmap.
+                // Zero copy, zero allocation. Each slice is a ref-counted
+                // view into the mmap. hyper sends them to TCP sequentially.
+                let mut sent = 0usize;
+                for shard_idx in 0..dn {
+                    let bytes = shard_bytes[shard_idx].as_ref().unwrap();
+                    let end = (shard_read_offset + shard_chunk_size).min(bytes.len());
+                    let slice_len = end - shard_read_offset;
 
-                if data_shards_ok {
-                    // FAST PATH: all data shards present, slice directly from mmap.
-                    // Zero Vec allocation -- just copy from mmap into output buffer.
-                    let before_len = iter_data.len();
-                    for shard_idx in 0..dn {
-                        let mmap = mmap_slots[shard_idx].as_ref().unwrap();
-                        let end = (shard_read_offset + shard_chunk_size).min(mmap.len());
-                        iter_data.extend_from_slice(&mmap[shard_read_offset..end]);
-                    }
-                    // truncate to block_size (shards may have padding from split_data)
-                    iter_data.truncate(before_len + block_size);
-                } else {
-                    // SLOW PATH: missing shards, need RS reconstruct (allocates Vecs)
-                    let mut shard_slots: Vec<Option<Vec<u8>>> = vec![None; total];
-                    for (i, mmap_opt) in mmap_slots.iter().enumerate() {
-                        if let Some(mmap) = mmap_opt {
-                            let end = (shard_read_offset + shard_chunk_size).min(mmap.len());
-                            if shard_read_offset < mmap.len() && end > shard_read_offset {
-                                shard_slots[i] = Some(mmap[shard_read_offset..end].to_vec());
+                    // last shard of this block may need truncation (split_data padding)
+                    let needed = block_size - sent;
+                    let take = slice_len.min(needed);
+                    if take == 0 { break; }
+
+                    let chunk = bytes.slice(shard_read_offset..shard_read_offset + take);
+                    if tx.send(Ok(chunk)).await.is_err() { return; }
+                    sent += take;
+                }
+            } else {
+                // SLOW PATH: missing shards, need RS reconstruct (allocates Vecs)
+                let mut shard_slots: Vec<Option<Vec<u8>>> = vec![None; total];
+                // read data shards from shard_bytes, parity from mmap_slots
+                for i in 0..total {
+                    if i < dn {
+                        if let Some(bytes) = &shard_bytes[i] {
+                            let end = (shard_read_offset + shard_chunk_size).min(bytes.len());
+                            if shard_read_offset < bytes.len() && end > shard_read_offset {
+                                shard_slots[i] = Some(bytes.slice(shard_read_offset..end).to_vec());
                             }
                         }
-                    }
-
-                    let good = shard_slots.iter().filter(|s| s.is_some()).count();
-                    if good < dn {
-                        let _ = tx.send(Err(StorageError::ReadQuorum)).await;
-                        return;
-                    }
-
-                    if let Some(ref rs) = rs {
-                        if rs.reconstruct(&mut shard_slots).is_err() {
-                            let _ = tx.send(Err(StorageError::ReadQuorum)).await;
-                            return;
+                    } else if let Some(mmap) = &mmap_slots[i] {
+                        let end = (shard_read_offset + shard_chunk_size).min(mmap.len());
+                        if shard_read_offset < mmap.len() && end > shard_read_offset {
+                            shard_slots[i] = Some(mmap[shard_read_offset..end].to_vec());
                         }
-                    }
-
-                    for shard in shard_slots.iter().take(dn).flatten() {
-                        iter_data.extend_from_slice(shard);
                     }
                 }
 
-                shard_read_offset += shard_chunk_size;
-                iter_remaining -= block_size;
+                let good = shard_slots.iter().filter(|s| s.is_some()).count();
+                if good < dn {
+                    let _ = tx.send(Err(StorageError::ReadQuorum)).await;
+                    return;
+                }
+
+                if let Some(ref rs) = rs {
+                    if rs.reconstruct(&mut shard_slots).is_err() {
+                        let _ = tx.send(Err(StorageError::ReadQuorum)).await;
+                        return;
+                    }
+                }
+
+                // reassemble and send as one chunk (slow path, rare)
+                let mut block_data = Vec::with_capacity(block_size);
+                for shard in shard_slots.iter().take(dn).flatten() {
+                    block_data.extend_from_slice(shard);
+                }
+                block_data.truncate(block_size);
+                if tx.send(Ok(bytes::Bytes::from(block_data))).await.is_err() { return; }
             }
 
-            iter_data.truncate(iter_size);
-            remaining -= iter_size;
-
-            // wrap in PooledBuf so the Vec returns to pool when Bytes is dropped
-            let pooled = PooledBuf {
-                data: iter_data,
-                pool: pool.clone(),
-            };
-            if tx.send(Ok(bytes::Bytes::from_owner(pooled))).await.is_err() {
-                return;
-            }
+            shard_read_offset += shard_chunk_size;
+            remaining -= block_size;
         }
     });
 
