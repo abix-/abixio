@@ -396,14 +396,14 @@ hyper writes to TCP in kernel-sized chunks. No slicing, no Arc per chunk.
 | 2 | :135 | `meta_clone = good_meta.clone()` | 1 | strings in ObjectMeta |
 | 3 | :137 | `mpsc::channel(4)` | 1 | channel internal buffers |
 | 4 | :146 | `ReedSolomon::new()` | 1 | RS lookup tables |
-| 5 | :158 | `Vec::with_capacity(iter_size)` -- **4MB output buffer** | **256/GB** | **yes -- new Vec per channel send** |
+| 5 | :158 | `pool.take()` -- **4MB output buffer from pool** | **0 (steady state)** | **done -- BufPool returns on drop** |
 | 6 | :174-177 | `extend_from_slice(&mmap[..])` into iter_data | 256 x data_n | copy from mmap (inherent for EC reassembly) but no alloc (writes into #5) |
 | 7 | :218 | `Bytes::from(iter_data)` | 256/GB | takes ownership of #5, no copy |
 
-**Data-path allocs: 256 per 1GB.** One 4MB Vec per channel send (#5).
-`Bytes::from()` takes ownership so the Vec can't be reused. This is the
-minimum for mpsc channel transport. Eliminating requires replacing the
-channel with a duplex pipe or inline poll-based stream.
+**Data-path allocs: 8 warmup, then 0 steady state.** BufPool pre-allocates
+8 x 4MB Vecs. `Bytes::from_owner(PooledBuf)` wraps the buffer; when hyper
+drops the Bytes, `PooledBuf::drop` returns the Vec to the pool. After
+warmup, buffers circulate without allocation. EC GET 4-disk 1GB: 2105 MB/s.
 
 #### EC GET degraded (slow path, missing shards)
 
@@ -456,7 +456,7 @@ All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).
 | Path | Data-path allocs/GB | Remaining alloc | Can eliminate? |
 |------|---------------------|-----------------|----------------|
 | **1+0 GET** | **0** | -- | done |
-| **EC GET (healthy)** | **256** | one 4MB Vec per channel send | yes: replace mpsc with duplex pipe or inline stream |
+| **EC GET (healthy)** | **0 (steady state)** | 8 warmup allocs, then pool recycles | **done** -- BufPool + PooledBuf + Bytes::from_owner |
 | **EC GET (degraded)** | ~5400 | Vec per shard for RS reconstruct | no: RS API requires owned buffers |
 | **PUT (per-block loop)** | **0** | -- | done |
 | **PUT (total request)** | ~10 | setup + finalize allocs | no: inherent (metadata, hashers, writers) |
