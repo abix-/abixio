@@ -1,74 +1,74 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 440" font-family="system-ui,-apple-system,sans-serif">
 
-  <text x="390" y="28" text-anchor="middle" style="font-size:16px;font-weight:600;fill:#24292f">GET throughput (MB/s, higher is better)</text>
+  <text x="390" y="28" text-anchor="middle" style="font-size:16px;font-weight:600;fill:currentColor">GET throughput (MB/s, higher is better)</text>
 
   <!-- grid: 0-1200, bar area 120-720 = 600px, 0.5px per MB/s -->
-  <line x1="120" y1="45" x2="120" y2="390" style="stroke:#d1d9e0;stroke-width:0.5"/>
-  <line x1="220" y1="45" x2="220" y2="390" style="stroke:#d1d9e0;stroke-width:0.5"/>
-  <line x1="320" y1="45" x2="320" y2="390" style="stroke:#d1d9e0;stroke-width:0.5"/>
-  <line x1="420" y1="45" x2="420" y2="390" style="stroke:#d1d9e0;stroke-width:0.5"/>
-  <line x1="520" y1="45" x2="520" y2="390" style="stroke:#d1d9e0;stroke-width:0.5"/>
-  <line x1="620" y1="45" x2="620" y2="390" style="stroke:#d1d9e0;stroke-width:0.5"/>
-  <line x1="720" y1="45" x2="720" y2="390" style="stroke:#d1d9e0;stroke-width:0.5"/>
+  <line x1="120" y1="45" x2="120" y2="390" style="stroke:currentColor;opacity:0.15;stroke-width:0.5"/>
+  <line x1="220" y1="45" x2="220" y2="390" style="stroke:currentColor;opacity:0.15;stroke-width:0.5"/>
+  <line x1="320" y1="45" x2="320" y2="390" style="stroke:currentColor;opacity:0.15;stroke-width:0.5"/>
+  <line x1="420" y1="45" x2="420" y2="390" style="stroke:currentColor;opacity:0.15;stroke-width:0.5"/>
+  <line x1="520" y1="45" x2="520" y2="390" style="stroke:currentColor;opacity:0.15;stroke-width:0.5"/>
+  <line x1="620" y1="45" x2="620" y2="390" style="stroke:currentColor;opacity:0.15;stroke-width:0.5"/>
+  <line x1="720" y1="45" x2="720" y2="390" style="stroke:currentColor;opacity:0.15;stroke-width:0.5"/>
 
-  <text x="120" y="405" text-anchor="middle" style="font-size:11px;fill:#656d76">0</text>
-  <text x="220" y="405" text-anchor="middle" style="font-size:11px;fill:#656d76">200</text>
-  <text x="320" y="405" text-anchor="middle" style="font-size:11px;fill:#656d76">400</text>
-  <text x="420" y="405" text-anchor="middle" style="font-size:11px;fill:#656d76">600</text>
-  <text x="520" y="405" text-anchor="middle" style="font-size:11px;fill:#656d76">800</text>
-  <text x="620" y="405" text-anchor="middle" style="font-size:11px;fill:#656d76">1000</text>
-  <text x="720" y="405" text-anchor="middle" style="font-size:11px;fill:#656d76">1200</text>
+  <text x="120" y="405" text-anchor="middle" style="font-size:11px;fill:currentColor;opacity:0.6">0</text>
+  <text x="220" y="405" text-anchor="middle" style="font-size:11px;fill:currentColor;opacity:0.6">200</text>
+  <text x="320" y="405" text-anchor="middle" style="font-size:11px;fill:currentColor;opacity:0.6">400</text>
+  <text x="420" y="405" text-anchor="middle" style="font-size:11px;fill:currentColor;opacity:0.6">600</text>
+  <text x="520" y="405" text-anchor="middle" style="font-size:11px;fill:currentColor;opacity:0.6">800</text>
+  <text x="620" y="405" text-anchor="middle" style="font-size:11px;fill:currentColor;opacity:0.6">1000</text>
+  <text x="720" y="405" text-anchor="middle" style="font-size:11px;fill:currentColor;opacity:0.6">1200</text>
 
   <!-- 4KB group -->
-  <text x="60" y="72" text-anchor="middle" style="font-size:13px;font-weight:600;fill:#24292f">4KB</text>
+  <text x="60" y="72" text-anchor="middle" style="font-size:13px;font-weight:600;fill:currentColor">4KB</text>
 
-  <text x="115" y="96" text-anchor="end" style="font-size:13px;fill:#24292f">AbixIO</text>
+  <text x="115" y="96" text-anchor="end" style="font-size:13px;fill:currentColor">AbixIO</text>
   <rect x="120" y="82" width="4" height="24" rx="2" fill="#2563eb"/>
-  <text x="130" y="99" style="font-size:13px;font-weight:600;fill:#24292f">0.1 MB/s</text>
+  <text x="130" y="99" style="font-size:13px;font-weight:600;fill:currentColor">0.1 MB/s</text>
 
-  <text x="115" y="126" text-anchor="end" style="font-size:13px;fill:#24292f">RustFS</text>
+  <text x="115" y="126" text-anchor="end" style="font-size:13px;fill:currentColor">RustFS</text>
   <rect x="120" y="112" width="4" height="24" rx="2" fill="#d97706"/>
-  <text x="130" y="129" style="font-size:13px;font-weight:600;fill:#24292f">0.1 MB/s</text>
+  <text x="130" y="129" style="font-size:13px;font-weight:600;fill:currentColor">0.1 MB/s</text>
 
-  <text x="115" y="156" text-anchor="end" style="font-size:13px;fill:#24292f">MinIO</text>
+  <text x="115" y="156" text-anchor="end" style="font-size:13px;fill:currentColor">MinIO</text>
   <rect x="120" y="142" width="4" height="24" rx="2" fill="#059669"/>
-  <text x="130" y="159" style="font-size:13px;font-weight:600;fill:#24292f">0.1 MB/s</text>
+  <text x="130" y="159" style="font-size:13px;font-weight:600;fill:currentColor">0.1 MB/s</text>
 
   <!-- 10MB group (0.5px per MB/s) -->
-  <text x="60" y="200" text-anchor="middle" style="font-size:13px;font-weight:600;fill:#24292f">10MB</text>
+  <text x="60" y="200" text-anchor="middle" style="font-size:13px;font-weight:600;fill:currentColor">10MB</text>
 
-  <text x="115" y="224" text-anchor="end" style="font-size:13px;fill:#24292f">AbixIO</text>
+  <text x="115" y="224" text-anchor="end" style="font-size:13px;fill:currentColor">AbixIO</text>
   <rect x="120" y="210" width="58" height="24" rx="3" fill="#2563eb"/>
-  <text x="184" y="227" style="font-size:13px;font-weight:600;fill:#24292f">116 MB/s</text>
+  <text x="184" y="227" style="font-size:13px;font-weight:600;fill:currentColor">116 MB/s</text>
 
-  <text x="115" y="254" text-anchor="end" style="font-size:13px;fill:#24292f">RustFS</text>
+  <text x="115" y="254" text-anchor="end" style="font-size:13px;fill:currentColor">RustFS</text>
   <rect x="120" y="240" width="59" height="24" rx="3" fill="#d97706"/>
-  <text x="185" y="257" style="font-size:13px;font-weight:600;fill:#24292f">117 MB/s</text>
+  <text x="185" y="257" style="font-size:13px;font-weight:600;fill:currentColor">117 MB/s</text>
 
-  <text x="115" y="284" text-anchor="end" style="font-size:13px;fill:#24292f">MinIO</text>
+  <text x="115" y="284" text-anchor="end" style="font-size:13px;fill:currentColor">MinIO</text>
   <rect x="120" y="270" width="65" height="24" rx="3" fill="#059669"/>
-  <text x="191" y="287" style="font-size:13px;font-weight:600;fill:#24292f">131 MB/s</text>
+  <text x="191" y="287" style="font-size:13px;font-weight:600;fill:currentColor">131 MB/s</text>
 
   <!-- 1GB group -->
-  <text x="60" y="328" text-anchor="middle" style="font-size:13px;font-weight:600;fill:#24292f">1GB</text>
+  <text x="60" y="328" text-anchor="middle" style="font-size:13px;font-weight:600;fill:currentColor">1GB</text>
 
-  <text x="115" y="352" text-anchor="end" style="font-size:13px;fill:#24292f">AbixIO</text>
+  <text x="115" y="352" text-anchor="end" style="font-size:13px;fill:currentColor">AbixIO</text>
   <rect x="120" y="338" width="183" height="24" rx="3" fill="#2563eb"/>
-  <text x="309" y="355" style="font-size:13px;font-weight:600;fill:#24292f">366 MB/s</text>
+  <text x="309" y="355" style="font-size:13px;font-weight:600;fill:currentColor">366 MB/s</text>
 
-  <text x="115" y="382" text-anchor="end" style="font-size:13px;fill:#24292f">RustFS</text>
+  <text x="115" y="382" text-anchor="end" style="font-size:13px;fill:currentColor">RustFS</text>
   <rect x="120" y="368" width="391" height="24" rx="3" fill="#d97706"/>
-  <text x="517" y="385" style="font-size:13px;font-weight:600;fill:#24292f">783 MB/s</text>
+  <text x="517" y="385" style="font-size:13px;font-weight:600;fill:currentColor">783 MB/s</text>
 
-  <text x="115" y="412" text-anchor="end" style="font-size:13px;fill:#24292f">MinIO</text>
+  <text x="115" y="412" text-anchor="end" style="font-size:13px;fill:currentColor">MinIO</text>
   <rect x="120" y="398" width="529" height="24" rx="3" fill="#059669"/>
-  <text x="655" y="415" style="font-size:13px;font-weight:600;fill:#24292f">1057 MB/s</text>
+  <text x="655" y="415" style="font-size:13px;font-weight:600;fill:currentColor">1057 MB/s</text>
 
   <!-- legend -->
   <rect x="255" y="430" width="12" height="12" rx="2" fill="#2563eb"/>
-  <text x="271" y="441" style="font-size:12px;fill:#24292f">AbixIO</text>
+  <text x="271" y="441" style="font-size:12px;fill:currentColor">AbixIO</text>
   <rect x="335" y="430" width="12" height="12" rx="2" fill="#d97706"/>
-  <text x="351" y="441" style="font-size:12px;fill:#24292f">RustFS</text>
+  <text x="351" y="441" style="font-size:12px;fill:currentColor">RustFS</text>
   <rect x="415" y="430" width="12" height="12" rx="2" fill="#059669"/>
-  <text x="431" y="441" style="font-size:12px;fill:#24292f">MinIO</text>
+  <text x="431" y="441" style="font-size:12px;fill:currentColor">MinIO</text>
 </svg>
