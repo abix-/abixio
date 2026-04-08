@@ -356,6 +356,7 @@ impl S3 for AbixioS3 {
             })),
         };
 
+        let content_length = input.content_length.map(|cl| cl as usize);
         let info = self
             .store
             .put_object_stream(
@@ -364,6 +365,7 @@ impl S3 for AbixioS3 {
                 stream,
                 opts,
                 version_id.as_deref(),
+                content_length,
             )
             .await
             .map_err(map_err)?;

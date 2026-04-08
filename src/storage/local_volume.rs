@@ -35,19 +35,17 @@ impl LocalVolume {
         let volume_id = crate::storage::volume::read_volume_format(root)
             .map(|f| f.volume_id)
             .unwrap_or_default();
-        // log-structured store for small objects
-        // enabled when .abixio.sys/log directory exists (opt-in per volume)
+        // log-structured store for small objects (always enabled)
         let log_dir = root.join(".abixio.sys").join("log");
-        let log_store = if log_dir.is_dir() {
-            match super::log_store::LogStore::open(&log_dir, super::segment::DEFAULT_SEGMENT_SIZE) {
-                Ok(ls) => Some(std::sync::Mutex::new(ls)),
-                Err(e) => {
-                    tracing::warn!("log store init failed: {}", e);
-                    None
-                }
+        let log_store = match super::log_store::LogStore::open(
+            &log_dir,
+            super::segment::DEFAULT_SEGMENT_SIZE,
+        ) {
+            Ok(ls) => Some(std::sync::Mutex::new(ls)),
+            Err(e) => {
+                tracing::warn!("log store init failed (falling back to file tier): {}", e);
+                None
             }
-        } else {
-            None
         };
         Ok(Self {
             root: root.to_path_buf(),
@@ -128,9 +126,9 @@ impl LocalVolume {
             .map_or(false, |log| log.contains(bucket, key))
     }
 
-    /// Whether the log store is available and the object size is below threshold.
-    pub fn should_use_log(&self, data_len: usize) -> bool {
-        self.log_store.is_some() && data_len <= LOG_THRESHOLD
+    /// Whether the log store is available and the original object size is below threshold.
+    pub fn should_use_log(&self, original_object_size: u64) -> bool {
+        self.log_store.is_some() && (original_object_size as usize) <= LOG_THRESHOLD
     }
 
     async fn walk_keys(
@@ -306,7 +304,9 @@ impl Backend for LocalVolume {
         pathing::validate_object_key(key)?;
 
         // small objects: log-structured path (one append instead of mkdir + 2 file creates)
-        if self.should_use_log(data.len()) {
+        // skip for versioned objects (log store doesn't support version chains yet)
+        let is_versioned = !meta.version_id.is_empty();
+        if !is_versioned && self.should_use_log(meta.size) {
             self.write_shard_to_log(bucket, key, data, meta)?;
             return Ok(());
         }

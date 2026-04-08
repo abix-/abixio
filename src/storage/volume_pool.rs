@@ -172,13 +172,17 @@ impl VolumePool {
     /// Streaming PUT: reads body chunks, computes MD5 inline, encodes and writes
     /// shard data block-by-block. Use this for HTTP request bodies to avoid
     /// buffering the entire object before processing.
+    /// Log store threshold: objects <= this size use log-structured path.
+    const LOG_THRESHOLD: usize = 64 * 1024;
+
     pub async fn put_object_stream<S>(
         &self,
         bucket: &str,
         key: &str,
-        body: S,
+        mut body: S,
         opts: PutOptions,
         version_id: Option<&str>,
+        content_length: Option<usize>,
     ) -> Result<ObjectInfo, StorageError>
     where
         S: futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin,
@@ -191,6 +195,26 @@ impl VolumePool {
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
+
+        // small object fast path: collect body, route through put_object
+        // which calls write_shard on each disk -> log store for small objects
+        // skip for versioned objects (log store doesn't support version chains)
+        let is_versioned = version_id.is_some();
+        if !is_versioned {
+            if let Some(len) = content_length {
+                if len <= Self::LOG_THRESHOLD {
+                    use futures::StreamExt;
+                    let mut data = Vec::with_capacity(len);
+                    while let Some(chunk) = body.next().await {
+                        let chunk = chunk.map_err(StorageError::Io)?;
+                        data.extend_from_slice(&chunk);
+                    }
+                    return self.put_object(bucket, key, &data, opts).await;
+                }
+            }
+        }
+
+        // large object or versioned: streaming encode path (existing)
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
         let planner = self.placement_planner()?;
         encode_and_write(

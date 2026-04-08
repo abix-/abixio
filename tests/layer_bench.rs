@@ -181,7 +181,7 @@ async fn bench_layer_2_storage() {
                 .collect();
             let stream = futures::stream::iter(chunks);
             let t = Instant::now();
-            pool.put_object_stream("bench", &format!("s/{i}"), stream, opts(), None).await.unwrap();
+            pool.put_object_stream("bench", &format!("s/{i}"), stream, opts(), None, None).await.unwrap();
             timings.push(t.elapsed());
         }
         run_n(&format!("VolumePool::put_object_stream ({disks} disk)"), size, iters, &mut timings);
@@ -629,7 +629,7 @@ async fn bench_perf() {
                         .collect();
                     let stream = futures::stream::iter(chunks);
                     let t = Instant::now();
-                    pool.put_object_stream("bench", &format!("s/{}/{}", label, i), stream, opts(), None).await.unwrap();
+                    pool.put_object_stream("bench", &format!("s/{}/{}", label, i), stream, opts(), None, None).await.unwrap();
                     timings.push(t.elapsed());
                 }
                 let r = measure("L4", "put_stream", disk_count, size, iters, &mut timings);

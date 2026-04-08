@@ -563,7 +563,7 @@ async fn admin_heal_missing_shards_repairs() {
     client.put(url(&addr, "/testbucket")).send().await.unwrap();
     client
         .put(url(&addr, "/testbucket/fixme.txt"))
-        .body("repair this")
+        .body("x".repeat(100_000)) // >64KB to bypass log store (heal worker doesn't read from log yet)
         .send()
         .await
         .unwrap();
@@ -608,7 +608,7 @@ async fn admin_heal_missing_shards_repairs() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 200);
-    assert_eq!(resp.text().await.unwrap(), "repair this");
+    assert_eq!(resp.text().await.unwrap(), "x".repeat(100_000));
 
     // trigger heal
     let heal_resp: serde_json::Value = client
