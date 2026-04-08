@@ -416,7 +416,7 @@ buffers. Parity buffers also pre-allocated. Both reused across all 1024 blocks.
 | 1+0 GET | 0 (mmap -> Bytes slices) | 0 | already done |
 | EC GET (healthy) | ~5400 | ~256 (one per 4MB send) | 95% | **done** -- 919->1236 MB/s |
 | EC GET (degraded) | ~5400 | ~5400 (reconstruct needs Vecs) | 0% (correctness path) | by design |
-| PUT | ~4096 | ~1 (initial alloc, reused) | 99% | planned |
+| PUT | ~4096 | ~1 (initial alloc, reused) | 99% | **done** -- no throughput change (alloc not the bottleneck) but eliminates fragmentation |
 
 ## Future optimization candidates
 
