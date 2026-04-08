@@ -312,15 +312,25 @@ impl Backend for LocalVolume {
             return Ok(());
         }
 
-        // large objects: file path (existing)
+        // file path
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
         tokio::fs::create_dir_all(&obj_dir).await?;
 
-        tokio::fs::write(pathing::object_shard_path(&self.root, bucket, key)?, data).await?;
-
-        // update meta.json: single version entry (unversioned = overwrite)
         let mut version = meta.clone();
         version.is_latest = true;
+
+        // small objects: inline shard data in meta.json (one file instead of two)
+        if !is_versioned && (meta.size as usize) <= LOG_THRESHOLD {
+            use base64::Engine;
+            version.inline_data = Some(
+                base64::engine::general_purpose::STANDARD.encode(data)
+            );
+            // no shard.dat -- data is in meta.json
+        } else {
+            // large objects: separate shard.dat
+            tokio::fs::write(pathing::object_shard_path(&self.root, bucket, key)?, data).await?;
+        }
+
         let mf = ObjectMetaFile {
             versions: vec![version],
         };
@@ -351,7 +361,18 @@ impl Backend for LocalVolume {
             .find(|v| !v.is_delete_marker)
             .ok_or(StorageError::ObjectNotFound)?;
 
-        // determine shard path: unversioned = key/shard.dat, versioned = key/<uuid>/shard.dat
+        // check for inline data first (small objects have shard data in meta.json)
+        if let Some(ref inline_b64) = version.inline_data {
+            use base64::Engine;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(inline_b64)
+                .map_err(|e| StorageError::Internal(format!("inline base64 decode: {}", e)))?;
+            let mut meta = version.clone();
+            meta.inline_data = None; // don't expose internal detail to callers
+            return Ok((data, meta));
+        }
+
+        // large objects: read from shard.dat
         let shard_path = if version.version_id.is_empty() {
             pathing::object_shard_path(&self.root, bucket, key)?
         } else {
@@ -378,6 +399,18 @@ impl Backend for LocalVolume {
             .iter()
             .find(|v| !v.is_delete_marker)
             .ok_or(StorageError::ObjectNotFound)?;
+
+        // inline data: return cursor over decoded bytes
+        if let Some(ref inline_b64) = version.inline_data {
+            use base64::Engine;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(inline_b64)
+                .map_err(|e| StorageError::Internal(format!("inline base64: {}", e)))?;
+            let mut meta = version.clone();
+            meta.inline_data = None;
+            return Ok((Box::pin(std::io::Cursor::new(data)), meta));
+        }
+
         let shard_path = if version.version_id.is_empty() {
             pathing::object_shard_path(&self.root, bucket, key)?
         } else {
@@ -409,13 +442,24 @@ impl Backend for LocalVolume {
             .iter()
             .find(|v| !v.is_delete_marker)
             .ok_or(StorageError::ObjectNotFound)?;
+
+        // inline data: return from meta.json (no shard.dat)
+        if let Some(ref inline_b64) = version.inline_data {
+            use base64::Engine;
+            let data = base64::engine::general_purpose::STANDARD
+                .decode(inline_b64)
+                .map_err(|e| StorageError::Internal(format!("inline base64: {}", e)))?;
+            let mut meta = version.clone();
+            meta.inline_data = None;
+            return Ok((MmapOrVec::Vec(data), meta));
+        }
+
         let shard_path = if version.version_id.is_empty() {
             pathing::object_shard_path(&self.root, bucket, key)?
         } else {
             pathing::version_shard_path(&self.root, bucket, key, &version.version_id)?
         };
         let file = std::fs::File::open(&shard_path).map_err(|_| StorageError::ObjectNotFound)?;
-        // SAFETY: file is opened read-only, not modified while mapped
         let mmap = unsafe { memmap2::Mmap::map(&file) }
             .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
         Ok((MmapOrVec::Mmap(mmap), version.clone()))
@@ -542,11 +586,13 @@ impl Backend for LocalVolume {
         }
         let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await
             .map_err(|_| StorageError::ObjectNotFound)?;
-        mf.versions
+        let mut meta = mf.versions
             .iter()
             .find(|v| !v.is_delete_marker)
             .cloned()
-            .ok_or(StorageError::ObjectNotFound)
+            .ok_or(StorageError::ObjectNotFound)?;
+        meta.inline_data = None; // don't expose internal detail
+        Ok(meta)
     }
 
     async fn update_meta(&self, bucket: &str, key: &str, meta: &ObjectMeta) -> Result<(), StorageError> {
@@ -776,6 +822,7 @@ mod tests {
             is_latest: true,
             is_delete_marker: false,
             parts: Vec::new(),
+                inline_data: None,
         }
     }
 
@@ -959,6 +1006,7 @@ mod tests {
             is_latest: true,
             is_delete_marker: false,
             parts: Vec::new(),
+                inline_data: None,
         };
 
         // write via log store (small object)
@@ -1007,6 +1055,7 @@ mod tests {
             is_latest: true,
             is_delete_marker: false,
             parts: Vec::new(),
+                inline_data: None,
         };
 
         let big_data = vec![0x42u8; 100_000]; // 100KB > 64KB threshold
@@ -1042,6 +1091,7 @@ mod tests {
             is_latest: true,
             is_delete_marker: false,
             parts: Vec::new(),
+                inline_data: None,
         };
 
         disk.write_shard("test", "a.txt", b"aaaaa", &meta).await.unwrap();

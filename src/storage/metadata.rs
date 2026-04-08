@@ -35,6 +35,10 @@ pub struct ObjectMeta {
     pub is_delete_marker: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<PartEntry>,
+    /// Inline shard data for small objects (base64 encoded).
+    /// When present, shard.dat does not exist -- data is in meta.json.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inline_data: Option<String>,
 }
 
 /// Per-part metadata for multipart objects. Each part has its own
@@ -208,6 +212,7 @@ mod tests {
             is_latest: true,
             is_delete_marker: false,
             parts: Vec::new(),
+                inline_data: None,
         }
     }
 

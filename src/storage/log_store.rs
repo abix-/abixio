@@ -299,6 +299,7 @@ mod tests {
             is_latest: true,
             is_delete_marker: false,
             parts: Vec::new(),
+                inline_data: None,
         }
     }
 

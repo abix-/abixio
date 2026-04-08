@@ -319,6 +319,7 @@ pub async fn complete_upload(
         is_latest: true,
         is_delete_marker: false,
         parts: parts.clone(),
+        inline_data: None,
     };
 
     // write meta.json to each disk

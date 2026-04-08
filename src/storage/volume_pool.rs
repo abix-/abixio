@@ -258,6 +258,7 @@ impl VolumePool {
                             is_latest: true,
                             is_delete_marker: false,
                             parts: Vec::new(),
+                inline_data: None,
                         };
                         if self.disks[disk_idx].write_shard(bucket, key, &shards[shard_idx], &meta).await.is_ok() {
                             successes += 1;
@@ -790,6 +791,7 @@ impl Store for VolumePool {
             is_latest: true,
             is_delete_marker: true,
             parts: Vec::new(),
+                inline_data: None,
         };
 
         // add delete marker to meta versions on each disk
@@ -1613,6 +1615,7 @@ mod tests {
             is_latest: true,
             is_delete_marker: false,
             parts: Vec::new(),
+                inline_data: None,
         };
         let t = std::time::Instant::now();
         set.disks[0].write_shard("bench", "timing_test", &shards[0], &meta).await.unwrap();
