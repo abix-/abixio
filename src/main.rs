@@ -116,6 +116,9 @@ async fn main() {
         }
     };
 
+    // enable RAM write cache (256MB, PernixData FVP style)
+    set.enable_write_cache(256 * 1024 * 1024);
+
     // set up healing infrastructure
     let mrf = Arc::new(MrfQueue::new(1000));
     let scan_state = Arc::new(ScanState::new(cfg.heal_interval_duration()));
