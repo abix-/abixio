@@ -105,21 +105,15 @@ impl LocalVolume {
         let Some(ref log_mutex) = self.log_store else {
             return Ok(None);
         };
-        let mut log = log_mutex.lock().map_err(|e| {
+        let log = log_mutex.lock().map_err(|e| {
             StorageError::Internal(format!("log store lock: {}", e))
         })?;
-        if !log.contains(bucket, key) {
-            return Ok(None);
-        }
-        // seal active segment so recently-written data is mmap-readable
-        log.seal_active_for_reads()?;
         let Some(loc) = log.get(bucket, key) else {
             return Ok(None);
         };
         let loc = *loc;
-        let data = log.read_data(&loc)
-            .ok_or(StorageError::ObjectNotFound)?
-            .to_vec();
+        let data = log.read_data_vec(&loc)
+            .ok_or(StorageError::ObjectNotFound)?;
         let meta = log.read_meta(&loc)?;
         Ok(Some((data, meta)))
     }
@@ -532,13 +526,10 @@ impl Backend for LocalVolume {
     async fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
         // check log store first
         if let Some(ref log_mutex) = self.log_store {
-            if let Ok(mut log) = log_mutex.lock() {
-                if log.contains(bucket, key) {
-                    log.seal_active_for_reads()?;
-                    if let Some(loc) = log.get(bucket, key) {
-                        if let Ok(meta) = log.read_meta(loc) {
-                            return Ok(meta);
-                        }
+            if let Ok(log) = log_mutex.lock() {
+                if let Some(loc) = log.get(bucket, key) {
+                    if let Ok(meta) = log.read_meta(loc) {
+                        return Ok(meta);
                     }
                 }
             }

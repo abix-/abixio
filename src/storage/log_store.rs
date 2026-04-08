@@ -192,30 +192,42 @@ impl LogStore {
         self.index.contains_key(&idx_key)
     }
 
-    /// Read shard data for a needle from the appropriate segment (zero-copy slice).
-    pub fn read_data(&self, loc: &NeedleLocation) -> Option<&[u8]> {
-        self.find_segment(loc.segment_id)
-            .and_then(|seg| seg.slice(loc.data_offset as usize, loc.data_len as usize))
+    /// Read shard data for a needle. Sealed segments use mmap (zero-copy),
+    /// active segment uses pread (copies data, no seal needed).
+    pub fn read_data_vec(&self, loc: &NeedleLocation) -> Option<Vec<u8>> {
+        // check sealed segments (mmap, zero-copy)
+        if let Some(seg) = self.sealed.iter().find(|s| s.id() == loc.segment_id) {
+            return seg.slice(loc.data_offset as usize, loc.data_len as usize)
+                .map(|s| s.to_vec());
+        }
+        // check active segment (pread, no seal)
+        if let Some(ref active) = self.active {
+            if active.id() == loc.segment_id {
+                return active.read_at(loc.data_offset as usize, loc.data_len as usize).ok();
+            }
+        }
+        None
     }
 
-    /// Read metadata bytes for a needle from the appropriate segment.
-    pub fn read_meta_bytes(&self, loc: &NeedleLocation) -> Option<&[u8]> {
-        self.find_segment(loc.segment_id)
-            .and_then(|seg| seg.slice(loc.meta_offset as usize, loc.meta_len as usize))
+    /// Read metadata bytes for a needle.
+    pub fn read_meta_vec(&self, loc: &NeedleLocation) -> Option<Vec<u8>> {
+        if let Some(seg) = self.sealed.iter().find(|s| s.id() == loc.segment_id) {
+            return seg.slice(loc.meta_offset as usize, loc.meta_len as usize)
+                .map(|s| s.to_vec());
+        }
+        if let Some(ref active) = self.active {
+            if active.id() == loc.segment_id {
+                return active.read_at(loc.meta_offset as usize, loc.meta_len as usize).ok();
+            }
+        }
+        None
     }
 
     /// Read and decode ObjectMeta for a needle.
     pub fn read_meta(&self, loc: &NeedleLocation) -> Result<ObjectMeta, StorageError> {
-        let meta_bytes = self.read_meta_bytes(loc)
+        let meta_bytes = self.read_meta_vec(loc)
             .ok_or(StorageError::ObjectNotFound)?;
-        Needle::decode_meta(meta_bytes)
-    }
-
-    /// Find a sealed segment by ID.
-    fn find_segment(&self, segment_id: u32) -> Option<&SealedSegment> {
-        // check if it's the active segment (need to seal first for mmap reads)
-        // for now, only sealed segments support mmap reads
-        self.sealed.iter().find(|s| s.id() == segment_id)
+        Needle::decode_meta(&meta_bytes)
     }
 
     /// List all keys in the index for a given bucket (for LIST operations).
@@ -299,14 +311,12 @@ mod tests {
         let loc = store.append(&needle).unwrap();
         store.fsync().unwrap();
 
-        // seal so we can mmap-read
-        store.seal_active_for_reads().unwrap();
-
+        // reads work from active segment (no seal needed)
         assert!(store.contains("mybucket", "hello.txt"));
         let got_loc = store.get("mybucket", "hello.txt").unwrap();
         assert_eq!(got_loc.segment_id, loc.segment_id);
 
-        let data = store.read_data(got_loc).unwrap();
+        let data = store.read_data_vec(got_loc).unwrap();
         assert_eq!(data, b"hello world");
 
         let meta = store.read_meta(got_loc).unwrap();
@@ -337,10 +347,9 @@ mod tests {
 
         let n2 = Needle::new("b", "k", &test_meta(), b"version2").unwrap();
         store.append(&n2).unwrap();
-        store.seal_active_for_reads().unwrap();
 
         let loc = store.get("b", "k").unwrap();
-        let data = store.read_data(loc).unwrap();
+        let data = store.read_data_vec(loc).unwrap();
         assert_eq!(data, b"version2");
     }
 
@@ -375,8 +384,6 @@ mod tests {
             }
             store.delete("b", "k2").unwrap();
             store.fsync().unwrap();
-            // seal so data is in a sealed segment
-            store.seal_active_for_reads().unwrap();
         }
         // store dropped -- simulate crash
 

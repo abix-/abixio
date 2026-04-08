@@ -126,6 +126,19 @@ impl ActiveSegment {
         Ok(Some(location))
     }
 
+    /// Read bytes from the active segment at an offset. No mmap, no seal.
+    /// Uses a separate read handle to avoid disturbing the write cursor.
+    pub fn read_at(&self, offset: usize, len: usize) -> Result<Vec<u8>, StorageError> {
+        if offset + len > self.write_offset {
+            return Err(StorageError::Internal("read beyond write offset".into()));
+        }
+        let mut reader = std::fs::File::open(&self.path)?;
+        reader.seek(SeekFrom::Start(offset as u64))?;
+        let mut buf = vec![0u8; len];
+        std::io::Read::read_exact(&mut reader, &mut buf)?;
+        Ok(buf)
+    }
+
     /// Fsync the segment file to disk.
     pub fn fsync(&self) -> Result<(), StorageError> {
         self.file.sync_all()?;
