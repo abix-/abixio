@@ -91,7 +91,8 @@ impl LocalVolume {
             StorageError::Internal(format!("log store lock: {}", e))
         })?;
         let loc = log.append(&needle)?;
-        log.fsync()?;
+        // no fsync: trust OS page cache (same as MinIO/RustFS).
+        // mmap reads see the write immediately via shared page cache.
         Ok(Some(loc))
     }
 
