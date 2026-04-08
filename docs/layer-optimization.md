@@ -371,52 +371,95 @@ GET path is already zero-alloc (mmap -> Bytes::from_owner -> slice). The EC
 GET and PUT paths still allocate heavily. This section inventories every
 allocation, rates its impact, and identifies the fix.
 
-### EC GET hot path (`src/storage/erasure_decode.rs` read_and_decode_stream)
+### Every allocation in the data path
 
-Per 1GB object with 4-disk 3+1 EC (1024 encode blocks, 256 decode iterations):
+Complete inventory of every heap allocation per request. "Per 1GB" counts
+assume 3+1 EC with 1024 encode blocks and 256 decode iterations (4MB each).
 
-| Location | What | Count per 1GB | Impact | Fix |
-|----------|------|---------------|--------|-----|
-| line 158 | `Vec::with_capacity(iter_size)` -- 4MB output buffer | 256 | **high** | pre-alloc once, `clear()` + reuse. `Bytes::from(take(&mut buf))` per send |
-| line 166 | `vec![None; total]` -- shard slot array | 1024 | medium | pre-alloc once outside loop, reuse |
-| line 171 | `mmap[..].to_vec()` -- **copies mmap data into Vec per shard per block** | 1024 x 4 = 4096 | **critical** | fast path: when all data shards present, slice directly from mmap into output, skip Vec entirely. slow path: only alloc Vec when RS reconstruct needed |
-| line 191 | `Vec::with_capacity(block_size)` -- per-block reassembly buffer | 1024 | **high** | eliminate: write directly into iter_data in the fast path |
+#### 1+0 GET (`volume_pool.rs:get_object_stream` mmap fast path)
 
-**Total per 1GB**: ~5400 allocations. The mmap->Vec copy at line 171 is
-the single biggest offender -- it copies every byte of every shard even
-though we already have the data memory-mapped.
+| # | File:line | What | Count | Heap? |
+|---|-----------|------|-------|-------|
+| 1 | volume_pool.rs:307 | `Bytes::from_owner(mmap)` | 1 | ref-counted wrapper, no data copy |
+| 2 | volume_pool.rs:310 | `owned.slice(offset..end)` 4MB sub-slices | 256/GB | no -- ref-counted view into mmap |
+| 3 | s3_service.rs:419 | `StreamingBlob::wrap(SyncStream(..))` | 1 | one Box for stream trait object |
+| 4 | s3_service.rs:424-435 | `info.content_type.clone()` etc | ~5 | small strings, once per request |
 
-**Fast path** (all shards healthy, common case): zero Vec allocations.
-Read data shards directly from mmap slices into the output buffer.
+**Data-path allocs: 0.** All 256 chunk yields are zero-copy slices.
 
-**Slow path** (missing shards, needs RS reconstruct): allocate Vecs for
-shard slots, call `rs.reconstruct()`, then copy to output. This is rare
-and correctness matters more than speed.
+#### EC GET healthy (`erasure_decode.rs:read_and_decode_stream` fast path)
 
-### PUT hot path (`src/storage/erasure_encode.rs` encode_and_write)
+| # | File:line | What | Count | Heap? |
+|---|-----------|------|-------|-------|
+| 1 | :112 | `mmap_slots: Vec<Option<MmapOrVec>>` | 1 | once at start (N slots) |
+| 2 | :135 | `meta_clone = good_meta.clone()` | 1 | strings in ObjectMeta |
+| 3 | :137 | `mpsc::channel(4)` | 1 | channel internal buffers |
+| 4 | :146 | `ReedSolomon::new()` | 1 | RS lookup tables |
+| 5 | :158 | `Vec::with_capacity(iter_size)` -- **4MB output buffer** | **256/GB** | **yes -- new Vec per channel send** |
+| 6 | :174-177 | `extend_from_slice(&mmap[..])` into iter_data | 256 x data_n | copy from mmap (inherent for EC reassembly) but no alloc (writes into #5) |
+| 7 | :218 | `Bytes::from(iter_data)` | 256/GB | takes ownership of #5, no copy |
 
-Per 1GB object with 3+1 EC (1024 blocks):
+**Data-path allocs: 256 per 1GB.** One 4MB Vec per channel send (#5).
+`Bytes::from()` takes ownership so the Vec can't be reused. This is the
+minimum for mpsc channel transport. Eliminating requires replacing the
+channel with a duplex pipe or inline poll-based stream.
 
-| Location | What | Count per 1GB | Impact | Fix |
-|----------|------|---------------|--------|-----|
-| line 126 | `Vec::with_capacity(STREAM_BLOCK_SIZE * 2)` block_buf | 1 | none | already reused across blocks |
-| line 34-41 | `split_data()` -- creates `data_n` new Vecs per block | 1024 x 3 = 3072 | **critical** | `split_data_into()`: pre-alloc shard buffers, write into them, reuse |
-| line 283-285 | parity Vec allocation per block | 1024 x 1 = 1024 | **high** | pre-alloc parity buffers, zero and reuse |
-| line 290-292 | `shard_hashers[i].update()` + `writers[i].write_chunk()` | per shard per block | none | no allocation (update is in-place, write is I/O) |
+#### EC GET degraded (slow path, missing shards)
 
-**Total per 1GB**: ~4096 allocations from split_data + parity buffers.
+| # | File:line | What | Count | Heap? |
+|---|-----------|------|-------|-------|
+| 1-7 | | same as healthy | same | same |
+| 8 | :183 | `vec![None; total]` shard slot array | per degraded block | yes |
+| 9 | :188 | `mmap[..].to_vec()` per available shard | per shard per degraded block | **yes -- full shard copy** |
+| 10 | :200 | `rs.reconstruct()` internal | per degraded block | yes (reconstructs missing shards) |
 
-**Fix**: `split_data_into(data, count, &mut buffers)` writes into pre-allocated
-buffers. Parity buffers also pre-allocated. Both reused across all 1024 blocks.
+**Only when shards are missing.** Correctness path, not optimized.
+
+#### PUT (`erasure_encode.rs:encode_and_write` + `write_block`)
+
+| # | File:line | What | Count | Heap? |
+|---|-----------|------|-------|-------|
+| 1 | :96-98 | `content_type.clone()` or `.to_string()` | 1 | once at start |
+| 2 | :104 | `distribution: Vec<usize>` | 1 | once at start (N shards) |
+| 3 | :109-112 | `volume_ids: Vec<String>` from placement | 1 | once at start |
+| 4 | :118 | `ReedSolomon::new()` | 1 | RS lookup tables |
+| 5 | :131 | `writers: Vec<Box<dyn ShardWriter>>` | 1 | N boxed writers |
+| 6 | :138 | `shard_hashers: Vec<blake3::Hasher>` | 1 | N hashers |
+| 7 | :144-146 | `shard_bufs: Vec<Vec<u8>>` -- **pre-allocated, reused** | 1 | N Vecs with capacity, allocated once |
+| 8 | :149 | `block_buf: Vec::with_capacity(2MB)` | 1 | once, reused across all chunks |
+| 9 | :313 (split_data_into) | `buf.clear()` + `extend_from_slice` + `resize` | 0 | **zero alloc -- reuses #7 capacity** |
+| 10 | :318-320 | parity buf `clear()` + `resize` | 0 | **zero alloc -- reuses #7 capacity** |
+| 11 | :193-195 | `checksums: Vec<String>` from blake3 hex | N shards | finalize path, once |
+| 12 | :206-223 | `ObjectMeta { etag.clone(), .. }` per shard | N shards | finalize path, once per shard |
+| 13 | :255-256 | `MrfEntry { bucket.to_string(), .. }` | 0 or 1 | only on partial write |
+| 14 | :262-263 | `ObjectInfo { bucket.to_string(), .. }` | 1 | return value |
+
+**Data-path allocs per block: 0.** The encode loop (#9, #10) allocates
+nothing -- `split_data_into` and parity zeroing reuse pre-allocated buffers.
+All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).
+
+#### s3_service.rs response/request wrappers
+
+| # | File:line | What | Count | Heap? |
+|---|-----------|------|-------|-------|
+| 1 | :417 | `io::Error::new(..e.to_string())` in stream map | per chunk on error | **error path only** |
+| 2 | :419 | `SyncStream(mapped)` | 1 | stack wrapper, no heap |
+| 3 | :419 | `StreamingBlob::wrap()` -> DynByteStream | 1 | one Box |
+| 4 | :424-435 | `info.etag.clone()` etc | ~5 | small strings |
+| 5 | :352 | PUT body `chunk.map_err(..e.to_string())` | per chunk on error | **error path only** |
+
+**Data-path allocs: 0.** Error conversions only allocate on error.
 
 ### Summary
 
-| Path | Allocations per 1GB (before) | Allocations per 1GB (after) | Reduction |
-|------|-----------------------------|-----------------------------|-----------|
-| 1+0 GET | 0 (mmap -> Bytes slices) | 0 | already done |
-| EC GET (healthy) | ~5400 | ~256 (one per 4MB send) | 95% | **done** -- 919->1236 MB/s |
-| EC GET (degraded) | ~5400 | ~5400 (reconstruct needs Vecs) | 0% (correctness path) | by design |
-| PUT | ~4096 | ~1 (initial alloc, reused) | 99% | **done** -- no throughput change (alloc not the bottleneck) but eliminates fragmentation |
+| Path | Data-path allocs/GB | Remaining alloc | Can eliminate? |
+|------|---------------------|-----------------|----------------|
+| **1+0 GET** | **0** | -- | done |
+| **EC GET (healthy)** | **256** | one 4MB Vec per channel send | yes: replace mpsc with duplex pipe or inline stream |
+| **EC GET (degraded)** | ~5400 | Vec per shard for RS reconstruct | no: RS API requires owned buffers |
+| **PUT (per-block loop)** | **0** | -- | done |
+| **PUT (total request)** | ~10 | setup + finalize allocs | no: inherent (metadata, hashers, writers) |
+| **Response wrapper** | **0** | -- | done |
 
 ## Future optimization candidates
 
