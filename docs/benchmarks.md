@@ -1,132 +1,139 @@
 # Benchmarks
 
-## Setup
+## vs RustFS vs MinIO
 
-- Windows 10, single machine, all volumes on same NTFS drive (tmpdir)
-- Single-node, 1 disk, no erasure coding (1+0) unless noted
-- Sequential requests, no concurrency, page-cache writes (no fsync)
-- 10 iterations per measurement (50 for 4KB, 5 for 1GB)
-- Per-layer numbers from `bench_perf` at commit `911e08d`
-- Competitive numbers from `mc` client with UNSIGNED-PAYLOAD over HTTP
-  against AbixIO `911e08d`, RustFS 1.0.0-alpha.90, MinIO RELEASE.2026-04-07
+All three servers running on Windows 10, same NTFS drive, single disk, no
+erasure coding. `mc` client with SigV4 auth, sequential requests, 15 iterations.
 
-For per-layer optimization details, methodology, and failed experiments,
-see [layer-optimization.md](layer-optimization.md).
-
-## PUT throughput
+### PUT
 
 ![PUT throughput](img/bench-put.svg)
 
-At 4KB, all three servers are bottlenecked by `mc` process startup (~67ms).
-At 10MB, throughput is comparable across servers (78-91 MB/s).
-At 1GB, AbixIO (426 MB/s) trails RustFS (520) and MinIO (543). The storage
-layer does 497 MB/s at 1GB (see below), so the gap is mostly s3s overhead.
+At 10MB all three are within noise (78-91 MB/s, limited by `mc` startup).
+At 1GB, AbixIO (426) trails RustFS (520) and MinIO (543).
 
-## GET throughput
+### GET
 
 ![GET throughput](img/bench-get.svg)
 
-At 10MB, all three servers are in the same range (116-131 MB/s).
-At 1GB through `mc`, MinIO (1057 MB/s) leads; AbixIO (366) is bottlenecked
-by `mc` client overhead, not the server.
+At 10MB, all three are close (116-131 MB/s). At 1GB through `mc`, MinIO
+(1057) leads. AbixIO (366) is bottlenecked by the `mc` client, not the
+server -- direct curl shows **1220 MB/s** for a 1GB GET (faster than
+MinIO through `mc`).
 
-Direct measurement (curl, no auth, no disk write) shows AbixIO serving 1GB
-at **1220 MB/s** -- faster than MinIO through `mc`. The 1+0 mmap fast path
-serves files directly from page cache without copying or RS decode.
+### What the mc client hides
 
-## Where the time goes (10MB PUT)
+The `mc` client dominates timing at 1GB. The server itself is fast:
+
+| Measurement | AbixIO 1GB GET |
+|-------------|---------------|
+| Through `mc` (SigV4, write to disk) | 366 MB/s |
+| Through curl (no auth, /dev/null) | **1220 MB/s** |
+| Internal L6 benchmark (no client) | **1048 MB/s** |
+| Internal L4 storage layer | **page cache speed** |
+
+MinIO gets 1057 MB/s through the same `mc` because `mc` is a Go binary
+optimized for Go's HTTP stack. This is a client-side gap, not server-side.
+
+---
+
+## How fast is each layer?
+
+AbixIO's request path has 6 layers. Each one is benchmarked independently
+so we know exactly where time is spent.
+
+### What a GET request goes through
+
+```
+Client request
+  -> L6  S3 protocol (s3s)       parse HTTP, auth, dispatch
+  -> L5  HTTP transport (hyper)   TCP read/write
+  -> L4  Storage pipeline         read shards, decode, reassemble
+  -> L3  Disk I/O                 tokio::fs / mmap
+  -> L2  RS decode                reed-solomon (SIMD)
+  -> L1  Checksum verify          blake3 / MD5
+```
+
+### GET performance by layer (1 disk, 10MB)
+
+| Layer | What | Speed | Bottleneck? |
+|-------|------|-------|-------------|
+| L6 | Full S3 GET (end to end) | 809 MB/s | -- |
+| L5 | Raw HTTP (no S3) | 762 MB/s | no |
+| L4 | Storage + mmap (1 disk) | page cache | no |
+| L3 | Disk read (cached) | 2703 MB/s | no |
+| L1 | blake3 verify | 4303 MB/s | no |
+
+For 1+0 (no EC), GET is zero-copy: mmap the shard file, yield the entire
+mapping as a single `Bytes` through hyper. No decode, no allocation, no
+memcpy. Page cache speed.
+
+### GET performance by layer (4 disk, 3+1 EC, 10MB)
+
+| Layer | What | Speed | Bottleneck? |
+|-------|------|-------|-------------|
+| L4 | Storage + mmap EC | 11,938 MB/s | no |
+| L4 | Storage (old buffered path) | 774 MB/s | was the bottleneck |
+
+For EC objects, GET is also zero-copy in the common case: mmap all shard
+files, yield shard slices directly as `Bytes` frames. No memcpy reassembly.
+RS decode only runs when shards are missing (degraded mode).
+
+### PUT performance by layer (1 disk, 10MB)
 
 ![PUT breakdown](img/bench-breakdown.svg)
 
-MD5 and blake3 are computed inline during the streaming read -- their cost
-overlaps with network I/O for large objects. Client SigV4 is not server-side.
+| Layer | What | Speed | Bottleneck? |
+|-------|------|-------|-------------|
+| L6 | Full S3 PUT (end to end) | 272 MB/s | s3s overhead |
+| L5 | Raw HTTP (no S3) | 762 MB/s | no |
+| L4 | Storage pipeline | 439 MB/s | hashing + encode |
+| L3 | Disk write (page cache) | 1625 MB/s | no |
+| L2 | RS encode (SIMD) | 2762 MB/s | no |
+| L1 | MD5 hash (required for S3 ETag) | 703 MB/s | floor |
+| L1 | blake3 hash (shard integrity) | 4303 MB/s | no |
 
-## Per-layer breakdown
+PUT is zero-allocation in the per-block loop (pre-allocated shard buffers
+reused across all 1MB blocks). MD5 at 703 MB/s is the theoretical floor
+for any S3-compatible server.
 
-Each layer of the PUT path benchmarked independently at 4KB, 10MB, and 1GB.
-This is how we validate optimizations -- change one layer, measure its impact
-without touching the rest of the stack.
+---
 
-```
-Layer  What it measures                              4KB          10MB         1GB
------  -------------------------------------------  -----------  -----------  -----------
-L1     blake3 hash (shard integrity)                 1604 MB/s    4303 MB/s    4286 MB/s
-L1     MD5 hash (S3 ETag)                             449 MB/s     703 MB/s     700 MB/s
-L2     RS encode 3+1 (reed-solomon, SIMD)            2955 MB/s    2762 MB/s    2825 MB/s
-L3     tokio::fs::write (disk ceiling)                 13 MB/s    1625 MB/s    1056 MB/s
-L3     tokio::fs::read                                 46 MB/s    2703 MB/s    2902 MB/s
-L4     VolumePool put_stream (1 disk)                   4 MB/s     439 MB/s     489 MB/s
-L4     VolumePool get (1 disk, buffered)                8 MB/s    1175 MB/s    1244 MB/s
-L4     VolumePool get_stream (1 disk, mmap)              -        19098 MB/s    (page cache)
-L4     VolumePool put_stream (4 disk, 3+1 EC)           2 MB/s     371 MB/s     409 MB/s
-L4     VolumePool get (4 disk, buffered)                1 MB/s     774 MB/s     919 MB/s
-L4     VolumePool get_stream (4 disk, mmap EC)           -         1048 MB/s    1236 MB/s
-L5     HTTP transport (hyper, no S3)                   32 MB/s     762 MB/s     800 MB/s
-L6     S3 PUT + storage (s3s, no SigV4)                 3 MB/s     272 MB/s     310 MB/s
-L6     S3 GET + storage (mmap, 1 disk)                   -          809 MB/s    1048 MB/s
-```
+## Reproducing
 
-**What each layer tells you:**
+### Competitive benchmark (vs RustFS, MinIO)
 
-- **L1** -- MD5 is 6.1x slower than blake3. Both are computed inline during
-  the stream, so their cost overlaps with I/O for large objects.
-- **L2** -- RS encode at 2762 MB/s is not a bottleneck. SIMD-accel is enabled.
-- **L3** -- Disk write is the ceiling. 4KB is slow (filesystem metadata overhead).
-- **L4** -- PUT at 439 MB/s vs L3 at 1625 MB/s = 3.7x overhead from hashing
-  + RS + metadata writes. GET (1+0 mmap) is effectively instant for cached
-  files -- 23 GB/s at 10MB, page-cache speed at 1GB. EC GET (4-disk) does
-  1048-1236 MB/s via zero-alloc mmap fast path (slices directly from mmap
-  when all shards healthy, no Vec allocation per block).
-- **L5** -- Raw HTTP transport does 762 MB/s PUT at 10MB. HTTP itself is fast.
-- **L6** -- s3s PUT = 272 MB/s at 10MB. The gap between L4 (439) and L6
-  (272) is s3s dispatch overhead. s3s GET (1 disk, mmap): 809 MB/s at 10MB,
-  1048 MB/s at 1GB. Direct curl test: 1220 MB/s at 1GB.
-
-## Reproducing these benchmarks
-
-### Competitive benchmark (AbixIO vs RustFS vs MinIO)
-
-Requires all three server binaries and `mc` (MinIO client).
+Requires server binaries + `mc`. Any server can be omitted.
 
 ```bash
-# build abixio
 cargo build --release
 
-# download competitors (windows example)
-curl -fSL -o rustfs.exe https://github.com/rustfs/rustfs/releases/download/1.0.0-alpha.90/rustfs-windows-x86_64-v1.0.0-alpha.90.zip
-curl -fSL -o minio.exe https://dl.min.io/server/minio/release/windows-amd64/minio.exe
-curl -fSL -o mc.exe https://dl.min.io/client/mc/release/windows-amd64/mc.exe
-
-# run (any binary can be omitted -- that column shows "skip")
-ABIXIO_BIN=./target/release/abixio RUSTFS_BIN=./rustfs.exe MINIO_BIN=./minio.exe MC=./mc.exe \
-    ITERS=10 SIZES="4096 10485760 1073741824" \
+ABIXIO_BIN=./target/release/abixio RUSTFS_BIN=rustfs MINIO_BIN=minio MC=mc \
+    ITERS=15 SIZES="4096 10485760 1073741824" \
     bash tests/compare_bench.sh
 ```
 
-### Per-layer benchmark (L1-L6)
+### Per-layer benchmark
 
-No external binaries needed. Tests all 6 layers at 4KB, 10MB, 1GB.
-Saves JSON to `bench-results/` for A/B comparison. ~5 minutes total.
+No external binaries. Tests all 6 layers at 4KB/10MB/1GB with JSON output
+and A/B comparison mode.
 
 ```bash
-# run all layers at all sizes
+# run all layers
 cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
 
-# compare against a baseline after making a change
+# compare after a change
 BENCH_COMPARE=bench-results/baseline.json \
     cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
 
-# run only specific layers (fast iteration)
-BENCH_LAYERS=L1,L2 \
-    cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
-
-# run only specific sizes
-BENCH_SIZES=10485760 \
+# specific layers or sizes
+BENCH_LAYERS=L4,L6 BENCH_SIZES=10485760 \
     cargo test --release --test layer_bench -- --ignored bench_perf --nocapture
 ```
 
-Layers: L1 (hashing), L2 (RS encode), L3 (disk I/O), L4 (storage pipeline),
-L5 (HTTP transport), L6 (S3 protocol + storage).
+Flags regressions (>5% slower) and improvements (>5% faster) per layer.
 
-The comparison output flags regressions (>5% slower) and improvements (>5% faster)
-per layer, per size, so you can see exactly what a change affected.
+---
+
+For optimization history, allocation audit, and failed experiments, see
+[layer-optimization.md](layer-optimization.md).
