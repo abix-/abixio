@@ -97,6 +97,24 @@ PUT is zero-allocation in the per-block loop (pre-allocated shard buffers
 reused across all 1MB blocks). MD5 at 703 MB/s is the theoretical floor
 for any S3-compatible server.
 
+### Small object performance (4KB)
+
+| | File path (current default) | Log-structured path |
+|--|---------------------------|-------------------|
+| Filesystem ops per 4KB object (4 disks) | 12 (4 mkdirs + 4 shard files + 4 meta files) | **4** (one append per disk) |
+| 4KB PUT bottleneck | NTFS MFT allocation, directory entries | sequential append (fast) |
+| 4KB GET | file open + read per shard | mmap slice from segment (page cache) |
+| Files per 1M small objects | 3M+ | ~16 segment files |
+
+The log-structured path (Datrium DiESL-inspired) writes each shard as a
+needle to an append-only segment file. The needle contains metadata (msgpack,
+~200 bytes) + shard data in one contiguous record with an xxhash64 checksum.
+The in-memory index maps bucket+key to segment:offset for zero-copy mmap
+reads. See [write-log.md](write-log.md) for the full design.
+
+Enabled per volume when `.abixio.sys/log/` directory exists. Objects > 64KB
+bypass the log and use the file path.
+
 ---
 
 ## Reproducing

@@ -2,10 +2,12 @@
 
 ## critical
 
-- [ ] mc client throughput gap -- AbixIO serves 1GB at 1220 MB/s via curl but only 354 MB/s through mc. MinIO gets 970 MB/s through the same mc. profile with mc --debug, diff headers, find the bottleneck. this is not a client problem
-- [ ] unwrap() plague -- 252 calls in src/ (volume_pool.rs: 108, local_volume.rs: 53, cluster/mod.rs: 27, heal/worker.rs: 21). every one is a process crash. commit e9a38aa claimed to fix this, they came back. go through each one: impossible? .expect("reason"). possible? propagate with ?
-- [x] EC GET regression -- fixed. zero-alloc fast path slices directly from mmap when all shards healthy. 4-disk GET: 803->1236 MB/s (+54%), now +35% above pre-mmap baseline (919)
-- [ ] RemoteVolume::bucket_exists() returns false unconditionally -- cluster bucket ops partially broken. this is a shipped bug, not a TODO
+- [ ] log-structured storage: remaining phases -- GC (phase 8), crash recovery integration (phase 7), heal worker log-awareness, LIST merge dedup. MVP (phases 1-5) is working. see docs/write-log.md
+- [ ] mc client throughput gap -- AbixIO serves 1GB at 1220 MB/s via curl but only 354 MB/s through mc. MinIO gets 970 MB/s through the same mc. profile with mc --debug, diff headers, find the bottleneck
+- [ ] unwrap() plague -- 252 calls in src/. every one is a process crash
+- [x] EC GET regression -- fixed. zero-alloc fast path slices directly from mmap. 4-disk GET: 803->1236 MB/s
+- [x] log-structured storage MVP -- needle.rs + segment.rs + log_store.rs. small objects (<= 64KB) append to log segments instead of creating individual files. 4 appends vs 12 fs ops per 4KB object on 4 disks
+- [ ] RemoteVolume::bucket_exists() returns false unconditionally -- cluster bucket ops partially broken
 - [x] streaming body support -- unified encode path via ShardWriter trait, inline MD5+blake3, no full-body buffering
 - [x] s3s GET response buffering -- streaming GET via read_and_decode_stream + get_object_stream + mmap fast path. L6 GET: 365->1048 MB/s (1GB). curl: 1220 MB/s
 - [x] parallel shard writes in streaming path -- tested FuturesUnordered and channel-based tasks, both regressed. sequential is faster on same physical disk

@@ -48,14 +48,16 @@ Same `--nodes` on every node. Identity resolves automatically. You now have 5 vo
 
 | | |
 |---|---|
-| **Tests** | 171 passing (unit + integration) |
+| **Tests** | 320 passing (unit + integration) |
 | **S3 coverage** | 41 of 72 operations ([details](docs/s3-compliance.md)) |
 | **Protocol** | [s3s](https://crates.io/crates/s3s) v0.13 (SigV4, chunked auth, smithy XML) |
+| **GET perf** | 1220 MB/s at 1GB (mmap, zero-copy). Zero-alloc EC decode ([benchmarks](docs/benchmarks.md)) |
+| **Small objects** | Log-structured storage: 4 appends vs 12 fs ops per 4KB PUT ([design](docs/write-log.md)) |
 | **Releases** | None yet |
 
 ### Docs
 
-[Architecture](docs/architecture.md) -- [Storage layout](docs/storage-layout.md) -- [Per-object EC](docs/per-object-ec.md) -- [Cluster](docs/cluster.md) -- [Admin API](docs/admin-api.md) -- [Healing](docs/healing.md) -- [S3 compliance](docs/s3-compliance.md) -- [Comparison](docs/comparison.md)
+[Architecture](docs/architecture.md) -- [Storage layout](docs/storage-layout.md) -- [Per-object EC](docs/per-object-ec.md) -- [Cluster](docs/cluster.md) -- [Admin API](docs/admin-api.md) -- [Healing](docs/healing.md) -- [S3 compliance](docs/s3-compliance.md) -- [Comparison](docs/comparison.md) -- [Benchmarks](docs/benchmarks.md) -- [Layer optimization](docs/layer-optimization.md) -- [Log-structured storage](docs/write-log.md)
 
 ### Related
 

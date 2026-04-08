@@ -56,53 +56,61 @@ cluster-control direction.
     must fail closed. A node that cannot confirm safe cluster state stops
     serving instead of risking stale writes or split-brain.
 
+13. **Log-structured storage for small objects.** Objects <= 64KB are written
+    as needles to append-only log segments (Datrium DiESL-inspired). One
+    sequential append per disk instead of mkdir + shard.dat + meta.json (3 fs
+    ops). The log IS the permanent storage -- no flush, no second format.
+    In-memory index maps bucket+key to segment:offset. GC reclaims dead space.
+    Large objects keep the file-per-object layout. See [write-log.md](write-log.md).
+
 ## Data flow
 
-### PUT path (streaming)
+### PUT path
+
+Two tiers based on object size:
 
 ```
-HTTP request body (chunked)
-  -> s3s parses headers, extracts body as Stream<Bytes>
-  -> AbixioS3::put_object() checks versioning config (cached in memory)
-  -> VolumePool::put_object_stream() opens ShardWriters in parallel
-  -> encode_and_write() reads body in 1MB blocks:
-       for each block:
-         MD5 hasher updates (inline, for ETag)
-         split_data() divides block into data_n shards
-         RS encode adds parity_n shards
-         blake3 hasher updates per shard (inline, for integrity)
-         write_chunk() to each ShardWriter (sequential -- see layer-optimization.md)
-  -> finalize() writes meta.json on each disk
-  -> return ETag to client
+HTTP request body
+  -> s3s parses headers, checks versioning config (cached)
+  -> RS encode body into shards
+
+  object <= 64KB? -> LOG-STRUCTURED PATH
+    -> serialize needle (header + bucket + key + msgpack meta + shard data)
+    -> append needle to active log segment (one sequential write per disk)
+    -> update in-memory index
+    -> fsync + ack
+    Result: 4 appends for 4KB object on 4 disks (vs 12 fs ops before)
+
+  object > 64KB? -> FILE PATH (existing, unchanged)
+    -> open ShardWriters, stream 1MB blocks through RS encode
+    -> write shard.dat + meta.json per disk
+    -> ack
 ```
 
-### GET path (mmap)
+### GET path
 
 ```
 HTTP GET request
   -> s3s dispatches to AbixioS3::get_object()
-  -> non-range, non-versioned: streaming path
-       VolumePool::get_object_stream():
-         1+0 (no EC) fast path:
-           mmap shard file via Backend::mmap_shard()
-           Bytes::from_owner(mmap) -> yield 4MB .slice() chunks
-           zero-copy: no RS decode, no allocation, no spawned task
-         EC (N+M) path:
-           mmap all shard files in parallel via Backend::mmap_shard()
-           spawns background task:
-             for each 4MB decode block:
-               if all data shards healthy (fast path):
-                 slice directly from mmap into output buffer (zero alloc)
-               else (degraded path):
-                 allocate Vecs, RS reconstruct, copy to output
-               send decoded Bytes via mpsc channel
-       -> stream wrapped in SyncStream -> StreamingBlob -> hyper response body
-  -> range/versioned: buffered path (read full object, slice, respond)
+
+  check in-memory log index first:
+    FOUND -> mmap slice from log segment (zero-copy)
+    NOT FOUND -> fall through to file tier:
+
+  file tier (non-range, non-versioned):
+    1+0 (no EC):
+      mmap shard file, Bytes::from_owner(mmap), yield entire file as single Bytes
+      zero-copy: no RS decode, no allocation, no spawned task
+    EC (N+M):
+      mmap all shard files, yield shard slices directly as Bytes frames
+      zero-copy when all shards healthy, RS reconstruct only when degraded
+
+  range/versioned: buffered path (read full object, slice, respond)
 ```
 
-1+0 fast path serves files at 1220 MB/s (1GB via curl). EC path decodes
-at 1048-1236 MB/s (4-disk, zero-alloc when healthy). See [layer-optimization.md](layer-optimization.md)
-for performance numbers and optimization history.
+1+0 fast path: 1220 MB/s (1GB via curl). EC: zero-alloc mmap slices.
+Small objects: log segment mmap. See [layer-optimization.md](layer-optimization.md)
+and [write-log.md](write-log.md) for design details.
 
 ## Cluster
 
@@ -135,6 +143,9 @@ src/
     volume_pool.rs        # VolumePool: volume pool with per-object FTT resolution
     erasure_encode.rs     # unified streaming encode: encode_and_write via ShardWriter trait
     erasure_decode.rs     # read + decode: buffered (read_and_decode) and streaming (read_and_decode_stream)
+    needle.rs             # needle format for log-structured storage (serialize, checksum, msgpack)
+    segment.rs            # log segment files (pre-alloc, append, seal, mmap, scan)
+    log_store.rs          # log-structured store: in-memory index, segment lifecycle, recovery
     volume.rs             # VolumeFormat: read/write .abixio.sys/volume.json
   s3_service.rs           # impl S3 for AbixioS3: streaming GET, versioning cache, thin adapter (s3s)
   s3_auth.rs              # impl S3Auth: SigV4 credential lookup (s3s)
