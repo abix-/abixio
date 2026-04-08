@@ -14,7 +14,7 @@ use super::StorageError;
 const SEGMENT_MAGIC: [u8; 4] = *b"ABXL";
 
 /// Superblock size in bytes.
-const SUPERBLOCK_SIZE: usize = 32;
+pub const SUPERBLOCK_SIZE: usize = 32;
 
 /// Default segment pre-allocation size (64MB).
 pub const DEFAULT_SEGMENT_SIZE: usize = 64 * 1024 * 1024;

@@ -1,6 +1,7 @@
 pub mod bitrot;
 pub mod internode_auth;
 pub mod local_volume;
+pub mod log_store;
 pub mod needle;
 pub mod segment;
 pub mod remote_volume;
