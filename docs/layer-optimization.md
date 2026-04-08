@@ -381,11 +381,12 @@ assume 3+1 EC with 1024 encode blocks and 256 decode iterations (4MB each).
 | # | File:line | What | Count | Heap? |
 |---|-----------|------|-------|-------|
 | 1 | volume_pool.rs:307 | `Bytes::from_owner(mmap)` | 1 | ref-counted wrapper, no data copy |
-| 2 | volume_pool.rs:310 | `owned.slice(offset..end)` 4MB sub-slices | 256/GB | no -- ref-counted view into mmap |
+| 2 | volume_pool.rs:308 | `stream::once(owned)` -- yields entire Bytes | 1 | one yield, one poll_frame, zero slicing |
 | 3 | s3_service.rs:419 | `StreamingBlob::wrap(SyncStream(..))` | 1 | one Box for stream trait object |
 | 4 | s3_service.rs:424-435 | `info.content_type.clone()` etc | ~5 | small strings, once per request |
 
-**Data-path allocs: 0.** All 256 chunk yields are zero-copy slices.
+**Data-path allocs: 0. Stream yields: 1.** Entire mmap served as single Bytes.
+hyper writes to TCP in kernel-sized chunks. No slicing, no Arc per chunk.
 
 #### EC GET healthy (`erasure_decode.rs:read_and_decode_stream` fast path)
 
