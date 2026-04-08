@@ -462,6 +462,22 @@ All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).
 | **PUT (total request)** | ~10 | setup + finalize allocs | no: inherent (metadata, hashers, writers) |
 | **Response wrapper** | **0** | -- | done |
 
+## Log-structured storage (implemented)
+
+Small objects (<= 64KB) now use a log-structured storage path instead of
+the file-per-object layout. See [write-log.md](write-log.md) for full design.
+
+| | File path | Log-structured path |
+|--|----------|-------------------|
+| Write ops per 4KB object (4 disks) | 12 (4 mkdirs + 4 shard.dat + 4 meta.json) | **4** (one needle append per disk) |
+| Read path | file open + read per shard | mmap slice from segment |
+| Files per 1M small objects | 3M+ | ~16 segment files |
+| Activation | default | opt-in: `mkdir .abixio.sys/log/` |
+
+Wired into the S3 PUT/GET path. PUTs with Content-Length <= 64KB automatically
+route through the log store. GETs check the log index first, fall through to
+file tier. Remaining: GC, heal log-awareness, versioned objects.
+
 ## Future optimization candidates
 
 - **Multi-disk benchmark on separate physical devices**: parallel shard writes
@@ -472,3 +488,5 @@ All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).
   or a custom protocol layer could reduce this
 - **Streaming multipart GET**: currently falls back to buffered path
 - **Streaming range requests**: currently falls back to buffered path
+- **Log store GC**: reclaim dead space from sealed segments
+- **Log store batch fsync**: configurable fsync interval for higher write throughput

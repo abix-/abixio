@@ -2,11 +2,11 @@
 
 ## critical
 
-- [ ] log-structured storage: remaining phases -- GC (phase 8), crash recovery integration (phase 7), heal worker log-awareness, LIST merge dedup. MVP (phases 1-5) is working. see docs/write-log.md
+- [ ] log-structured storage: remaining phases -- GC (phase 8), heal worker log-awareness (phase 7), versioned object support, chunked-transfer PUT support. S3 integration working for Content-Length PUTs <= 64KB. see docs/write-log.md
 - [ ] mc client throughput gap -- AbixIO serves 1GB at 1220 MB/s via curl but only 354 MB/s through mc. MinIO gets 970 MB/s through the same mc. profile with mc --debug, diff headers, find the bottleneck
 - [ ] unwrap() plague -- 252 calls in src/. every one is a process crash
 - [x] EC GET regression -- fixed. zero-alloc fast path slices directly from mmap. 4-disk GET: 803->1236 MB/s
-- [x] log-structured storage MVP -- needle.rs + segment.rs + log_store.rs. small objects (<= 64KB) append to log segments instead of creating individual files. 4 appends vs 12 fs ops per 4KB object on 4 disks
+- [x] log-structured storage -- needle.rs + segment.rs + log_store.rs + S3 integration. small PUTs with Content-Length <= 64KB route through log store end-to-end. verified with curl. 4 appends vs 12 fs ops per 4KB object on 4 disks
 - [ ] RemoteVolume::bucket_exists() returns false unconditionally -- cluster bucket ops partially broken
 - [x] streaming body support -- unified encode path via ShardWriter trait, inline MD5+blake3, no full-body buffering
 - [x] s3s GET response buffering -- streaming GET via read_and_decode_stream + get_object_stream + mmap fast path. L6 GET: 365->1048 MB/s (1GB). curl: 1220 MB/s

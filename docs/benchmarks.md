@@ -113,7 +113,8 @@ The in-memory index maps bucket+key to segment:offset for zero-copy mmap
 reads. See [write-log.md](write-log.md) for the full design.
 
 Enabled per volume when `.abixio.sys/log/` directory exists. Objects > 64KB
-bypass the log and use the file path.
+bypass the log and use the file path. Wired into the S3 PUT/GET path:
+PUTs with Content-Length <= 64KB automatically route through the log store.
 
 ---
 

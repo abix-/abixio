@@ -108,6 +108,40 @@ Valid = add to index. Invalid/truncated = stop (partial write). ~1 sec/GB.
 | 4KB GET (1 disk) | file open+read, ~8 MB/s | mmap slice, page cache |
 | Files per 1M objects | 3M+ | ~16 segments |
 
+## Status
+
+**Implemented and wired into S3 path.** Small PUTs with Content-Length <= 64KB
+route through the log store end-to-end. GETs check the log store first via
+mmap, fall through to file tier. Verified with curl and all 320 tests pass.
+
+Remaining work:
+- GC: reclaim dead space from sealed segments (phase 8)
+- Heal worker: read shards from log, not just files (phase 7)
+- Versioned objects: currently bypass the log (phase 9)
+- Chunked-transfer PUTs: no Content-Length, bypass the log (acceptable)
+
+## How to enable
+
+The log store activates when `.abixio.sys/log/` exists on a volume:
+
+```bash
+# enable on an existing volume
+mkdir -p /path/to/volume/.abixio.sys/log
+
+# or programmatically
+volume.enable_log_store()
+```
+
+On restart, the log store scans existing segments and rebuilds the in-memory
+index automatically.
+
 ## Implementation
 
-See `src/storage/needle.rs`, `src/storage/segment.rs`, `src/storage/log_store.rs`.
+| File | What |
+|------|------|
+| `src/storage/needle.rs` | Needle format: 24-byte header, msgpack meta, xxhash64 checksum |
+| `src/storage/segment.rs` | Segment files: pre-alloc 64MB, append, seal, mmap, scan |
+| `src/storage/log_store.rs` | LogStore: in-memory index, segment lifecycle, crash recovery |
+| `src/storage/local_volume.rs` | Integration: write_shard/read_shard/stat_object/mmap_shard route through log |
+| `src/storage/volume_pool.rs` | S3 routing: small PUTs collected and encoded via write_shard path |
+| `src/s3_service.rs` | Passes content_length to put_object_stream for size-based routing |
