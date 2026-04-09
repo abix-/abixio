@@ -106,36 +106,41 @@ numbers show real end-to-end time including process spawn.
 
 ### 4KB -- small object performance (obj/sec)
 
-| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
-|--------|---------------|---------------|--------|--------|
-| **AbixIO** | **1618** | **1059** | 23 | 23 |
-| MinIO | 367 | 842 | 22 | 23 |
-| RustFS | 345 | 613 | 21 | 23 |
+| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET | rclone PUT | rclone GET |
+|--------|---------------|---------------|--------|--------|------------|------------|
+| **AbixIO** | **1618** | **1059** | 23 | 23 | 9 | 9 |
+| MinIO | 367 | 842 | 22 | 23 | 8 | 9 |
+| RustFS | 345 | 613 | 21 | 23 | 8 | 8 |
 
 **AbixIO has the fastest 4KB PUT** thanks to RAM write cache and
-log-structured storage. 4.4x faster PUT than MinIO. GET leads at 1059
-obj/s vs MinIO 842 (+26%). mc shows ~22 obj/s for all servers -- process
-spawn overhead (~41ms) dominates small-object latency.
+log-structured storage. 4.4x faster PUT than MinIO through aws-sdk-s3.
+GET leads at 1059 obj/s vs MinIO 842 (+26%). CLI tools (mc ~22 obj/s,
+rclone ~9 obj/s) are dominated by process spawn overhead (~41ms mc,
+~111ms rclone) -- these numbers measure startup, not S3 performance.
 
 ### 10MB -- medium object throughput (MB/s)
 
-| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
-|--------|---------------|---------------|--------|--------|
-| **AbixIO** | **347** | 210 | 106 | 172 |
-| RustFS | 292 | 184 | 96 | 134 |
-| MinIO | 181 | **235** | **115** | **190** |
+| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET | rclone PUT | rclone GET |
+|--------|---------------|---------------|--------|--------|------------|------------|
+| **AbixIO** | **347** | 210 | 106 | 172 | 61 | 86 |
+| RustFS | 292 | 184 | 96 | 134 | 76 | 86 |
+| MinIO | 181 | **235** | **115** | **190** | 63 | 87 |
 
-AbixIO leads PUT (347 MB/s vs RustFS 292, MinIO 181). MinIO leads 10MB
-GET (235 MB/s) -- all servers show similar GET throughput now that
-aws-sdk-s3 writes to disk (disk I/O is the equalizer at 10MB).
+AbixIO leads PUT (347 MB/s vs RustFS 292, MinIO 181). GET through
+aws-sdk-s3 is similar across servers (~200 MB/s) because disk write
+speed equalizes the results. rclone GET shows ~86 MB/s for all servers
+at 10MB -- process overhead still significant at this size.
 
 ### 1GB -- large object throughput (MB/s)
 
-| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
-|--------|---------------|---------------|--------|--------|
-| **AbixIO** | **465** | 247 | 337 | 352 |
-| RustFS | 344 | 262 | **560** | **607** |
-| MinIO | 356 | 243 | **616** | **832** |
+| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET | rclone PUT | rclone GET |
+|--------|---------------|---------------|--------|--------|------------|------------|
+| **AbixIO** | **465** | 247 | 337 | 352 | 202 | * |
+| RustFS | 344 | 262 | **560** | **607** | 168 | * |
+| MinIO | 356 | 243 | **616** | **832** | 235 | * |
+
+`*` rclone 1GB GET numbers excluded -- rclone caches/skips repeated
+downloads to the same file, producing unreliable measurements.
 
 **AbixIO has the fastest 1GB PUT** through aws-sdk-s3 (465 MB/s vs MinIO
 356, RustFS 344) thanks to xxhash64 ETag (skips MD5 when client doesn't
