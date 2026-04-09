@@ -675,8 +675,66 @@ Source code analysis of all three servers (2026-04-09). MinIO source at
 
 | | AbixIO | MinIO | RustFS |
 |---|---|---|---|
-| Shard reads | 1+0: mmap, single `Bytes` yield. EC: sequential reads | **Parallel goroutines** via channel-based work-stealing (`parallelReader`) | **Parallel `FuturesUnordered`**, waits for `data_shards` to complete |
-| Key source | `src/storage/volume_pool.rs:527` | `cmd/erasure-decode.go:127` | `crates/ecstore/src/erasure_coding/decode.rs:86` |
+| Shard reads | 1+0: mmap, 4MB Bytes::slice. EC: sequential reads | **Parallel goroutines** via channel-based work-stealing (`parallelReader`) | **Parallel `FuturesUnordered`**, waits for `data_shards` to complete |
+| Response model | Async stream (Box<Pin<dyn Stream>>) -> s3s Body -> hyper poll_frame | **Synchronous io.Copy** with 128KB pooled buffer -> http.ResponseWriter | tokio::io::duplex -> AsyncRead response |
+| Dispatch overhead | 2x vtable per frame (DynByteStream + StreamingBlob) | **Zero** -- direct function calls | 1x vtable (AsyncRead trait object) |
+| Scheduling | tokio async poll/wake per frame | **OS goroutine** -- no scheduler overhead | tokio async |
+| Key source | `volume_pool.rs:532`, `s3_service.rs:421` | `erasure-object.go:292`, `object-handlers.go:551` | `set_disk.rs:655`, `decode.rs:217` |
+
+### Why MinIO's GET is faster -- detailed code trace (2026-04-09)
+
+MinIO GET data path (`cmd/erasure-object.go`, `cmd/object-handlers.go`):
+```
+getObjectNInfo():
+  pr, pw := xioutil.WaitPipe()       // io.Pipe() -- kernel-backed sync pipe
+  go func() {
+    er.getObjectWithFileInfo(pw)      // decode goroutine writes to pipe
+      -> erasure.Decode(pw, readers)  // parallel disk reads -> RS decode -> pw.Write()
+  }()
+  return GetObjectReader{Reader: pr}  // returns pipe reader
+
+getObjectHandler():
+  xioutil.Copy(httpWriter, gr)        // io.CopyBuffer with 128KB pooled buffer
+    -> direct Write() calls to http.ResponseWriter -> TCP
+```
+
+AbixIO GET data path (`volume_pool.rs`, `s3_service.rs`):
+```
+get_object_stream():
+  mmap_shard() -> Bytes::from_owner(mmap)
+  Bytes::slice(4MB chunks) -> stream::iter(chunks)    // zero-copy
+
+get_object():
+  StreamingBlob::wrap(SyncStream(stream))              // Box<Pin<dyn Stream>>
+    -> s3s Body::DynStream                             // enum dispatch
+    -> hyper poll_frame()                              // async poll per frame
+    -> TCP
+```
+
+The fundamental difference is **synchronous io.Copy vs async stream polling**.
+MinIO's path has zero async overhead -- `io.CopyBuffer` reads 128KB from the
+pipe and calls `Write()` on the HTTP response writer in a tight loop. AbixIO's
+path goes through 2 levels of dynamic dispatch (`Box<Pin<dyn Stream>>`) and
+tokio's async scheduler for every 4MB frame.
+
+At **1GB** (256 frames), this overhead is amortized: 686 vs 757 MB/s (9% gap).
+At **10MB** (3 frames), per-request fixed cost dominates: 324 vs 748 MB/s
+(2.3x gap). The fixed cost includes s3s request parsing, response header
+serialization, and hyper connection setup -- none of which MinIO's Go path pays.
+
+**Confirmed**: raw hyper L5 GET (no S3, no storage) = 510 MB/s for 10MB with
+TCP_NODELAY. MinIO achieves 748 MB/s through its full S3 stack. hyper's HTTP
+write ceiling is 32% below MinIO for 10MB bodies on Windows.
+
+### Future approaches to close the GET gap
+
+1. **Bypass s3s for GET**: handle GET in `AbixioDispatch` with raw hyper,
+   write response body directly to `hyper::body::Sender` without going
+   through StreamingBlob/Body/poll_frame chain
+2. **hyper sendfile**: investigate if hyper can write a File/mmap to the
+   response without async stream polling
+3. **Benchmark on Linux**: isolate Windows-specific TCP overhead (IOCP vs
+   epoll may behave differently)
 
 ### Pipeline experiment results (2026-04-09, 1GB, 1 disk, 5 iterations)
 
