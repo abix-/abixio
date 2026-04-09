@@ -4,7 +4,27 @@ Systematic per-layer performance analysis of the AbixIO PUT and GET paths.
 Each layer is treated as an independent optimization problem: measure it,
 identify the ceiling, find the bottleneck, test a fix, record the result.
 
-Last updated: 2026-04-07, commit `ad0506a`.
+Last updated: 2026-04-09, commit `4452de1`.
+
+## Table of contents
+
+- [Layer architecture](#layer-architecture)
+- [Benchmark environment](#benchmark-environment)
+- [L1: Hashing](#l1-hashing)
+- [L2: RS encode](#l2-rs-encode)
+- [L3: Disk I/O](#l3-disk-io)
+- [L4: Storage pipeline](#l4-storage-pipeline-volumepool)
+- [L5: HTTP transport](#l5-http-transport)
+- [L6: S3 protocol](#l6-s3-protocol-s3s--full-pipeline)
+- [L7: Full client path](#l7-full-client-path-aws-sdk-s3--auth)
+- [Layer-to-layer gaps](#layer-to-layer-gaps)
+- [Optimization history](#optimization-history)
+- [Allocation audit](#allocation-audit)
+- [Log-structured storage](#log-structured-storage-implemented)
+- [Competitive analysis](#competitive-analysis-minio-and-rustfs)
+- [Future optimization candidates](#future-optimization-candidates)
+
+---
 
 ## Layer architecture
 
@@ -13,18 +33,20 @@ PUT path (top to bottom):
 
   Client request
        |
-  L6   S3 protocol (s3s)        parse HTTP, SigV4, dispatch to AbixioS3
-  L5   HTTP transport (hyper)    accept TCP, read/write body
-  L4   Storage pipeline          VolumePool: placement, RS encode, write shards
-  L3   Disk I/O                  tokio::fs::write / tokio::fs::read
-  L2   RS encode                 reed-solomon-erasure galois_8, SIMD
-  L1   Hashing                   blake3 (shard integrity) + MD5 (S3 ETag)
+  L7   Full client (aws-sdk-s3)    SigV4 signing, SDK HTTP, UNSIGNED-PAYLOAD
+  L6   S3 protocol (s3s)           parse HTTP, SigV4 verify, dispatch to AbixioS3
+  L5   HTTP transport (hyper)      accept TCP, read/write body
+  L4   Storage pipeline            VolumePool: placement, RS encode, write shards
+  L3   Disk I/O                    tokio::fs::write / tokio::fs::read
+  L2   RS encode                   reed-solomon-erasure galois_8, SIMD
+  L1   Hashing                     blake3 (shard integrity) + MD5 (S3 ETag)
 
-GET path reverses: L6 -> L5 -> L4 -> L3 -> L2 (decode) -> L1 (verify)
+GET path reverses: L7 -> L6 -> L5 -> L4 -> L3 -> L2 (decode) -> L1 (verify)
 ```
 
 L1-L3 are primitives measured in isolation. L4 combines them into the storage
-pipeline. L5 measures raw HTTP. L6 adds the S3 protocol layer on top.
+pipeline. L5 measures raw HTTP. L6 adds the S3 protocol layer on top. L7
+adds a real S3 client with auth.
 
 ## Benchmark environment
 
@@ -32,40 +54,6 @@ pipeline. L5 measures raw HTTP. L6 adds the S3 protocol layer on top.
 - Single-node, page-cache writes (no fsync), sequential requests
 - 10 iterations per measurement (50 for 4KB, 5 for 1GB, 30 for focused tests)
 - `bench_perf` in `tests/layer_bench.rs` with JSON output and A/B comparison
-
----
-
-## Before and after
-
-Summary of all optimizations applied in this round of work.
-
-### L6 (end-to-end S3 path) -- what users see
-
-```
-Operation          Before          After           Change
------------        -----------     -----------     -------
-PUT 10MB           214 MB/s        272 MB/s        +27%    (versioning cache)
-PUT 1GB            305 MB/s        310 MB/s        ~same
-GET 10MB           365 MB/s        809 MB/s        +122%   (streaming + mmap)
-GET 1GB            452 MB/s        1048 MB/s       +132%   (mmap fast path)
-GET 1GB (curl)     --              1220 MB/s       --      (no mc overhead)
-```
-
-### L4 (storage pipeline) -- internal
-
-```
-Operation          Before          After           Change
------------        -----------     -----------     -------
-GET 10MB (1d)      1175 MB/s       19098 MB/s      mmap page cache
-GET 1GB (1d)       1244 MB/s       (page cache)    mmap instant
-GET 10MB (4d EC)   774 MB/s        1048 MB/s       +35% (zero-alloc mmap)
-GET 1GB (4d EC)    919 MB/s        1236 MB/s       +35% (zero-alloc mmap)
-PUT (all sizes)    unchanged       unchanged       0%
-```
-
-EC GET fast path slices directly from mmap into output buffer when all data
-shards are healthy (common case). Zero Vec allocation per block. Only falls
-back to Vec + RS reconstruct when shards are actually missing.
 
 ---
 
@@ -221,6 +209,38 @@ Files changed:
 - `src/storage/local_volume.rs` -- native file-backed `read_shard_stream()`
 - `src/storage/volume_pool.rs` -- `VolumePool::get_object_stream()`
 
+### GET optimization: mmap fast path (done)
+
+**Problem**: streaming decode still allocated 1MB `Bytes` per chunk through
+an mpsc channel (1024 chunks for 1GB). RustFS uses `tokio::io::duplex` + mmap.
+
+**After**: two-case approach via `memmap2`:
+
+1. **1+0 (no EC)**: mmap the shard file, `Bytes::from_owner(mmap)` gives a
+   ref-counted handle to the entire file. Yield 4MB `.slice()` chunks --
+   zero-copy, zero allocation, no RS decode, no spawned task.
+
+2. **EC (N+M)**: mmap all shard files. Spawned task slices directly into mmap
+   regions (no read syscall), RS-decodes 4MB blocks (4x fewer iterations than
+   1MB), yields decoded data through mpsc channel.
+
+Both paths use `Backend::mmap_shard()` which returns `MmapOrVec` -- local
+volumes return a real mmap, remote volumes fall back to buffered read.
+
+**Result**:
+- L4 GET (1 disk, mmap): 19,098 MB/s at 10MB (page cache), effectively instant
+- L6 GET (1 disk): 809 MB/s at 10MB, **1048 MB/s at 1GB** (was 833)
+- curl GET (no auth): **1220 MB/s at 1GB** -- faster than MinIO through mc
+- EC GET (4 disk): **1048 MB/s (10MB), 1236 MB/s (1GB)** -- zero-alloc fast
+  path slices from mmap when all shards healthy. +35% over pre-mmap baseline
+
+Files changed:
+- `Cargo.toml` -- added `memmap2`
+- `src/storage/mod.rs` -- `MmapOrVec` type, `Backend::mmap_shard()`
+- `src/storage/local_volume.rs` -- mmap-backed `mmap_shard()`
+- `src/storage/erasure_decode.rs` -- mmap-based `read_and_decode_stream()`, 4MB blocks
+- `src/storage/volume_pool.rs` -- 1+0 mmap fast path in `get_object_stream()`
+
 ---
 
 ## L5: HTTP transport
@@ -252,6 +272,8 @@ which adds a copy; the real S3 path streams the body without copying.
 | S3 PUT | 272 MB/s | 310 MB/s |
 | S3 GET (1 disk, mmap) | 809 MB/s | 1048 MB/s |
 | curl GET (1 disk, no auth) | -- | 1220 MB/s |
+
+L6 runs in-process with `no_auth: true` and raw reqwest (no SigV4).
 
 ### PUT optimization: versioning config cache (done)
 
@@ -301,41 +323,57 @@ minority of GET traffic.
 Files changed:
 - `src/s3_service.rs` -- streaming GET path, `SyncStream`, `get_object_buffered()`
 
-### GET optimization: mmap fast path (done)
+---
 
-**Problem**: streaming decode still allocated 1MB `Bytes` per chunk through
-an mpsc channel (1024 chunks for 1GB). RustFS uses `tokio::io::duplex` + mmap.
+## L7: Full client path (aws-sdk-s3 + auth)
 
-**After**: two-case approach via `memmap2`:
+Added 2026-04-09 to close the gap between L6 (in-process, no auth) and
+external matrix benchmarks.
 
-1. **1+0 (no EC)**: mmap the shard file, `Bytes::from_owner(mmap)` gives a
-   ref-counted handle to the entire file. Yield 4MB `.slice()` chunks --
-   zero-copy, zero allocation, no RS decode, no spawned task.
+### Numbers (1GB, 2026-04-09)
 
-2. **EC (N+M)**: mmap all shard files. Spawned task slices directly into mmap
-   regions (no read syscall), RS-decodes 4MB blocks (4x fewer iterations than
-   1MB), yields decoded data through mpsc channel.
+| Operation | L6 (no auth, reqwest) | L6A (auth, reqwest) | L7 (auth, aws-sdk-s3) |
+|---|---|---|---|
+| PUT | 344 MB/s | 337 MB/s | 380 MB/s |
+| GET | 535 MB/s | -- | 752 MB/s |
 
-Both paths use `Backend::mmap_shard()` which returns `MmapOrVec` -- local
-volumes return a real mmap, remote volumes fall back to buffered read.
+### Analysis
 
-**Result**:
-- L4 GET (1 disk, mmap): 19,098 MB/s at 10MB (page cache), effectively instant
-- L6 GET (1 disk): 809 MB/s at 10MB, **1048 MB/s at 1GB** (was 833)
-- curl GET (no auth): **1220 MB/s at 1GB** -- faster than MinIO through mc
-- EC GET (4 disk): **1048 MB/s (10MB), 1236 MB/s (1GB)** -- zero-alloc fast
-  path slices from mmap when all shards healthy. +35% over pre-mmap baseline
+L7 runs in-process with auth enabled and the full aws-sdk-s3 client --
+same path as real users. The key finding: **L7 is fast (380 MB/s PUT)**.
+The matrix benchmark previously showed 52 MB/s because it was running an
+unoptimized debug binary (`target/debug/abixio.exe`). After fixing the
+binary path to use release builds, matrix results match L7.
 
-Files changed:
-- `Cargo.toml` -- added `memmap2`
-- `src/storage/mod.rs` -- `MmapOrVec` type, `Backend::mmap_shard()`
-- `src/storage/local_volume.rs` -- mmap-backed `mmap_shard()`
-- `src/storage/erasure_decode.rs` -- mmap-based `read_and_decode_stream()`, 4MB blocks
-- `src/storage/volume_pool.rs` -- 1+0 mmap fast path in `get_object_stream()`
+Auth overhead is negligible (L6 vs L6A: 344 vs 337 MB/s, within noise).
+aws-sdk-s3 client overhead is negligible (L6 vs L7: 344 vs 380 MB/s).
 
 ---
 
-## Optimization results summary
+## Layer-to-layer gaps
+
+Where throughput is lost between layers (1GB, 2026-04-09):
+
+| Path | L4 | L6 | L7 | Matrix | Biggest gap |
+|------|----|----|-----|--------|-------------|
+| PUT | 556 MB/s | 344 MB/s | 380 MB/s | 320 MB/s | **L4->L6: -38%** (s3s overhead) |
+| GET | instant | 535 MB/s | 752 MB/s | 555 MB/s | **L4->L6** (s3s response serialization) |
+
+| Gap | Current | Ceiling | Ratio | Notes |
+|-----|---------|---------|-------|-------|
+| L6 PUT vs L4 PUT | 344 vs 556 MB/s | 1.6x | s3s dispatch overhead |
+| L4 PUT vs L3 write | 556 vs 1625 MB/s | 2.9x | hashing + RS + metadata |
+| L6 GET (mc) vs L6 GET (curl) | 354 vs 1220 MB/s | 3.4x | mc client overhead (SigV4, Go HTTP) |
+| EC GET vs 1+0 GET | 1236 vs page cache | -- | RS decode (inherent cost of EC) |
+
+The largest server-side gap is **L4->L6** (s3s protocol overhead). The L4
+PUT gap (2.9x vs disk) is from inline hashing (MD5 at 703 MB/s is the floor)
+plus RS encode plus metadata writes -- fundamental costs of erasure-coded
+storage.
+
+---
+
+## Optimization history
 
 | # | Change | Layer | Result | Status |
 |---|--------|-------|--------|--------|
@@ -345,24 +383,34 @@ Files changed:
 | 4 | mmap GET (1+0 fast path) | L4+L6 | **L6 GET 1GB: 833->1048 MB/s (+26%)**. curl: 1220 MB/s | done |
 | 5 | mmap GET (EC, 4MB blocks) | L4 | 4-disk GET 675-803 MB/s (regressed from mmap->Vec copy) | superseded by #6 |
 | 6 | Zero-alloc EC GET fast path | L4 | **EC GET +35%** (919->1236 MB/s at 1GB). Slices from mmap, no Vec alloc | done |
+| 7 | Debug binary fix | -- | **Matrix PUT 52->320 MB/s** (was benchmarking debug build) | done |
+| 8 | Pipeline experiments | L4 | Double-buffer -96%, channel -96%, 4MB chunks -11%. All worse | reverted |
 
-## Remaining gaps
+### Before and after (L6, end-to-end S3 path)
 
-| Gap | Current | Ceiling | Ratio | Notes |
-|-----|---------|---------|-------|-------|
-| L6 PUT vs L4 PUT | 272 vs 439 MB/s | 1.6x | s3s dispatch overhead |
-| L4 PUT vs L3 write | 439 vs 1625 MB/s | 3.7x | hashing + RS + metadata |
-| L6 GET (mc) vs L6 GET (curl) | 354 vs 1220 MB/s | 3.4x | mc client overhead (SigV4, Go HTTP) |
-| EC GET vs 1+0 GET | 1236 vs page cache | -- | RS decode (inherent cost of EC) |
+```
+Operation          Before          After           Change
+-----------        -----------     -----------     -------
+PUT 10MB           214 MB/s        272 MB/s        +27%    (versioning cache)
+PUT 1GB            305 MB/s        310 MB/s        ~same
+GET 10MB           365 MB/s        809 MB/s        +122%   (streaming + mmap)
+GET 1GB            452 MB/s        1048 MB/s       +132%   (mmap fast path)
+GET 1GB (curl)     --              1220 MB/s       --      (no mc overhead)
+```
 
-The largest remaining gap is the `mc` client bottleneck. AbixIO serves 1GB at
-1220 MB/s via curl, but `mc` can only consume 354 MB/s. MinIO achieves
-970 MB/s through `mc` because `mc` is a Go binary optimized for Go's HTTP stack.
-This is a client-side limitation, not a server-side one.
+### Before and after (L4, storage pipeline)
 
-The L4 PUT gap (3.7x vs disk) is from inline hashing (MD5 at 703 MB/s is the
-floor) plus RS encode plus metadata writes. These are fundamental costs of
-erasure-coded storage, not inefficiencies.
+```
+Operation          Before          After           Change
+-----------        -----------     -----------     -------
+GET 10MB (1d)      1175 MB/s       19098 MB/s      mmap page cache
+GET 1GB (1d)       1244 MB/s       (page cache)    mmap instant
+GET 10MB (4d EC)   774 MB/s        1048 MB/s       +35% (zero-alloc mmap)
+GET 1GB (4d EC)    919 MB/s        1236 MB/s       +35% (zero-alloc mmap)
+PUT (all sizes)    unchanged       unchanged       0%
+```
+
+---
 
 ## Allocation audit
 
@@ -451,7 +499,7 @@ All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).
 
 **Data-path allocs: 0.** Error conversions only allocate on error.
 
-### Summary
+### Allocation summary
 
 | Path | Data-path allocs/GB | Remaining alloc | Can eliminate? |
 |------|---------------------|-----------------|----------------|
@@ -461,6 +509,8 @@ All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).
 | **PUT (per-block loop)** | **0** | -- | done |
 | **PUT (total request)** | ~10 | setup + finalize allocs | no: inherent (metadata, hashers, writers) |
 | **Response wrapper** | **0** | -- | done |
+
+---
 
 ## Log-structured storage (implemented)
 
@@ -491,9 +541,12 @@ Windows DNS resolution adds ~200ms per request. Always use `127.0.0.1`.
 
 Remaining: GC, heal log-awareness, versioned objects.
 
-## Competitive analysis: MinIO and RustFS PUT/GET architecture
+---
 
-Source code analysis of all three servers (2026-04-09).
+## Competitive analysis: MinIO and RustFS
+
+Source code analysis of all three servers (2026-04-09). MinIO source at
+`/c/code/minio`, RustFS source at `/c/code/rustfs`.
 
 ### PUT pipeline comparison
 
@@ -510,7 +563,7 @@ Source code analysis of all three servers (2026-04-09).
 | Shard reads | 1+0: mmap, single `Bytes` yield. EC: sequential reads | **Parallel goroutines** via channel-based work-stealing (`parallelReader`) | **Parallel `FuturesUnordered`**, waits for `data_shards` to complete |
 | Key source | `src/storage/volume_pool.rs:527` | `cmd/erasure-decode.go:127` | `crates/ecstore/src/erasure_coding/decode.rs:86` |
 
-### Experimental results (2026-04-09, 1GB, 1 disk, 5 iterations)
+### Pipeline experiment results (2026-04-09, 1GB, 1 disk, 5 iterations)
 
 Tested alternative pipeline strategies against the current sequential approach:
 
@@ -536,27 +589,13 @@ in <1ms (page cache). Rechunking adds `BytesMut` allocation and memcpy
 overhead. The GET gap (555 MB/s in matrix vs 1048 MB/s at L6) is in the
 HTTP/s3s layer, not the storage layer.
 
-### Where the real gaps are
+### Conclusions
 
-The L4 storage layer is fast (PUT 556 MB/s, GET instant from mmap).
-The gaps appear between layers:
-
-| Path | L4 | L6 (in-process) | L7 (in-process, SDK) | Matrix (separate process) |
-|---|---|---|---|---|
-| 1GB PUT | 556 | 344 | 380 | 320 |
-| 1GB GET | instant | 535 | 752 | 555 |
-
-The bottleneck is the s3s protocol layer + HTTP transport, not the
-storage pipeline. Pipeline changes (double-buffer, channel) cannot help
-because the slow part is outside the storage layer.
-
-### Implications
-
-1. **PUT pipeline changes (double-buffer, channel) are wrong lever**.
+1. **PUT pipeline changes (double-buffer, channel) are the wrong lever**.
    The 556 -> 320 MB/s gap is s3s dispatch + HTTP overhead. Fixing the
    encode pipeline cannot recover what's lost in the protocol layer.
 
-2. **GET chunking is wrong lever**. The mmap path is already zero-copy.
+2. **GET chunking is the wrong lever**. The mmap path is already zero-copy.
    The 1048 -> 555 MB/s gap is in s3s response serialization.
 
 3. **Right lever: s3s overhead**. The L4-to-L6 gap (556->344 PUT,
@@ -569,14 +608,17 @@ because the slow part is outside the storage layer.
    On same-disk tmpdir, sequential writes are optimal (confirmed earlier
    and reconfirmed by these experiments).
 
+---
+
 ## Future optimization candidates
 
+- **s3s upgrade or bypass**: s3s 0.13 adds ~38% overhead on PUT. Newer versions
+  or a custom protocol layer could reduce this. This is the single biggest
+  optimization opportunity
 - **Multi-disk benchmark on separate physical devices**: parallel shard writes
   would likely help when shards map to different NVMe drives
 - **io_uring on Linux**: zero-copy I/O could narrow the L4-vs-L3 gap
 - **Configurable fsync**: per-bucket durability modes (none/data/full)
-- **s3s upgrade or bypass**: s3s 0.13 adds ~38% overhead on PUT. Newer versions
-  or a custom protocol layer could reduce this
 - **Streaming multipart GET**: currently falls back to buffered path
 - **Streaming range requests**: currently falls back to buffered path
 - **Log store GC**: reclaim dead space from sealed segments
