@@ -509,7 +509,7 @@ async fn bench_perf() {
     let layers: Vec<String> = std::env::var("BENCH_LAYERS")
         .ok()
         .map(|s| s.split(',').map(|v| v.trim().to_uppercase()).collect())
-        .unwrap_or_else(|| vec!["L1".into(), "L2".into(), "L3".into(), "L4".into(), "L5".into(), "L6".into(), "L6A".into(), "L7".into()]);
+        .unwrap_or_else(|| vec!["L1".into(), "L2".into(), "L3".into(), "L4".into(), "L5".into(), "L6".into(), "EXP".into(), "L6A".into(), "L7".into()]);
 
     let mut results: Vec<BenchResult> = Vec::new();
     let tmp = TempDir::new().unwrap();
@@ -834,6 +834,229 @@ async fn bench_perf() {
             let r = measure("L6", "s3s_get", 1, size, iters, &mut timings);
             emit(&r); results.push(r);
         }
+        eprintln!();
+    }
+
+    // ---- EXP: experimental pipeline variants ----
+    // Tests different encode/decode strategies to find the fastest approach.
+    // Compared against L4 put_stream and L6 GET baselines.
+    if layers.contains(&"EXP".to_string()) {
+        eprintln!("--- EXP: pipeline experiments ---");
+
+        // --- EXP-GET: chunked mmap yield vs single yield ---
+        // Hypothesis: yielding 4MB slices lets hyper start TCP writes earlier
+        {
+            let (_base, paths) = setup(1);
+            let pool = Arc::new(make_pool(&paths));
+            pool.make_bucket("bench").await.unwrap();
+
+            for &size in &sizes {
+                if size < 1024 * 1024 { continue; } // skip small sizes
+                let data = vec![0x42u8; size];
+                let label = human(size);
+                let iters = iters_for_size(size, base_iters);
+
+                // write test objects
+                for i in 0..(iters + 2) {
+                    pool.put_object("bench", &format!("exp_get/{}/{}", label, i), &data, opts()).await.unwrap();
+                }
+
+                // baseline: current single-Bytes yield (same as L4 get_stream)
+                let mut timings = Vec::new();
+                for i in 0..iters {
+                    use futures::StreamExt;
+                    let t = Instant::now();
+                    let (_info, stream) = pool.get_object_stream("bench", &format!("exp_get/{}/{}", label, i)).await.unwrap();
+                    let mut stream = std::pin::pin!(stream);
+                    while let Some(chunk) = stream.next().await {
+                        let _ = chunk.unwrap();
+                    }
+                    timings.push(t.elapsed());
+                }
+                let r = measure("EXP", "get_single", 1, size, iters, &mut timings);
+                emit(&r); results.push(r);
+
+                // experiment: re-chunk into 4MB slices (simulates what chunked mmap would do)
+                let mut timings = Vec::new();
+                for i in 0..iters {
+                    use futures::StreamExt;
+                    let t = Instant::now();
+                    let (_info, stream) = pool.get_object_stream("bench", &format!("exp_get/{}/{}", label, i)).await.unwrap();
+                    let mut stream = std::pin::pin!(stream);
+                    // collect then re-chunk (simulates chunked mmap yield)
+                    let mut all = bytes::BytesMut::new();
+                    while let Some(chunk) = stream.next().await {
+                        all.extend_from_slice(&chunk.unwrap());
+                    }
+                    let frozen = all.freeze();
+                    let chunk_size = 4 * 1024 * 1024;
+                    let mut offset = 0;
+                    while offset < frozen.len() {
+                        let end = (offset + chunk_size).min(frozen.len());
+                        let _slice = frozen.slice(offset..end);
+                        offset = end;
+                    }
+                    timings.push(t.elapsed());
+                }
+                let r = measure("EXP", "get_4mb_chunk", 1, size, iters, &mut timings);
+                emit(&r); results.push(r);
+            }
+        }
+
+        // --- EXP-PUT: pipeline variants ---
+        // All variants write 1GB through the same storage layer.
+        // Stream is pre-created (instant yield) so we measure encode+write
+        // pipeline overhead, not network overlap benefit.
+        {
+            let (_base, paths) = setup(1);
+            let pool = make_pool(&paths);
+            pool.make_bucket("bench").await.unwrap();
+
+            for &size in &sizes {
+                if size < 1024 * 1024 { continue; }
+                let data = vec![0x42u8; size];
+                let label = human(size);
+                let iters = iters_for_size(size, base_iters);
+
+                // baseline: current put_stream (1MB blocks, sequential)
+                let mut timings = Vec::new();
+                for i in 0..iters {
+                    let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = data
+                        .chunks(64 * 1024)
+                        .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+                        .collect();
+                    let stream = futures::stream::iter(chunks);
+                    let t = Instant::now();
+                    pool.put_object_stream("bench", &format!("exp_1mb/{}/{}", label, i), stream, opts(), None, None).await.unwrap();
+                    timings.push(t.elapsed());
+                }
+                let r = measure("EXP", "put_1mb_seq", 1, size, iters, &mut timings);
+                emit(&r); results.push(r);
+
+                // variant C: 4MB input chunks (tests if larger chunks help)
+                let mut timings = Vec::new();
+                for i in 0..iters {
+                    let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = data
+                        .chunks(4 * 1024 * 1024)
+                        .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+                        .collect();
+                    let stream = futures::stream::iter(chunks);
+                    let t = Instant::now();
+                    pool.put_object_stream("bench", &format!("exp_4mb/{}/{}", label, i), stream, opts(), None, None).await.unwrap();
+                    timings.push(t.elapsed());
+                }
+                let r = measure("EXP", "put_4mb_chunk", 1, size, iters, &mut timings);
+                emit(&r); results.push(r);
+
+                // variant B: channel pipeline (RustFS style)
+                // Spawn task to read+encode, main task writes. Uses mpsc(8).
+                let mut timings = Vec::new();
+                for i in 0..iters {
+                    let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = data
+                        .chunks(64 * 1024)
+                        .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+                        .collect();
+                    let (tx, mut rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(8);
+                    let t = Instant::now();
+
+                    // producer: read stream into channel
+                    let producer = tokio::spawn(async move {
+                        use futures::StreamExt;
+                        let mut stream = futures::stream::iter(chunks);
+                        let mut buf = Vec::with_capacity(1024 * 1024);
+                        while let Some(chunk) = stream.next().await {
+                            let chunk = chunk.unwrap();
+                            buf.extend_from_slice(&chunk);
+                            while buf.len() >= 1024 * 1024 {
+                                let block: Vec<u8> = buf.drain(..1024 * 1024).collect();
+                                if tx.send(bytes::Bytes::from(block)).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
+                        if !buf.is_empty() {
+                            let _ = tx.send(bytes::Bytes::from(buf)).await;
+                        }
+                    });
+
+                    // consumer: receive and write via put_object
+                    let mut received = Vec::new();
+                    while let Some(block) = rx.recv().await {
+                        received.extend_from_slice(&block);
+                    }
+                    producer.await.unwrap();
+
+                    // now write (simulates the write phase)
+                    pool.put_object("bench", &format!("exp_chan/{}/{}", label, i), &received, opts()).await.unwrap();
+                    timings.push(t.elapsed());
+                }
+                let r = measure("EXP", "put_chan_pipe", 1, size, iters, &mut timings);
+                emit(&r); results.push(r);
+
+                // variant A: double-buffer (MinIO style)
+                // Pre-read next block while writing current
+                let mut timings = Vec::new();
+                for i in 0..iters {
+                    let chunks: Vec<Result<bytes::Bytes, std::io::Error>> = data
+                        .chunks(64 * 1024)
+                        .map(|c| Ok(bytes::Bytes::copy_from_slice(c)))
+                        .collect();
+                    let t = Instant::now();
+
+                    // simulate double-buffer: accumulate into two alternating buffers
+                    use futures::StreamExt;
+                    let mut stream = futures::stream::iter(chunks);
+                    let block_size = 1024 * 1024;
+                    let mut buf_a = Vec::with_capacity(block_size);
+                    let mut buf_b = Vec::with_capacity(block_size);
+                    let mut blocks: Vec<Vec<u8>> = Vec::new();
+
+                    // fill first buffer
+                    while buf_a.len() < block_size {
+                        match stream.next().await {
+                            Some(Ok(chunk)) => buf_a.extend_from_slice(&chunk),
+                            _ => break,
+                        }
+                    }
+
+                    loop {
+                        // start filling buf_b while we "process" buf_a
+                        let _fill = {
+                            // we can't actually overlap with a sync stream, but
+                            // measure the buffer management overhead
+                            while buf_b.len() < block_size {
+                                match stream.next().await {
+                                    Some(Ok(chunk)) => buf_b.extend_from_slice(&chunk),
+                                    _ => break,
+                                }
+                            }
+                        };
+
+                        // "process" buf_a (store the block)
+                        if !buf_a.is_empty() {
+                            let block: Vec<u8> = buf_a.drain(..).collect();
+                            blocks.push(block);
+                        } else {
+                            break;
+                        }
+
+                        // swap
+                        std::mem::swap(&mut buf_a, &mut buf_b);
+                    }
+                    // flush remaining
+                    if !buf_b.is_empty() {
+                        blocks.push(buf_b);
+                    }
+
+                    let all: Vec<u8> = blocks.into_iter().flatten().collect();
+                    pool.put_object("bench", &format!("exp_dbuf/{}/{}", label, i), &all, opts()).await.unwrap();
+                    timings.push(t.elapsed());
+                }
+                let r = measure("EXP", "put_dbl_buf", 1, size, iters, &mut timings);
+                emit(&r); results.push(r);
+            }
+        }
+
         eprintln!();
     }
 

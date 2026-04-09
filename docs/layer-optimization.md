@@ -491,6 +491,84 @@ Windows DNS resolution adds ~200ms per request. Always use `127.0.0.1`.
 
 Remaining: GC, heal log-awareness, versioned objects.
 
+## Competitive analysis: MinIO and RustFS PUT/GET architecture
+
+Source code analysis of all three servers (2026-04-09).
+
+### PUT pipeline comparison
+
+| | AbixIO | MinIO | RustFS |
+|---|---|---|---|
+| Read/encode pipeline | Sequential: read 1MB -> encode -> write -> repeat | **Readahead double-buffer** (`readahead.NewReaderBuffer`, 2 buffers) for files >= `bigFileThreshold` | **Separate tokio task + mpsc(8) channel**: read+encode decoupled from write |
+| Shard writes per block | Sequential `for` loop (`erasure_encode.rs:327`) | Sequential `for` loop (`erasure-encode.go:34`) | **Parallel via `FuturesUnordered`** (`encode.rs:72`) |
+| Key source | `src/storage/erasure_encode.rs:148` | `cmd/erasure-object.go:1426` | `crates/ecstore/src/erasure_coding/encode.rs:188` |
+
+### GET pipeline comparison
+
+| | AbixIO | MinIO | RustFS |
+|---|---|---|---|
+| Shard reads | 1+0: mmap, single `Bytes` yield. EC: sequential reads | **Parallel goroutines** via channel-based work-stealing (`parallelReader`) | **Parallel `FuturesUnordered`**, waits for `data_shards` to complete |
+| Key source | `src/storage/volume_pool.rs:527` | `cmd/erasure-decode.go:127` | `crates/ecstore/src/erasure_coding/decode.rs:86` |
+
+### Experimental results (2026-04-09, 1GB, 1 disk, 5 iterations)
+
+Tested alternative pipeline strategies against the current sequential approach:
+
+| Experiment | 1GB MB/s | vs baseline | Verdict |
+|---|---|---|---|
+| `put_1mb_seq` (current) | **556** | baseline | -- |
+| `put_4mb_chunk` (4MB input chunks) | 494 | **-11%** | larger chunks hurt |
+| `put_chan_pipe` (RustFS-style channel) | 24 | **-96%** | massive regression |
+| `put_dbl_buf` (MinIO-style double-buf) | 24 | **-96%** | massive regression |
+| `get_single` (current mmap, 1 Bytes) | page cache | baseline | -- |
+| `get_4mb_chunk` (rechunk into 4MB) | 1,877 | much slower | chunking adds copy overhead |
+
+**Root cause of channel/double-buffer regression**: the experimental
+implementations collected data through the pipeline then wrote via
+`put_object` (buffered). The channel and double-buffer overhead dominated
+because the test stream yields instantly (pre-created chunks). These
+approaches would only help with a real network stream that has latency to
+overlap. On same-disk single-node with page-cache writes, the current
+sequential path is already optimal.
+
+**Root cause of GET chunking regression**: at L4, the mmap path returns
+in <1ms (page cache). Rechunking adds `BytesMut` allocation and memcpy
+overhead. The GET gap (555 MB/s in matrix vs 1048 MB/s at L6) is in the
+HTTP/s3s layer, not the storage layer.
+
+### Where the real gaps are
+
+The L4 storage layer is fast (PUT 556 MB/s, GET instant from mmap).
+The gaps appear between layers:
+
+| Path | L4 | L6 (in-process) | L7 (in-process, SDK) | Matrix (separate process) |
+|---|---|---|---|---|
+| 1GB PUT | 556 | 344 | 380 | 320 |
+| 1GB GET | instant | 535 | 752 | 555 |
+
+The bottleneck is the s3s protocol layer + HTTP transport, not the
+storage pipeline. Pipeline changes (double-buffer, channel) cannot help
+because the slow part is outside the storage layer.
+
+### Implications
+
+1. **PUT pipeline changes (double-buffer, channel) are wrong lever**.
+   The 556 -> 320 MB/s gap is s3s dispatch + HTTP overhead. Fixing the
+   encode pipeline cannot recover what's lost in the protocol layer.
+
+2. **GET chunking is wrong lever**. The mmap path is already zero-copy.
+   The 1048 -> 555 MB/s gap is in s3s response serialization.
+
+3. **Right lever: s3s overhead**. The L4-to-L6 gap (556->344 PUT,
+   instant->535 GET) is where the most throughput is lost. Options:
+   - Upgrade s3s (if newer versions are faster)
+   - Bypass s3s for hot paths (raw hyper handler for PUT/GET)
+   - Profile s3s internals to find specific bottlenecks
+
+4. **Parallel shard writes only matter with multiple physical disks**.
+   On same-disk tmpdir, sequential writes are optimal (confirmed earlier
+   and reconfirmed by these experiments).
+
 ## Future optimization candidates
 
 - **Multi-disk benchmark on separate physical devices**: parallel shard writes
