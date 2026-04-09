@@ -228,6 +228,7 @@ async fn bench_layer_3_http_transport() {
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
+            stream.set_nodelay(true).ok();
             let io = hyper_util::rt::TokioIo::new(stream);
             tokio::spawn(async move {
                 let service = hyper::service::service_fn(|req: hyper::Request<hyper::body::Incoming>| async move {
@@ -271,6 +272,7 @@ async fn bench_layer_3_http_transport() {
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener2.accept().await.unwrap();
+            stream.set_nodelay(true).ok();
             let io = hyper_util::rt::TokioIo::new(stream);
             let body = response_data.clone();
             tokio::spawn(async move {
@@ -350,6 +352,7 @@ async fn bench_layer_4_s3s_protocol() {
     tokio::spawn(async move {
         loop {
             let (stream, _) = listener.accept().await.unwrap();
+            stream.set_nodelay(true).ok();
             let io = hyper_util::rt::TokioIo::new(stream);
             let d = dispatch_clone.clone();
             tokio::spawn(async move {
@@ -674,6 +677,7 @@ async fn bench_perf() {
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
+                stream.set_nodelay(true).ok();
                 let io = hyper_util::rt::TokioIo::new(stream);
                 tokio::spawn(async move {
                     let svc = hyper::service::service_fn(|req: hyper::Request<hyper::body::Incoming>| async move {
@@ -716,6 +720,7 @@ async fn bench_perf() {
             tokio::spawn(async move {
                 loop {
                     let (stream, _) = get_listener.accept().await.unwrap();
+                    stream.set_nodelay(true).ok();
                     let io = hyper_util::rt::TokioIo::new(stream);
                     let body = rb.clone();
                     tokio::spawn(async move {
@@ -785,6 +790,7 @@ async fn bench_perf() {
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
+                stream.set_nodelay(true).ok();
                 let io = hyper_util::rt::TokioIo::new(stream);
                 let d = dispatch_clone.clone();
                 tokio::spawn(async move {
@@ -1099,6 +1105,7 @@ async fn bench_perf() {
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
+                stream.set_nodelay(true).ok();
                 let io = hyper_util::rt::TokioIo::new(stream);
                 let d = dispatch_clone.clone();
                 tokio::spawn(async move {
@@ -1178,6 +1185,7 @@ async fn bench_perf() {
         tokio::spawn(async move {
             loop {
                 let (stream, _) = listener.accept().await.unwrap();
+                stream.set_nodelay(true).ok();
                 let io = hyper_util::rt::TokioIo::new(stream);
                 let d = dispatch_clone.clone();
                 tokio::spawn(async move {
