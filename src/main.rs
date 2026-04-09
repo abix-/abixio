@@ -251,6 +251,8 @@ async fn serve(dispatch: Arc<AbixioDispatch>, addr: SocketAddr) -> anyhow::Resul
                 async move { Ok::<_, hyper::Error>(dispatch.dispatch(req).await) }
             });
             if let Err(e) = hyper::server::conn::http1::Builder::new()
+                .writev(true)
+                .max_buf_size(4 * 1024 * 1024)
                 .serve_connection(io, service)
                 .await
             {

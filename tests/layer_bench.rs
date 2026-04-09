@@ -512,7 +512,7 @@ async fn bench_perf() {
     let layers: Vec<String> = std::env::var("BENCH_LAYERS")
         .ok()
         .map(|s| s.split(',').map(|v| v.trim().to_uppercase()).collect())
-        .unwrap_or_else(|| vec!["L1".into(), "L2".into(), "L3".into(), "L4".into(), "L5".into(), "L6".into(), "EXP".into(), "L6A".into(), "L7".into()]);
+        .unwrap_or_else(|| vec!["L1".into(), "L2".into(), "L3".into(), "L4".into(), "L5".into(), "L5X".into(), "L6".into(), "EXP".into(), "L6A".into(), "L7".into()]);
 
     let mut results: Vec<BenchResult> = Vec::new();
     let tmp = TempDir::new().unwrap();
@@ -752,6 +752,255 @@ async fn bench_perf() {
             }
             let r = measure("L5", "http_get", 0, size, iters, &mut timings);
             emit(&r); results.push(r);
+        }
+        eprintln!();
+    }
+
+    // ---- L5X: HTTP transport sub-layer experiments ----
+    // Isolates hyper config options and raw TCP to find where time goes.
+    if layers.contains(&"L5X".to_string()) {
+        eprintln!("--- L5X: HTTP transport experiments ---");
+
+        let client = reqwest::Client::new();
+
+        for &size in &sizes {
+            if size < 1024 * 1024 { continue; }
+            let data = vec![0x42u8; size];
+            let iters = iters_for_size(size, base_iters);
+            let label = human(size);
+
+            // --- L5a: raw TCP (no HTTP) ---
+            {
+                let response_bytes = bytes::Bytes::from(data.clone());
+                let tcp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let tcp_addr = tcp_listener.local_addr().unwrap();
+                let rb = response_bytes.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let (mut stream, _) = tcp_listener.accept().await.unwrap();
+                        stream.set_nodelay(true).ok();
+                        let body = rb.clone();
+                        tokio::spawn(async move {
+                            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                            let mut buf = [0u8; 256];
+                            let _ = stream.read(&mut buf).await; // read request
+                            let header = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len());
+                            let _ = stream.write_all(header.as_bytes()).await;
+                            let _ = stream.write_all(&body).await;
+                            let _ = stream.flush().await;
+                        });
+                    }
+                });
+
+                // warmup
+                for _ in 0..3 {
+                    let resp = client.get(&format!("http://{}/test", tcp_addr)).send().await.unwrap();
+                    let _ = resp.bytes().await.unwrap();
+                }
+
+                let mut timings = Vec::new();
+                for _ in 0..iters {
+                    let t = Instant::now();
+                    let resp = client.get(&format!("http://{}/test", tcp_addr)).send().await.unwrap();
+                    let _ = resp.bytes().await.unwrap();
+                    timings.push(t.elapsed());
+                }
+                let r = measure("L5X", "raw_tcp_get", 0, size, iters, &mut timings);
+                emit(&r); results.push(r);
+            }
+
+            // --- L5c: hyper writev(true) ---
+            {
+                let response_bytes = bytes::Bytes::from(data.clone());
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let rb = response_bytes.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let (stream, _) = listener.accept().await.unwrap();
+                        stream.set_nodelay(true).ok();
+                        let io = hyper_util::rt::TokioIo::new(stream);
+                        let body = rb.clone();
+                        tokio::spawn(async move {
+                            let svc = hyper::service::service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                                let body = body.clone();
+                                async move {
+                                    Ok::<_, hyper::Error>(hyper::Response::new(
+                                        http_body_util::Full::new(body),
+                                    ))
+                                }
+                            });
+                            let _ = hyper::server::conn::http1::Builder::new()
+                                .writev(true)
+                                .serve_connection(io, svc).await;
+                        });
+                    }
+                });
+
+                for _ in 0..3 {
+                    let resp = client.get(&format!("http://{}/test", addr)).send().await.unwrap();
+                    let _ = resp.bytes().await.unwrap();
+                }
+
+                let mut timings = Vec::new();
+                for _ in 0..iters {
+                    let t = Instant::now();
+                    let resp = client.get(&format!("http://{}/test", addr)).send().await.unwrap();
+                    let _ = resp.bytes().await.unwrap();
+                    timings.push(t.elapsed());
+                }
+                let r = measure("L5X", "writev_get", 0, size, iters, &mut timings);
+                emit(&r); results.push(r);
+            }
+
+            // --- L5d: hyper max_buf_size(4MB) ---
+            {
+                let response_bytes = bytes::Bytes::from(data.clone());
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let rb = response_bytes.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let (stream, _) = listener.accept().await.unwrap();
+                        stream.set_nodelay(true).ok();
+                        let io = hyper_util::rt::TokioIo::new(stream);
+                        let body = rb.clone();
+                        tokio::spawn(async move {
+                            let svc = hyper::service::service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                                let body = body.clone();
+                                async move {
+                                    Ok::<_, hyper::Error>(hyper::Response::new(
+                                        http_body_util::Full::new(body),
+                                    ))
+                                }
+                            });
+                            let _ = hyper::server::conn::http1::Builder::new()
+                                .max_buf_size(4 * 1024 * 1024)
+                                .serve_connection(io, svc).await;
+                        });
+                    }
+                });
+
+                for _ in 0..3 {
+                    let resp = client.get(&format!("http://{}/test", addr)).send().await.unwrap();
+                    let _ = resp.bytes().await.unwrap();
+                }
+
+                let mut timings = Vec::new();
+                for _ in 0..iters {
+                    let t = Instant::now();
+                    let resp = client.get(&format!("http://{}/test", addr)).send().await.unwrap();
+                    let _ = resp.bytes().await.unwrap();
+                    timings.push(t.elapsed());
+                }
+                let r = measure("L5X", "bigbuf_get", 0, size, iters, &mut timings);
+                emit(&r); results.push(r);
+            }
+
+            // --- L5e: hyper streamed body (4MB chunks) ---
+            {
+                let response_bytes = bytes::Bytes::from(data.clone());
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let rb = response_bytes.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let (stream, _) = listener.accept().await.unwrap();
+                        stream.set_nodelay(true).ok();
+                        let io = hyper_util::rt::TokioIo::new(stream);
+                        let body = rb.clone();
+                        tokio::spawn(async move {
+                            let svc = hyper::service::service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                                let body = body.clone();
+                                async move {
+                                    // stream 4MB chunks
+                                    let len = body.len();
+                                    let chunk_size = 4 * 1024 * 1024;
+                                    let chunks: Vec<Result<hyper::body::Frame<bytes::Bytes>, std::convert::Infallible>> =
+                                        (0..len).step_by(chunk_size).map(|start| {
+                                            let end = (start + chunk_size).min(len);
+                                            Ok(hyper::body::Frame::data(body.slice(start..end)))
+                                        }).collect();
+                                    let stream_body = http_body_util::StreamBody::new(
+                                        futures::stream::iter(chunks)
+                                    );
+                                    Ok::<_, hyper::Error>(hyper::Response::new(stream_body))
+                                }
+                            });
+                            let _ = hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, svc).await;
+                        });
+                    }
+                });
+
+                for _ in 0..3 {
+                    let resp = client.get(&format!("http://{}/test", addr)).send().await.unwrap();
+                    let _ = resp.bytes().await.unwrap();
+                }
+
+                let mut timings = Vec::new();
+                for _ in 0..iters {
+                    let t = Instant::now();
+                    let resp = client.get(&format!("http://{}/test", addr)).send().await.unwrap();
+                    let _ = resp.bytes().await.unwrap();
+                    timings.push(t.elapsed());
+                }
+                let r = measure("L5X", "stream_get", 0, size, iters, &mut timings);
+                emit(&r); results.push(r);
+            }
+
+            // --- L5f: hyper streamed body + writev + bigbuf ---
+            {
+                let response_bytes = bytes::Bytes::from(data.clone());
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let rb = response_bytes.clone();
+                tokio::spawn(async move {
+                    loop {
+                        let (stream, _) = listener.accept().await.unwrap();
+                        stream.set_nodelay(true).ok();
+                        let io = hyper_util::rt::TokioIo::new(stream);
+                        let body = rb.clone();
+                        tokio::spawn(async move {
+                            let svc = hyper::service::service_fn(move |_req: hyper::Request<hyper::body::Incoming>| {
+                                let body = body.clone();
+                                async move {
+                                    let len = body.len();
+                                    let chunk_size = 4 * 1024 * 1024;
+                                    let chunks: Vec<Result<hyper::body::Frame<bytes::Bytes>, std::convert::Infallible>> =
+                                        (0..len).step_by(chunk_size).map(|start| {
+                                            let end = (start + chunk_size).min(len);
+                                            Ok(hyper::body::Frame::data(body.slice(start..end)))
+                                        }).collect();
+                                    let stream_body = http_body_util::StreamBody::new(
+                                        futures::stream::iter(chunks)
+                                    );
+                                    Ok::<_, hyper::Error>(hyper::Response::new(stream_body))
+                                }
+                            });
+                            let _ = hyper::server::conn::http1::Builder::new()
+                                .writev(true)
+                                .max_buf_size(4 * 1024 * 1024)
+                                .serve_connection(io, svc).await;
+                        });
+                    }
+                });
+
+                for _ in 0..3 {
+                    let resp = client.get(&format!("http://{}/test", addr)).send().await.unwrap();
+                    let _ = resp.bytes().await.unwrap();
+                }
+
+                let mut timings = Vec::new();
+                for _ in 0..iters {
+                    let t = Instant::now();
+                    let resp = client.get(&format!("http://{}/test", addr)).send().await.unwrap();
+                    let _ = resp.bytes().await.unwrap();
+                    timings.push(t.elapsed());
+                }
+                let r = measure("L5X", "all_opts_get", 0, size, iters, &mut timings);
+                emit(&r); results.push(r);
+            }
         }
         eprintln!();
     }
