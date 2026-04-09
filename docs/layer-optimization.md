@@ -449,13 +449,19 @@ AbixIO did not. Nagle's algorithm was batching small writes, adding latency.
 **Result**: Matrix PUT +10% (453->498), Matrix GET +14% (604->686). Closed
 the 1GB GET gap from 24% to 9% vs MinIO.
 
-**Remaining 10MB GET gap (2.3x vs MinIO)**: this is per-response overhead
-in hyper/s3s vs Go's net/http. At 10MB, the fixed cost per request dominates.
-Go's net/http uses sendfile(2) and writev(2) more aggressively. Options:
+**Remaining 10MB GET gap (2.3x vs MinIO)**: confirmed as hyper's HTTP
+write ceiling, not AbixIO code. Evidence: L5 raw hyper GET (no S3, no
+storage, just `Full::new(bytes)`) = **510 MB/s** with TCP_NODELAY. MinIO
+achieves **748 MB/s** through a full S3 stack in a separate process.
+hyper's ceiling is 32% below MinIO's throughput for 10MB bodies.
+
+This is a hyper/tokio/Windows TCP stack limitation, not something we can
+fix in AbixIO's code. Options to investigate:
+- Benchmark on Linux to isolate Windows-specific TCP overhead
 - hyper HTTP/2 (may reduce per-response framing overhead)
 - SO_SNDBUF tuning (larger TCP send buffer)
-- Benchmark on Linux to isolate Windows-specific TCP overhead
 - Profile hyper response write path for unnecessary copies
+- Consider a custom response writer that bypasses hyper for large GETs
 
 ---
 
