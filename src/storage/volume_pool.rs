@@ -251,7 +251,12 @@ impl VolumePool {
                     }
                     let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
                     let total = data_n + parity_n;
-                    let etag = hex::encode(md5::Md5::digest(&data));
+                    let etag = if opts.skip_md5 {
+                        let xxh = xxhash_rust::xxh64::xxh64(&data, 0);
+                        format!("{:016x}{:016x}", xxh, data.len())
+                    } else {
+                        hex::encode(md5::Md5::digest(&data))
+                    };
                     let content_type = if opts.content_type.is_empty() {
                         "application/octet-stream".to_string()
                     } else {

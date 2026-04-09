@@ -119,6 +119,8 @@ pub struct PutOptions {
     pub ec_ftt: Option<usize>,
     /// Pre-computed MD5 hex (ETag). If set, encode skips the md5_hex() pass.
     pub precomputed_etag: Option<String>,
+    /// Skip MD5 and use xxhash64 for ETag (when client didn't send Content-MD5).
+    pub skip_md5: bool,
 }
 
 // -- versioning --

@@ -133,8 +133,9 @@ where
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
 
-    // running hashers: MD5 for etag (inline), blake3 per shard (inline)
-    let mut md5_hasher = Md5::new();
+    // running hashers: MD5 for etag (inline, skipped when skip_md5), blake3 per shard (inline)
+    let mut md5_hasher = if opts.skip_md5 { None } else { Some(Md5::new()) };
+    let mut xxh = xxhash_rust::xxh64::Xxh64::new(0);
     let mut shard_hashers: Vec<blake3::Hasher> =
         (0..total).map(|_| blake3::Hasher::new()).collect();
     let mut total_size: u64 = 0;
@@ -150,7 +151,8 @@ where
 
     while let Some(chunk) = body.next().await {
         let chunk = chunk.map_err(StorageError::Io)?;
-        md5_hasher.update(&chunk);
+        if let Some(ref mut h) = md5_hasher { h.update(&chunk); }
+        xxh.update(&chunk);
         total_size += chunk.len() as u64;
         block_buf.extend_from_slice(&chunk);
 
@@ -189,7 +191,10 @@ where
     let etag = opts
         .precomputed_etag
         .clone()
-        .unwrap_or_else(|| hex::encode(md5_hasher.finalize()));
+        .unwrap_or_else(|| match md5_hasher {
+            Some(h) => hex::encode(h.finalize()),
+            None => format!("{:016x}{:016x}", xxh.digest(), total_size),
+        });
     let checksums: Vec<String> = shard_hashers
         .iter()
         .map(|h| h.finalize().to_hex().to_string())

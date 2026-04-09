@@ -335,6 +335,7 @@ impl S3 for AbixioS3 {
             },
             user_metadata,
             ec_ftt,
+            skip_md5: input.content_md5.is_none(),
             ..Default::default()
         };
 
