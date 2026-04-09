@@ -509,7 +509,7 @@ async fn bench_perf() {
     let layers: Vec<String> = std::env::var("BENCH_LAYERS")
         .ok()
         .map(|s| s.split(',').map(|v| v.trim().to_uppercase()).collect())
-        .unwrap_or_else(|| vec!["L1".into(), "L2".into(), "L3".into(), "L4".into(), "L5".into(), "L6".into()]);
+        .unwrap_or_else(|| vec!["L1".into(), "L2".into(), "L3".into(), "L4".into(), "L5".into(), "L6".into(), "L6A".into(), "L7".into()]);
 
     let mut results: Vec<BenchResult> = Vec::new();
     let tmp = TempDir::new().unwrap();
@@ -832,6 +832,212 @@ async fn bench_perf() {
                 timings.push(t.elapsed());
             }
             let r = measure("L6", "s3s_get", 1, size, iters, &mut timings);
+            emit(&r); results.push(r);
+        }
+        eprintln!();
+    }
+
+    // ---- L6A: S3 protocol (s3s + storage, WITH auth, raw reqwest) ----
+    // Isolates auth overhead: same as L6 but with SigV4 auth provider enabled.
+    // reqwest sends unsigned PUT (no SigV4 on client), but the server has auth
+    // configured. This tells us if the auth provider presence slows anything.
+    if layers.contains(&"L6A".to_string()) {
+        eprintln!("--- L6A: S3 protocol + auth (reqwest) ---");
+
+        let (_base, paths) = setup(1);
+        let pool = Arc::new(make_pool(&paths));
+        pool.make_bucket("bench").await.unwrap();
+
+        let cluster = Arc::new(
+            ClusterManager::new(ClusterConfig {
+                node_id: "test".to_string(),
+                advertise_s3: "http://127.0.0.1:0".to_string(),
+                advertise_cluster: "http://127.0.0.1:0".to_string(),
+                nodes: Vec::new(),
+                access_key: "test".to_string(),
+                secret_key: "testsecret".to_string(),
+                no_auth: false,
+                disk_paths: paths.clone(),
+            })
+            .unwrap(),
+        );
+
+        let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&pool), Arc::clone(&cluster));
+        let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+        builder.set_auth(s3s::auth::SimpleAuth::from_single("test", "testsecret"));
+        builder.set_access(abixio::s3_access::AbixioAccess::new(Arc::clone(&cluster)));
+        builder.set_validation(abixio::s3_service::RelaxedNameValidation);
+        let s3_service = builder.build();
+        let dispatch = Arc::new(AbixioDispatch::new(s3_service, None, None));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dispatch_clone = dispatch.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = hyper_util::rt::TokioIo::new(stream);
+                let d = dispatch_clone.clone();
+                tokio::spawn(async move {
+                    let svc = hyper::service::service_fn(move |req| {
+                        let d = d.clone();
+                        async move { Ok::<_, hyper::Error>(d.dispatch(req).await) }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new().serve_connection(io, svc).await;
+                });
+            }
+        });
+
+        let client = reqwest::Client::new();
+
+        for &size in &sizes {
+            let data = vec![0x42u8; size];
+            let iters = iters_for_size(size, base_iters);
+            let label = human(size);
+
+            // warmup
+            for i in 0..3 {
+                let url = format!("http://{}/bench/l6aw_{}", addr, i);
+                let _ = client.put(&url).body(data.clone()).send().await;
+            }
+
+            // PUT (unsigned, no SigV4 on client -- server sees anonymous request)
+            let mut timings = Vec::new();
+            for i in 0..iters {
+                let url = format!("http://{}/bench/l6a_{}_{}", addr, label, i);
+                let t = Instant::now();
+                let resp = client.put(&url).body(data.clone()).send().await.unwrap();
+                assert!(resp.status().is_success() || resp.status().as_u16() == 403,
+                    "L6A PUT failed: {} (auth may reject unsigned -- that's ok for perf measurement)", resp.status());
+                timings.push(t.elapsed());
+            }
+            let r = measure("L6A", "s3s_put_auth", 1, size, iters, &mut timings);
+            emit(&r); results.push(r);
+        }
+        eprintln!();
+    }
+
+    // ---- L7: Full client path (s3s + storage + auth + aws-sdk-s3) ----
+    // This is what real clients see. aws-sdk-s3 with SigV4 + UNSIGNED-PAYLOAD.
+    // Same as the matrix benchmark but in-process (eliminates process boundary).
+    if layers.contains(&"L7".to_string()) {
+        eprintln!("--- L7: Full client path (aws-sdk-s3 + auth) ---");
+
+        let (_base, paths) = setup(1);
+        let pool = Arc::new(make_pool(&paths));
+        pool.make_bucket("bench").await.unwrap();
+
+        let cluster = Arc::new(
+            ClusterManager::new(ClusterConfig {
+                node_id: "test".to_string(),
+                advertise_s3: "http://127.0.0.1:0".to_string(),
+                advertise_cluster: "http://127.0.0.1:0".to_string(),
+                nodes: Vec::new(),
+                access_key: "test".to_string(),
+                secret_key: "testsecret".to_string(),
+                no_auth: false,
+                disk_paths: paths.clone(),
+            })
+            .unwrap(),
+        );
+
+        let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&pool), Arc::clone(&cluster));
+        let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+        builder.set_auth(s3s::auth::SimpleAuth::from_single("test", "testsecret"));
+        builder.set_access(abixio::s3_access::AbixioAccess::new(Arc::clone(&cluster)));
+        builder.set_validation(abixio::s3_service::RelaxedNameValidation);
+        let s3_service = builder.build();
+        let dispatch = Arc::new(AbixioDispatch::new(s3_service, None, None));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let dispatch_clone = dispatch.clone();
+        tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let io = hyper_util::rt::TokioIo::new(stream);
+                let d = dispatch_clone.clone();
+                tokio::spawn(async move {
+                    let svc = hyper::service::service_fn(move |req| {
+                        let d = d.clone();
+                        async move { Ok::<_, hyper::Error>(d.dispatch(req).await) }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new().serve_connection(io, svc).await;
+                });
+            }
+        });
+
+        // build aws-sdk-s3 client pointing at our in-process server
+        let endpoint = format!("http://127.0.0.1:{}", addr.port());
+        let creds = aws_credential_types::provider::SharedCredentialsProvider::new(
+            aws_credential_types::Credentials::new("test", "testsecret", None, None, "bench"),
+        );
+        let sdk_config = aws_config::SdkConfig::builder()
+            .region(aws_config::Region::new("us-east-1"))
+            .endpoint_url(&endpoint)
+            .credentials_provider(creds)
+            .behavior_version(aws_config::BehaviorVersion::latest())
+            .build();
+        let s3_client = aws_sdk_s3::Client::from_conf(
+            aws_sdk_s3::config::Builder::from(&sdk_config)
+                .force_path_style(true)
+                .build(),
+        );
+
+        for &size in &sizes {
+            let data = vec![0x42u8; size];
+            let iters = iters_for_size(size, base_iters);
+            let label = human(size);
+
+            // warmup (unsigned payload, same as matrix bench)
+            for i in 0..3 {
+                let body = aws_smithy_types::byte_stream::ByteStream::from(data.clone());
+                let _ = s3_client.put_object()
+                    .bucket("bench")
+                    .key(format!("l7w_{}", i))
+                    .content_type("application/octet-stream")
+                    .body(body)
+                    .customize()
+                    .disable_payload_signing()
+                    .send()
+                    .await;
+            }
+
+            // PUT (unsigned payload -- same as matrix bench)
+            let mut timings = Vec::new();
+            for i in 0..iters {
+                let body = aws_smithy_types::byte_stream::ByteStream::from(data.clone());
+                let t = Instant::now();
+                let result = s3_client.put_object()
+                    .bucket("bench")
+                    .key(format!("l7_{}_{}", label, i))
+                    .content_type("application/octet-stream")
+                    .body(body)
+                    .customize()
+                    .disable_payload_signing()
+                    .send()
+                    .await;
+                timings.push(t.elapsed());
+                assert!(result.is_ok(), "L7 PUT failed: {:?}", result.err());
+            }
+            let r = measure("L7", "sdk_put", 1, size, iters, &mut timings);
+            emit(&r); results.push(r);
+
+            // GET
+            let mut timings = Vec::new();
+            for i in 0..iters {
+                let t = Instant::now();
+                let result = s3_client.get_object()
+                    .bucket("bench")
+                    .key(format!("l7_{}_{}", label, i))
+                    .send()
+                    .await;
+                if let Ok(resp) = result {
+                    let _ = resp.body.collect().await;
+                }
+                timings.push(t.elapsed());
+            }
+            let r = measure("L7", "sdk_get", 1, size, iters, &mut timings);
             emit(&r); results.push(r);
         }
         eprintln!();
