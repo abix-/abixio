@@ -241,6 +241,7 @@ async fn serve(dispatch: Arc<AbixioDispatch>, addr: SocketAddr) -> anyhow::Resul
 
     loop {
         let (stream, _) = listener.accept().await?;
+        stream.set_nodelay(true)?;
         let io = hyper_util::rt::TokioIo::new(stream);
         let dispatch = dispatch.clone();
 
