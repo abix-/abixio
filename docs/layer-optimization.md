@@ -480,6 +480,7 @@ fix in AbixIO's code. Options to investigate:
 | 9 | Skip MD5 (xxhash64 ETag) | L1+L4+L7 | **L7 PUT +83%** (380->695 MB/s). Matrix PUT +38% (320->441). Fastest PUT at all sizes | done |
 | 10 | Chunked mmap GET (4MB slices) | L4+L7 | **Matrix GET +25%** (484->604 MB/s). Zero-copy Bytes::slice | done |
 | 11 | TCP_NODELAY on accept | L5+ | **Matrix PUT +10%** (453->498), **GET +14%** (604->686). Go sets this by default | done |
+| 12 | ChunkedBytes GET (hybrid) | L6+L7 | **10MB GET +36%** (324->440 MB/s). Collect <=64MB, stream >64MB. Eliminates SyncStream+StreamWrapper chain | done |
 
 ### Before and after (L7, full client path -- what users see)
 
@@ -495,10 +496,11 @@ GET 1GB            752 MB/s        880 MB/s        +17%    (chunked mmap)
 ```
 Operation          Start           Current         Change
 -----------        -----------     -----------     -------
-PUT 4KB            442 obj/s       1815 obj/s      +311%   (debug fix + skip MD5 + TCP_NODELAY)
-PUT 10MB           50 MB/s         284 MB/s        +468%   (debug fix + skip MD5 + TCP_NODELAY)
-PUT 1GB            52 MB/s         498 MB/s        +858%   (debug fix + skip MD5 + TCP_NODELAY)
-GET 1GB            577 MB/s        686 MB/s        +19%    (chunked mmap + TCP_NODELAY)
+PUT 4KB            442 obj/s       1777 obj/s      +302%   (debug fix + skip MD5 + TCP_NODELAY)
+PUT 10MB           50 MB/s         247 MB/s        +394%   (debug fix + skip MD5 + TCP_NODELAY)
+PUT 1GB            52 MB/s         578 MB/s        +1012%  (debug fix + skip MD5 + TCP_NODELAY)
+GET 10MB           241 MB/s        440 MB/s        +83%    (chunked mmap + TCP_NODELAY + ChunkedBytes)
+GET 1GB            577 MB/s        584 MB/s        +1%     (chunked mmap + TCP_NODELAY)
 ```
 
 ### Before and after (L6, S3 protocol in-process)

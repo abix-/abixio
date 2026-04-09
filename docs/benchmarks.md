@@ -54,38 +54,40 @@ Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --noca
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
 |--------|---------------|---------------|--------|--------|
-| **AbixIO** | **1815** | **2694** | 23 | 24 |
-| MinIO | 428 | 1490 | 22 | 23 |
-| RustFS | 344 | 919 | 21 | 23 |
+| **AbixIO** | **1777** | **2530** | 24 | 24 |
+| MinIO | 436 | 1528 | 21 | 24 |
+| RustFS | 375 | 931 | 22 | 23 |
 
 **AbixIO has the fastest 4KB PUT and GET** thanks to RAM write cache and
-log-structured storage. 4.2x faster PUT than MinIO, 1.8x faster GET.
-mc shows ~22 obj/s for all servers -- process spawn overhead dominates.
+log-structured storage. 4.1x faster PUT than MinIO, 1.7x faster GET.
+mc shows ~23 obj/s for all servers -- process spawn overhead dominates.
 
 ### 10MB -- medium object throughput (MB/s)
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
 |--------|---------------|---------------|--------|--------|
-| **AbixIO** | **284** | 324 | **111** | 156 |
-| RustFS | 281 | 224 | 93 | 134 |
-| MinIO | 192 | **748** | 111 | **182** |
+| **AbixIO** | **247** | **440** | **111** | **157** |
+| RustFS | **312** | 323 | 98 | 147 |
+| MinIO | 231 | **685** | 117 | 174 |
 
-AbixIO leads 10MB PUT (284 MB/s vs RustFS 281, MinIO 192). MinIO leads
-10MB GET (748 MB/s, 2.3x faster) -- Go's net/http has lower per-response
-overhead than hyper at medium object sizes.
+AbixIO leads 10MB GET through aws-sdk-s3 over RustFS (440 vs 323 MB/s)
+thanks to ChunkedBytes response path. MinIO leads 10MB GET (685 MB/s) --
+hyper's HTTP write ceiling on Windows is 510 MB/s for raw 10MB bodies,
+which is the fundamental limit vs Go's net/http.
 
 ### 1GB -- large object throughput (MB/s)
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
 |--------|---------------|---------------|--------|--------|
-| **AbixIO** | **498** | 686 | 429 | 414 |
-| RustFS | 365 | 658 | **549** | **709** |
-| MinIO | 380 | **757** | 489 | 843 |
+| **AbixIO** | **578** | 584 | 437 | 424 |
+| RustFS | 381 | **648** | **567** | **659** |
+| MinIO | 436 | **811** | 557 | **727** |
 
-**AbixIO has the fastest 1GB PUT** through aws-sdk-s3 (498 MB/s vs MinIO
-380, RustFS 365) thanks to xxhash64 ETag (skips MD5 when client doesn't
-send Content-MD5). GET is within 9% of MinIO (686 vs 757 MB/s) with
-zero-copy 4MB chunked mmap streaming and TCP_NODELAY.
+**AbixIO has the fastest 1GB PUT** through aws-sdk-s3 (578 MB/s vs MinIO
+436, RustFS 381) thanks to xxhash64 ETag (skips MD5 when client doesn't
+send Content-MD5) and TCP_NODELAY. 1GB GET trails MinIO by 28% (584 vs
+811 MB/s) -- the remaining gap is hyper's TCP write efficiency vs Go's
+net/http on Windows (confirmed by L5 raw hyper ceiling measurement).
 
 ---
 
@@ -96,24 +98,24 @@ Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --noca
 
 ```
 OP       SIZE          ops         avg         p50         p99          MB/s     obj/sec
-PUT      4KB       500 ops     533.4us     530.6us     663.9us      7.3 MB/s        1875
-GET      4KB       500 ops     360.7us     361.6us     462.6us     10.8 MB/s        2772
-HEAD     4KB       500 ops     352.6us     349.5us     441.9us             -        2836
-DELETE   4KB       500 ops     487.8us     447.4us     799.7us             -        2050
-PUT      1KB       100 ops     500.8us     493.1us     647.2us      2.0 MB/s        1997
-PUT      1MB        20 ops      12.8ms      12.8ms      13.2ms     77.8 MB/s          78
-PUT      10MB        5 ops     102.8ms     101.4ms     103.0ms     97.3 MB/s          10
-PUT*     10MB        5 ops      43.5ms      41.7ms      47.4ms    230.1 MB/s          23
-GET      1KB       100 ops     419.7us     415.9us     610.0us      2.3 MB/s        2383
-GET      1MB        20 ops       2.7ms       2.7ms       3.0ms    370.5 MB/s         371
-GET      10MB        5 ops      43.2ms      46.2ms      46.8ms    231.3 MB/s          23
-HEAD     -         100 ops     386.4us     371.0us     471.9us             -        2588
-LIST     100obj     50 ops       5.0ms       5.0ms       5.1ms             -         200
-DELETE   1KB       100 ops     453.4us     441.3us     698.3us             -        2205
+PUT      4KB       500 ops     513.4us     502.1us     679.6us      7.6 MB/s        1948
+GET      4KB       500 ops     345.3us     331.5us     485.0us     11.3 MB/s        2896
+HEAD     4KB       500 ops     325.8us     318.3us     408.6us             -        3070
+DELETE   4KB       500 ops     432.0us     431.6us     587.3us             -        2315
+PUT      1KB       100 ops     469.3us     462.5us     575.4us      2.1 MB/s        2131
+PUT      1MB        20 ops      12.5ms      11.5ms      19.4ms     79.7 MB/s          80
+PUT      10MB        5 ops      89.6ms      88.8ms      90.4ms    111.7 MB/s          11
+PUT*     10MB        5 ops      38.9ms      40.5ms      45.2ms    257.0 MB/s          26
+GET      1KB       100 ops     396.6us     388.5us     588.5us      2.5 MB/s        2522
+GET      1MB        20 ops       2.6ms       2.6ms       2.8ms    382.1 MB/s         382
+GET      10MB        5 ops      16.5ms      15.1ms      16.1ms    605.4 MB/s          61
+HEAD     -         100 ops     376.8us     372.0us     473.9us             -        2654
+LIST     100obj     50 ops       4.7ms       4.7ms       5.0ms             -         214
+DELETE   1KB       100 ops     430.2us     417.0us     600.8us             -        2325
 ```
 
-`PUT*` = UNSIGNED-PAYLOAD (skips client-side SHA256). Note the 2.5x
-speedup vs signed PUT at 10MB (252 vs 96 MB/s).
+`PUT*` = UNSIGNED-PAYLOAD (skips client-side SHA256). Note the 2.6x
+speedup vs signed PUT at 10MB (257 vs 112 MB/s).
 
 ---
 

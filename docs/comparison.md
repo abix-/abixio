@@ -333,7 +333,7 @@ Specific upstream claims this page is anchored to:
 | Weakness | Reality today |
 |---|---|
 | Production credibility | None yet |
-| Benchmarks | [Published](benchmarks.md): fastest PUT at all sizes (4KB: 1815 vs MinIO 428, 1GB: 498 vs MinIO 380 MB/s). GET within 9% of MinIO at 1GB (686 vs 757 MB/s). 10MB GET trails MinIO 2.3x (324 vs 748). See [layer-optimization.md](layer-optimization.md) |
+| Benchmarks | [Published](benchmarks.md): fastest PUT at all sizes (4KB: 1777 vs MinIO 436, 1GB: 578 vs MinIO 436 MB/s). 10MB GET leads RustFS (440 vs 323), trails MinIO (440 vs 685 -- hyper ceiling). 1GB GET trails MinIO 28% (584 vs 811 -- hyper TCP write on Windows). See [layer-optimization.md](layer-optimization.md) |
 | Failure injection / long-haul testing | Not there yet |
 | Packaging / deployment story | Not there yet |
 | S3 surface completeness | Incomplete |
