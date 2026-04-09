@@ -333,7 +333,7 @@ Specific upstream claims this page is anchored to:
 | Weakness | Reality today |
 |---|---|
 | Production credibility | None yet |
-| Benchmarks | [Published](benchmarks.md): fastest GET at 10MB (138 vs 126 MinIO). Server serves 1GB at 1220 MB/s (curl). Through `mc` client, trails MinIO at 1GB due to Go client overhead. See [layer-optimization.md](layer-optimization.md) |
+| Benchmarks | [Published](benchmarks.md): fastest 4KB PUT/GET (1964/2872 vs MinIO 421/1442). Competitive 1GB PUT (320 MB/s vs MinIO 298, RustFS 386). GET trails MinIO at 1GB (555 vs 826 MB/s). See [layer-optimization.md](layer-optimization.md) |
 | Failure injection / long-haul testing | Not there yet |
 | Packaging / deployment story | Not there yet |
 | S3 surface completeness | Incomplete |

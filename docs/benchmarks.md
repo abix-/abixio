@@ -28,6 +28,8 @@ All servers run single-node, 1 disk, NTFS tmpdir, same machine (Windows 10).
 - **RustFS** 1.0.0-alpha.90 -- Rust S3 server (MinIO-compatible)
 - **MinIO** RELEASE.2026-04-07 -- Go S3 server (reference implementation)
 
+All binaries must be release builds. Debug builds are 5-7x slower.
+
 ### What we report
 
 - **obj/sec** -- operations per second (primary metric for small objects)
@@ -52,38 +54,37 @@ Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --noca
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
 |--------|---------------|---------------|--------|--------|
-| **AbixIO** | **442** | 578 | 23 | 24 |
-| MinIO | 420 | **1463** | 23 | 25 |
-| RustFS | 361 | 959 | 23 | 24 |
+| **AbixIO** | **1964** | **2872** | 25 | 26 |
+| MinIO | 421 | 1442 | 24 | 25 |
+| RustFS | 319 | 934 | 23 | 25 |
 
-**AbixIO has the fastest 4KB PUT** thanks to the RAM write cache and
-log-structured storage. MinIO leads GET (2.5x faster than AbixIO).
-mc shows ~23 obj/s for all servers -- process spawn overhead dominates.
+**AbixIO has the fastest 4KB PUT and GET** thanks to RAM write cache and
+log-structured storage. 4.7x faster PUT and 2x faster GET than MinIO.
+mc shows ~24 obj/s for all servers -- process spawn overhead dominates.
 
 ### 10MB -- medium object throughput (MB/s)
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
 |--------|---------------|---------------|--------|--------|
-| AbixIO | 50 | 241 | 15 | 153 |
-| **RustFS** | **319** | 301 | 100 | 138 |
-| MinIO | 165 | **775** | **116** | **204** |
+| **AbixIO** | 246 | 339 | 101 | 155 |
+| RustFS | **313** | 252 | 101 | 133 |
+| MinIO | 178 | **755** | **118** | **203** |
 
-AbixIO 10MB PUT is slow through aws-sdk-s3 (50 MB/s). The streaming encode
-path through s3s has overhead that RustFS and MinIO don't pay. This is the
-primary optimization target for large objects.
+AbixIO 10MB PUT is competitive (246 MB/s vs RustFS 313, MinIO 178).
+MinIO leads GET (755 MB/s, 2.2x faster than AbixIO).
 
 ### 1GB -- large object throughput (MB/s)
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
 |--------|---------------|---------------|--------|--------|
-| AbixIO | 52 | 577 | 60 | 431 |
-| RustFS | 383 | 682 | 557 | 736 |
-| **MinIO** | **415** | **817** | **689** | **868** |
+| AbixIO | 320 | 555 | 441 | 433 |
+| RustFS | **386** | 669 | 602 | 673 |
+| MinIO | 298 | **826** | **734** | **736** |
 
-AbixIO 1GB PUT is 7x slower than MinIO (52 vs 415 MB/s). GET is
-respectable (577 MB/s, 71% of MinIO) thanks to mmap zero-copy.
-mc is faster than aws-sdk-s3 for large PUT on RustFS/MinIO because
-mc handles connection and transfer more efficiently for bulk data.
+AbixIO 1GB PUT is competitive through aws-sdk-s3 (320 MB/s vs RustFS 386,
+MinIO 298). GET is respectable (555 MB/s, 67% of MinIO) thanks to mmap
+zero-copy. mc throughput trails RustFS/MinIO for large objects due to
+mc's Go HTTP stack being optimized for Go servers.
 
 ---
 
@@ -94,20 +95,20 @@ Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --noca
 
 ```
 OP       SIZE          ops         avg         p50         p99          MB/s     obj/sec
-PUT      4KB       500 ops     565.0us     534.9us     897.8us      6.9 MB/s        1770
-GET      4KB       500 ops     344.8us     333.0us     492.1us     11.3 MB/s        2900
-HEAD     4KB       500 ops     356.5us     355.3us     466.3us             -        2805
-DELETE   4KB       500 ops     489.0us     445.0us     737.8us             -        2045
-PUT      1KB       100 ops     503.6us     489.2us     661.5us      1.9 MB/s        1986
-PUT      1MB        20 ops      13.1ms      12.9ms      13.9ms     76.0 MB/s          76
-PUT      10MB        5 ops     104.0ms     102.4ms     104.9ms     96.1 MB/s          10
-PUT*     10MB        5 ops      39.7ms      32.7ms      47.2ms    251.8 MB/s          25
-GET      1KB       100 ops     411.2us     410.9us     509.1us      2.4 MB/s        2432
-GET      1MB        20 ops       2.7ms       2.7ms       3.0ms    365.8 MB/s         366
-GET      10MB        5 ops      42.2ms      40.4ms      45.9ms    236.8 MB/s          24
-HEAD     -         100 ops     373.2us     349.3us     475.3us             -        2679
-LIST     100obj     50 ops       4.9ms       4.9ms       5.1ms             -         205
-DELETE   1KB       100 ops     467.4us     443.1us     695.1us             -        2140
+PUT      4KB       500 ops     533.4us     530.6us     663.9us      7.3 MB/s        1875
+GET      4KB       500 ops     360.7us     361.6us     462.6us     10.8 MB/s        2772
+HEAD     4KB       500 ops     352.6us     349.5us     441.9us             -        2836
+DELETE   4KB       500 ops     487.8us     447.4us     799.7us             -        2050
+PUT      1KB       100 ops     500.8us     493.1us     647.2us      2.0 MB/s        1997
+PUT      1MB        20 ops      12.8ms      12.8ms      13.2ms     77.8 MB/s          78
+PUT      10MB        5 ops     102.8ms     101.4ms     103.0ms     97.3 MB/s          10
+PUT*     10MB        5 ops      43.5ms      41.7ms      47.4ms    230.1 MB/s          23
+GET      1KB       100 ops     419.7us     415.9us     610.0us      2.3 MB/s        2383
+GET      1MB        20 ops       2.7ms       2.7ms       3.0ms    370.5 MB/s         371
+GET      10MB        5 ops      43.2ms      46.2ms      46.8ms    231.3 MB/s          23
+HEAD     -         100 ops     386.4us     371.0us     471.9us             -        2588
+LIST     100obj     50 ops       5.0ms       5.0ms       5.1ms             -         200
+DELETE   1KB       100 ops     453.4us     441.3us     698.3us             -        2205
 ```
 
 `PUT*` = UNSIGNED-PAYLOAD (skips client-side SHA256). Note the 2.5x
@@ -122,11 +123,11 @@ Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --noca
 
 | Client | 4KB PUT | 4KB GET | Latency |
 |--------|---------|---------|---------|
-| **aws-sdk-s3 (Rust)** | **414 obj/s** | **624 obj/s** | 2.4ms / 1.6ms |
-| curl (unsigned) | 55 obj/s | 67 obj/s | 18ms / 15ms |
-| mc (per-process) | 23 obj/s | 24 obj/s | 43ms / 41ms |
+| **aws-sdk-s3 (Rust)** | **1850 obj/s** | **2510 obj/s** | 541us / 398us |
+| curl (unsigned) | 57 obj/s | 69 obj/s | 17ms / 14ms |
+| mc (per-process) | 25 obj/s | 25 obj/s | 40ms / 40ms |
 
-aws-sdk-s3 is 18x faster than mc for 4KB. mc process spawn (~40ms)
+aws-sdk-s3 is 74x faster than mc for 4KB. mc process spawn (~40ms)
 dominates small-object latency. For large objects, mc's overhead is
 amortized and it's competitive.
 
