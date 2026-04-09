@@ -30,6 +30,44 @@ impl<S: Stream + Unpin> Stream for SyncStream<S> {
 }
 use crate::storage::StorageError;
 
+/// Pre-built byte chunks for GET responses. Implements ByteStream directly,
+/// avoiding the SyncStream + StreamWrapper chain. poll_next is a simple
+/// VecDeque::pop_front -- zero async overhead per frame.
+struct ChunkedBytes {
+    queue: std::collections::VecDeque<bytes::Bytes>,
+    remaining: usize,
+}
+
+impl ChunkedBytes {
+    fn new(chunks: Vec<bytes::Bytes>, total: usize) -> Self {
+        Self { queue: chunks.into(), remaining: total }
+    }
+}
+
+impl Stream for ChunkedBytes {
+    type Item = Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>;
+    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = Pin::into_inner(self);
+        match this.queue.pop_front() {
+            Some(b) => { this.remaining -= b.len(); Poll::Ready(Some(Ok(b))) }
+            None => Poll::Ready(None),
+        }
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let n = self.queue.len();
+        (n, Some(n))
+    }
+}
+
+impl s3s::stream::ByteStream for ChunkedBytes {
+    fn remaining_length(&self) -> s3s::stream::RemainingLength {
+        s3s::stream::RemainingLength::new_exact(self.remaining)
+    }
+}
+
+// SAFETY: VecDeque<Bytes> and usize are Send+Sync
+unsafe impl Sync for ChunkedBytes {}
+
 pub struct AbixioS3 {
     store: Arc<VolumePool>,
     _cluster: Arc<ClusterManager>,
@@ -416,10 +454,24 @@ impl S3 for AbixioS3 {
 
         use futures::StreamExt;
         let content_length = info.size as i64;
-        let mapped = stream.map(|r| {
-            r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
-        });
-        let blob = StreamingBlob::wrap(SyncStream(mapped));
+
+        // small/medium objects (<= 64MB): collect into ChunkedBytes for a leaner
+        // response path (no SyncStream wrapper, no StreamWrapper, no error
+        // conversion per frame). For 1+0 mmap, chunks yield instantly.
+        // large objects (> 64MB): stream to avoid buffering delay.
+        let blob = if info.size <= 64 * 1024 * 1024 {
+            let mut chunks = Vec::new();
+            let mut stream = std::pin::pin!(stream);
+            while let Some(chunk) = stream.next().await {
+                chunks.push(chunk.map_err(map_err)?);
+            }
+            StreamingBlob::new(ChunkedBytes::new(chunks, content_length as usize))
+        } else {
+            let mapped = stream.map(|r| {
+                r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+            });
+            StreamingBlob::wrap(SyncStream(mapped))
+        };
 
         let mut output = GetObjectOutput {
             body: Some(blob),
