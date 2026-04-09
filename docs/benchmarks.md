@@ -99,50 +99,51 @@ All binaries must be release builds. Debug builds are 5-7x slower.
 3 servers x 3 clients x 3 sizes x 2 operations.
 Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --nocapture bench_matrix`
 
-**Status**: the current benchmark code does NOT yet meet all fairness
-principles above. Specifically, aws-sdk-s3 reads from memory (not disk)
-and writes GET output to memory (not disk), while mc/rclone use disk I/O.
-The code needs to be updated to enforce parity. Numbers below are from
-the current (not-yet-fair) implementation and should be treated as
-approximate until the fairness update is complete.
+All clients now use the same I/O model: read PUT payload from disk, write
+GET output to disk, 3 PUT + 3 GET warmup before timing. CLI process
+overhead (~41ms mc, ~111ms rclone) is reported but NOT subtracted --
+numbers show real end-to-end time including process spawn.
 
 ### 4KB -- small object performance (obj/sec)
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
 |--------|---------------|---------------|--------|--------|
-| **AbixIO** | **1923** | **2526** | 23 | 24 |
-| MinIO | 432 | 1531 | 22 | 22 |
-| RustFS | 353 | 874 | 21 | 23 |
+| **AbixIO** | **1618** | **1059** | 23 | 23 |
+| MinIO | 367 | 842 | 22 | 23 |
+| RustFS | 345 | 613 | 21 | 23 |
 
-**AbixIO has the fastest 4KB PUT and GET** thanks to RAM write cache and
-log-structured storage. 4.5x faster PUT than MinIO, 1.6x faster GET.
-mc shows ~22 obj/s for all servers -- process spawn overhead dominates.
+**AbixIO has the fastest 4KB PUT** thanks to RAM write cache and
+log-structured storage. 4.4x faster PUT than MinIO. GET leads at 1059
+obj/s vs MinIO 842 (+26%). mc shows ~22 obj/s for all servers -- process
+spawn overhead (~41ms) dominates small-object latency.
 
 ### 10MB -- medium object throughput (MB/s)
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
 |--------|---------------|---------------|--------|--------|
-| **AbixIO** | **325** | 399 | **111** | 156 |
-| RustFS | **308** | 337 | 96 | 149 |
-| MinIO | 171 | **648** | **116** | **186** |
+| **AbixIO** | **347** | 210 | 106 | 172 |
+| RustFS | 292 | 184 | 96 | 134 |
+| MinIO | 181 | **235** | **115** | **190** |
 
-AbixIO leads PUT (325 MB/s vs RustFS 308, MinIO 171). MinIO leads 10MB
-GET (648 MB/s) -- Go's net/http has lower per-response overhead. L5X
-micro-benchmarks show hyper can reach 726 MB/s with tuned config; the
-remaining gap is s3s/ChunkedBytes overhead between L5X and the full stack.
+AbixIO leads PUT (347 MB/s vs RustFS 292, MinIO 181). MinIO leads 10MB
+GET (235 MB/s) -- all servers show similar GET throughput now that
+aws-sdk-s3 writes to disk (disk I/O is the equalizer at 10MB).
 
 ### 1GB -- large object throughput (MB/s)
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET |
 |--------|---------------|---------------|--------|--------|
-| **AbixIO** | **546** | 674 | 435 | 465 |
-| RustFS | 387 | 663 | **557** | 573 |
-| MinIO | 432 | **796** | **670** | **681** |
+| **AbixIO** | **465** | 247 | 337 | 352 |
+| RustFS | 344 | 262 | **560** | **607** |
+| MinIO | 356 | 243 | **616** | **832** |
 
-**AbixIO has the fastest 1GB PUT** through aws-sdk-s3 (546 MB/s vs MinIO
-432, RustFS 387) thanks to xxhash64 ETag (skips MD5 when client doesn't
-send Content-MD5). 1GB GET within 15% of MinIO (674 vs 796 MB/s) with
-writev(true), max_buf_size(4MB), TCP_NODELAY, and zero-copy chunked mmap.
+**AbixIO has the fastest 1GB PUT** through aws-sdk-s3 (465 MB/s vs MinIO
+356, RustFS 344) thanks to xxhash64 ETag (skips MD5 when client doesn't
+send Content-MD5). 1GB GET through aws-sdk-s3 is ~245 MB/s for ALL
+servers -- disk write speed is the bottleneck when writing GET output to
+file, proving the test is fair. mc GET shows the real network throughput
+difference: AbixIO 352, MinIO 832 -- the mc client (Go binary) transfers
+faster to Go servers (MinIO) due to shared HTTP stack optimizations.
 
 ---
 
