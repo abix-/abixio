@@ -2,29 +2,63 @@
 
 ## Methodology
 
+### Fairness principles
+
+Every client must run the same test under the same conditions. If one
+client gets an advantage (keep-alive, memory I/O, more warmup), the
+comparison is not valid. These rules ensure parity:
+
+1. **Same warmup**: 3 PUT + 3 GET warmup operations before timing, for
+   every client. This ensures TCP connections are established, caches are
+   warm, and JIT (if any) has run.
+
+2. **Same I/O model**: all clients read PUT payload from a temp file on
+   disk. All clients write GET output to a temp file on disk. No client
+   gets the advantage of in-memory I/O while others do disk I/O.
+
+3. **Same connection model**: each client uses a single connection with
+   keep-alive across all iterations. For per-process CLI tools (mc,
+   rclone), process spawn overhead is measured and subtracted so we
+   measure transfer time, not startup time.
+
+4. **Same iterations**: all clients run the same number of iterations
+   per (server, size) combination.
+
+5. **Same payload**: identical byte pattern, identical size, identical
+   content-type for all clients.
+
+6. **Same auth**: all clients use SigV4 with the same credentials.
+   UNSIGNED-PAYLOAD for PUT body (standard for HTTPS clients).
+
+7. **Same server config**: each server runs single-node, 1 disk, NTFS
+   tmpdir, same machine, release build. Servers are started fresh for
+   each benchmark run.
+
 ### Test infrastructure
 
 All benchmarks run through `abixio-ui/tests/bench.rs` -- a Rust test harness
 that starts real server processes, creates temp dirs, and benchmarks through
-`aws-sdk-s3` (Rust) and `mc` (MinIO client). No synthetic tests, no mocked
-storage. Real servers, real S3 clients, real data.
+real S3 clients. No synthetic tests, no mocked storage. Real servers, real
+clients, real data.
 
 ### Clients
 
-| Client | Type | Auth | Connection | When to use |
-|--------|------|------|-----------|-------------|
-| **aws-sdk-s3** (Rust) | In-process | SigV4, UNSIGNED-PAYLOAD | Keep-alive | Primary benchmark. Real SDK, real auth, connection reuse. |
-| **mc** (MinIO client) | Per-process | SigV4 | New connection per op | Shows per-process overhead. Each `mc cp` = process spawn + TCP connect + transfer. |
+| Client | Type | Auth | Connection | Overhead |
+|--------|------|------|-----------|----------|
+| **aws-sdk-s3** (Rust) | In-process SDK | SigV4, UNSIGNED-PAYLOAD | Keep-alive | None |
+| **mc** (MinIO client) | Per-process CLI | SigV4 | New process per op | ~41ms (subtracted) |
+| **rclone** | Per-process CLI | SigV4 | New process per op | ~111ms (subtracted) |
 
-aws-sdk-s3 uses UNSIGNED-PAYLOAD for PUT (same as mc, rclone, AWS CLI over
-HTTPS). This skips client-side SHA256 of the body. All S3 benchmarks in
-the wild use unsigned payloads.
+For CLI tools, process spawn overhead is measured before each benchmark
+run (`mc ls` / `rclone lsd`) and subtracted from every timing. This gives
+transfer-only throughput. The overhead is printed in the output for
+transparency.
 
 ### Servers
 
 All servers run single-node, 1 disk, NTFS tmpdir, same machine (Windows 10).
 
-- **AbixIO** -- our server with RAM write cache, log-structured storage, mmap GET
+- **AbixIO** -- Rust S3 server with RAM write cache, log-structured storage, mmap GET
 - **RustFS** 1.0.0-alpha.90 -- Rust S3 server (MinIO-compatible)
 - **MinIO** RELEASE.2026-04-07 -- Go S3 server (reference implementation)
 
@@ -36,19 +70,41 @@ All binaries must be release builds. Debug builds are 5-7x slower.
 - **MB/s** -- throughput (primary metric for large objects)
 - **latency** -- per-request time in microseconds or milliseconds
 
+### Known limitations
+
+- **Windows-only**: all benchmarks run on Windows 10. Linux numbers may
+  differ due to epoll vs IOCP, different TCP stack behavior, and different
+  filesystem performance.
+- **Single machine**: client and server share CPU, memory, and network
+  stack. No network latency. Results represent localhost throughput, not
+  production deployment.
+- **Per-process CLI overhead subtraction**: uses a lightweight operation
+  (`ls`/`lsd`) to estimate overhead. Actual `cp` process overhead may be
+  slightly higher due to additional argument parsing and file open. Small
+  objects may show inflated throughput after subtraction.
+- **Iteration count**: 3 iterations for 1GB may show variance. L7 layer
+  bench with 10 iterations is more reliable for large-object numbers.
+
 ### Windows caveats
 
 - Always use `127.0.0.1`, never `localhost` (Windows DNS adds ~200ms)
-- TCP connect on Windows localhost = ~0.2ms (Linux = ~0.03ms)
-- aws-sdk-s3 keep-alive eliminates TCP connect after first request
-- mc spawns a new process per operation (~40ms overhead)
+- TCP connect on Windows loopback = ~0.2ms (Linux = ~0.03ms)
+- TCP_NODELAY must be set explicitly (Go sets it by default)
+- hyper needs `writev(true)` + `max_buf_size(4MB)` for optimal throughput
 
 ---
 
 ## Comprehensive matrix
 
-3 servers x 2 clients x 3 sizes x 2 operations.
+3 servers x 3 clients x 3 sizes x 2 operations.
 Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --nocapture bench_matrix`
+
+**Status**: the current benchmark code does NOT yet meet all fairness
+principles above. Specifically, aws-sdk-s3 reads from memory (not disk)
+and writes GET output to memory (not disk), while mc/rclone use disk I/O.
+The code needs to be updated to enforce parity. Numbers below are from
+the current (not-yet-fair) implementation and should be treated as
+approximate until the fairness update is complete.
 
 ### 4KB -- small object performance (obj/sec)
 
