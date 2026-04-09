@@ -425,26 +425,37 @@ Key findings:
 | L4 put_stream | **510** (skip-md5) | Storage: encode + write shards |
 | L6 s3s_put | **344** (with MD5) | s3s + storage, no auth |
 | L7 sdk_put | **695** (skip-md5) | s3s + auth + aws-sdk-s3 (in-process) |
-| Matrix | **453** (skip-md5) | Separate abixio.exe process |
-| MinIO (matrix) | **419** | Separate minio.exe process |
+| Matrix | **498** (skip-md5, TCP_NODELAY) | Separate abixio.exe process |
+| MinIO (matrix) | **380** | Separate minio.exe process |
 
-### Remaining gaps
+### Remaining gaps (after TCP_NODELAY)
 
 | Gap | Current | Ratio | Notes |
 |-----|---------|-------|-------|
-| L7 PUT -> Matrix PUT | 695 vs 453 MB/s | 1.5x | Windows loopback TCP + process boundary |
-| L7 GET -> Matrix GET | 920 vs 604 MB/s | 1.5x | Windows loopback TCP + process boundary |
-| Matrix GET: AbixIO vs MinIO | 604 vs 791 MB/s | 0.76x | hyper vs Go net/http TCP write efficiency |
+| L7 PUT -> Matrix PUT | 695 vs 498 MB/s | 1.4x | process boundary (improved from 1.5x with TCP_NODELAY) |
+| L7 GET -> Matrix GET | 920 vs 686 MB/s | 1.3x | process boundary (improved from 1.5x with TCP_NODELAY) |
+| Matrix GET: AbixIO vs MinIO | 686 vs 757 MB/s | 0.91x | 9% gap, down from 24% before TCP_NODELAY |
+| 10MB GET: AbixIO vs MinIO | 324 vs 748 MB/s | 0.43x | **2.3x gap** -- per-response overhead in hyper vs Go |
 | L4 PUT vs L3 write | 510 vs 1625 MB/s | 3.2x | blake3 + xxhash + RS + metadata |
 | EC GET vs 1+0 GET | 1236 vs page cache | -- | RS decode (inherent cost of EC) |
 
-The largest remaining gap is **hyper vs Go's net/http on Windows TCP writes**.
-This affects both PUT and GET equally (~1.5x drop from in-process to separate
-process). Options to investigate:
-- hyper TCP_NODELAY / socket buffer tuning
-- hyper HTTP/2 (multiplexing may help)
-- Windows-specific TCP tuning (SO_SNDBUF, loopback fast path)
-- Benchmark on Linux to isolate Windows-specific overhead
+### TCP_NODELAY analysis (2026-04-09)
+
+**Root cause**: Go enables `TCP_NODELAY` by default on all TCP connections.
+AbixIO did not. Nagle's algorithm was batching small writes, adding latency.
+
+**Fix**: `stream.set_nodelay(true)?` in `src/main.rs` after `listener.accept()`.
+
+**Result**: Matrix PUT +10% (453->498), Matrix GET +14% (604->686). Closed
+the 1GB GET gap from 24% to 9% vs MinIO.
+
+**Remaining 10MB GET gap (2.3x vs MinIO)**: this is per-response overhead
+in hyper/s3s vs Go's net/http. At 10MB, the fixed cost per request dominates.
+Go's net/http uses sendfile(2) and writev(2) more aggressively. Options:
+- hyper HTTP/2 (may reduce per-response framing overhead)
+- SO_SNDBUF tuning (larger TCP send buffer)
+- Benchmark on Linux to isolate Windows-specific TCP overhead
+- Profile hyper response write path for unnecessary copies
 
 ---
 
@@ -462,6 +473,7 @@ process). Options to investigate:
 | 8 | Pipeline experiments | L4 | Double-buffer -96%, channel -96%, 4MB chunks -11%. All worse | reverted |
 | 9 | Skip MD5 (xxhash64 ETag) | L1+L4+L7 | **L7 PUT +83%** (380->695 MB/s). Matrix PUT +38% (320->441). Fastest PUT at all sizes | done |
 | 10 | Chunked mmap GET (4MB slices) | L4+L7 | **Matrix GET +25%** (484->604 MB/s). Zero-copy Bytes::slice | done |
+| 11 | TCP_NODELAY on accept | L5+ | **Matrix PUT +10%** (453->498), **GET +14%** (604->686). Go sets this by default | done |
 
 ### Before and after (L7, full client path -- what users see)
 
@@ -469,18 +481,18 @@ process). Options to investigate:
 Operation          Before          After           Change
 -----------        -----------     -----------     -------
 PUT 1GB            380 MB/s        695 MB/s        +83%    (skip MD5)
-GET 1GB            752 MB/s        696 MB/s        ~same   (GET unchanged)
+GET 1GB            752 MB/s        880 MB/s        +17%    (chunked mmap)
 ```
 
-### Before and after (matrix, external benchmark)
+### Before and after (matrix, external benchmark -- cumulative)
 
 ```
-Operation          Before          After           Change
+Operation          Start           Current         Change
 -----------        -----------     -----------     -------
-PUT 4KB            442 obj/s       2037 obj/s      +361%   (debug binary fix + skip MD5)
-PUT 10MB           50 MB/s         330 MB/s        +560%   (debug binary fix + skip MD5)
-PUT 1GB            52 MB/s         441 MB/s        +748%   (debug binary fix + skip MD5)
-GET 1GB            577 MB/s        484 MB/s        ~same
+PUT 4KB            442 obj/s       1815 obj/s      +311%   (debug fix + skip MD5 + TCP_NODELAY)
+PUT 10MB           50 MB/s         284 MB/s        +468%   (debug fix + skip MD5 + TCP_NODELAY)
+PUT 1GB            52 MB/s         498 MB/s        +858%   (debug fix + skip MD5 + TCP_NODELAY)
+GET 1GB            577 MB/s        686 MB/s        +19%    (chunked mmap + TCP_NODELAY)
 ```
 
 ### Before and after (L6, S3 protocol in-process)
