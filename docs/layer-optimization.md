@@ -389,24 +389,62 @@ aws-sdk-s3 client overhead is negligible (L6 vs L7: 344 vs 380 MB/s pre-skip-md5
 
 ## Layer-to-layer gaps
 
-Where throughput is lost between layers (1GB, 2026-04-09, after skip-md5):
+### 1GB GET -- full layer breakdown (2026-04-09, after chunked mmap)
 
-| Path | L4 | L6 | L7 | Matrix | Biggest gap |
-|------|----|----|-----|--------|-------------|
-| PUT (skip-md5) | 510 MB/s | -- | **695 MB/s** | **441 MB/s** | **L7->Matrix: -37%** (process boundary) |
-| PUT (with MD5) | 556 MB/s | 344 MB/s | 380 MB/s | 320 MB/s | **L4->L6: -38%** (s3s overhead) |
-| GET | instant | 535 MB/s | 696 MB/s | 484 MB/s | **L7->Matrix: -30%** |
+| Layer | 1GB GET MB/s | What it measures |
+|-------|-------------|-----------------|
+| L4 get_stream | **instant** (mmap) | Storage: zero-copy mmap, 4MB Bytes::slice |
+| L5 http_get | **724** | Raw hyper HTTP body (no S3, no storage) |
+| L6 s3s_get | **714** | s3s + storage, no auth, reqwest |
+| L7 sdk_get | **920** | s3s + auth + aws-sdk-s3 (in-process) |
+| Matrix | **604** | Separate abixio.exe process |
+| MinIO (matrix) | **791** | Separate minio.exe process |
 
-| Gap | Current | Ceiling | Ratio | Notes |
-|-----|---------|---------|-------|-------|
-| L7 PUT vs Matrix PUT | 695 vs 441 MB/s | 1.6x | process boundary + separate binary overhead |
-| L4 PUT vs L3 write | 510 vs 1625 MB/s | 3.2x | blake3 + xxhash + RS + metadata (skip-md5) |
-| L7 GET vs Matrix GET | 696 vs 484 MB/s | 1.4x | process boundary |
+Key findings:
+
+1. **s3s adds near-zero overhead to GET** (L5 724 vs L6 714 -- within noise).
+   The s3s response path is efficient. Prior attribution of GET bottleneck to
+   s3s was incorrect.
+
+2. **L5 (raw hyper) is the HTTP ceiling at 724 MB/s** for writing 1GB over
+   127.0.0.1 TCP on Windows. This is the hyper/Windows loopback limit.
+
+3. **The real GET gap is L7 (920) -> Matrix (604) = -34%**. This is the cost
+   of running as a separate process on Windows. MinIO loses less here (791 vs
+   920-equivalent) because Go's `net/http` is more efficient at TCP response
+   writes on Windows than hyper.
+
+4. **AbixIO's GET code is not the bottleneck.** The mmap path is zero-copy,
+   chunked yield is working, s3s adds nothing. The remaining gap vs MinIO is
+   hyper's TCP write performance on Windows vs Go's `net/http`.
+
+### 1GB PUT -- full layer breakdown
+
+| Layer | 1GB PUT MB/s | What it measures |
+|-------|-------------|-----------------|
+| L4 put_stream | **510** (skip-md5) | Storage: encode + write shards |
+| L6 s3s_put | **344** (with MD5) | s3s + storage, no auth |
+| L7 sdk_put | **695** (skip-md5) | s3s + auth + aws-sdk-s3 (in-process) |
+| Matrix | **453** (skip-md5) | Separate abixio.exe process |
+| MinIO (matrix) | **419** | Separate minio.exe process |
+
+### Remaining gaps
+
+| Gap | Current | Ratio | Notes |
+|-----|---------|-------|-------|
+| L7 PUT -> Matrix PUT | 695 vs 453 MB/s | 1.5x | Windows loopback TCP + process boundary |
+| L7 GET -> Matrix GET | 920 vs 604 MB/s | 1.5x | Windows loopback TCP + process boundary |
+| Matrix GET: AbixIO vs MinIO | 604 vs 791 MB/s | 0.76x | hyper vs Go net/http TCP write efficiency |
+| L4 PUT vs L3 write | 510 vs 1625 MB/s | 3.2x | blake3 + xxhash + RS + metadata |
 | EC GET vs 1+0 GET | 1236 vs page cache | -- | RS decode (inherent cost of EC) |
 
-The largest remaining gap is **L7->Matrix** (in-process vs separate process).
-The s3s overhead is still significant for the with-MD5 path, but the common
-case (skip-md5) bypasses that bottleneck for PUT.
+The largest remaining gap is **hyper vs Go's net/http on Windows TCP writes**.
+This affects both PUT and GET equally (~1.5x drop from in-process to separate
+process). Options to investigate:
+- hyper TCP_NODELAY / socket buffer tuning
+- hyper HTTP/2 (multiplexing may help)
+- Windows-specific TCP tuning (SO_SNDBUF, loopback fast path)
+- Benchmark on Linux to isolate Windows-specific overhead
 
 ---
 
@@ -423,6 +461,7 @@ case (skip-md5) bypasses that bottleneck for PUT.
 | 7 | Debug binary fix | -- | **Matrix PUT 52->320 MB/s** (was benchmarking debug build) | done |
 | 8 | Pipeline experiments | L4 | Double-buffer -96%, channel -96%, 4MB chunks -11%. All worse | reverted |
 | 9 | Skip MD5 (xxhash64 ETag) | L1+L4+L7 | **L7 PUT +83%** (380->695 MB/s). Matrix PUT +38% (320->441). Fastest PUT at all sizes | done |
+| 10 | Chunked mmap GET (4MB slices) | L4+L7 | **Matrix GET +25%** (484->604 MB/s). Zero-copy Bytes::slice | done |
 
 ### Before and after (L7, full client path -- what users see)
 
