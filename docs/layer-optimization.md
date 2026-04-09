@@ -453,15 +453,41 @@ the 1GB GET gap from 24% to 9% vs MinIO.
 write ceiling, not AbixIO code. Evidence: L5 raw hyper GET (no S3, no
 storage, just `Full::new(bytes)`) = **510 MB/s** with TCP_NODELAY. MinIO
 achieves **748 MB/s** through a full S3 stack in a separate process.
-hyper's ceiling is 32% below MinIO's throughput for 10MB bodies.
+### L5X: hyper sub-layer experiments (2026-04-09)
 
-This is a hyper/tokio/Windows TCP stack limitation, not something we can
-fix in AbixIO's code. Options to investigate:
-- Benchmark on Linux to isolate Windows-specific TCP overhead
-- hyper HTTP/2 (may reduce per-response framing overhead)
-- SO_SNDBUF tuning (larger TCP send buffer)
-- Profile hyper response write path for unnecessary copies
-- Consider a custom response writer that bypasses hyper for large GETs
+Tested hyper config variants to find where time goes in HTTP GET responses.
+All measurements in-process, 10 iterations, TCP_NODELAY on.
+
+| Variant | 10MB GET MB/s | 1GB GET MB/s | Config |
+|---|---|---|---|
+| raw_tcp | 327 | 395 | Raw tokio write_all, no HTTP framing |
+| L5 (baseline) | 510 | 724 | hyper default, Full::new(bytes) |
+| writev | 429 | 605 | hyper writev(true) |
+| bigbuf | 364 | **800** | hyper max_buf_size(4MB) |
+| stream | 462 | **849** | hyper StreamBody (4MB frame chunks) |
+| **all_opts** | **726** | **844** | writev + bigbuf + stream combined |
+| MinIO (matrix) | 648-685 | 796 | Go net/http reference |
+
+Key findings:
+
+1. **Raw TCP is SLOWER than hyper** (327 vs 510 MB/s at 10MB). Naive
+   `write_all` on a raw socket is worse than hyper's optimized write path.
+   hyper is NOT fundamentally slower -- its default config just isn't
+   optimized for large bodies.
+
+2. **`all_opts` hits 726 MB/s at 10MB** -- within 6% of MinIO's 685.
+   The combination of `writev(true)` + `max_buf_size(4MB)` + chunked
+   StreamBody nearly closes the gap at L5 level.
+
+3. **For 1GB, tuned hyper matches MinIO** (844 vs 796 MB/s).
+
+4. **The prior claim that "hyper's ceiling is 32% below MinIO" was wrong.**
+   hyper with correct config is competitive. The gap was configuration,
+   not architecture.
+
+Applied: `writev(true)` + `max_buf_size(4MB)` in `src/main.rs`.
+The remaining matrix gap (674 vs 796 for 1GB) is the s3s/ChunkedBytes
+overhead between L5X and the full stack.
 
 ---
 
@@ -481,6 +507,7 @@ fix in AbixIO's code. Options to investigate:
 | 10 | Chunked mmap GET (4MB slices) | L4+L7 | **Matrix GET +25%** (484->604 MB/s). Zero-copy Bytes::slice | done |
 | 11 | TCP_NODELAY on accept | L5+ | **Matrix PUT +10%** (453->498), **GET +14%** (604->686). Go sets this by default | done |
 | 12 | ChunkedBytes GET (hybrid) | L6+L7 | **10MB GET +36%** (324->440 MB/s). Collect <=64MB, stream >64MB. Eliminates SyncStream+StreamWrapper chain | done |
+| 13 | hyper writev + max_buf_size | L5+ | **1GB GET +15%** (584->674). L5X shows hyper can match MinIO with correct config | done |
 
 ### Before and after (L7, full client path -- what users see)
 
@@ -496,12 +523,16 @@ GET 1GB            752 MB/s        880 MB/s        +17%    (chunked mmap)
 ```
 Operation          Start           Current         Change
 -----------        -----------     -----------     -------
-PUT 4KB            442 obj/s       1777 obj/s      +302%   (debug fix + skip MD5 + TCP_NODELAY)
-PUT 10MB           50 MB/s         247 MB/s        +394%   (debug fix + skip MD5 + TCP_NODELAY)
-PUT 1GB            52 MB/s         578 MB/s        +1012%  (debug fix + skip MD5 + TCP_NODELAY)
-GET 10MB           241 MB/s        440 MB/s        +83%    (chunked mmap + TCP_NODELAY + ChunkedBytes)
-GET 1GB            577 MB/s        584 MB/s        +1%     (chunked mmap + TCP_NODELAY)
+PUT 4KB            442 obj/s       1923 obj/s      +335%
+PUT 10MB           50 MB/s         325 MB/s        +550%
+PUT 1GB            52 MB/s         546 MB/s        +950%
+GET 10MB           241 MB/s        399 MB/s        +66%
+GET 1GB            577 MB/s        674 MB/s        +17%
 ```
+
+All optimizations applied: debug binary fix, skip MD5 (xxhash64 ETag),
+chunked mmap (4MB Bytes::slice), TCP_NODELAY, ChunkedBytes hybrid
+response, hyper writev(true) + max_buf_size(4MB).
 
 ### Before and after (L6, S3 protocol in-process)
 
