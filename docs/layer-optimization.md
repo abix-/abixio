@@ -4,7 +4,7 @@ Systematic per-layer performance analysis of the AbixIO PUT and GET paths.
 Each layer is treated as an independent optimization problem: measure it,
 identify the ceiling, find the bottleneck, test a fix, record the result.
 
-Last updated: 2026-04-09, commit `4452de1`.
+Last updated: 2026-04-09, commit `9a22d2a`.
 
 ## Table of contents
 
@@ -73,31 +73,44 @@ blake3 uses SIMD (AVX2/SSE4.1), 4.3 GB/s is near hardware ceiling. MD5 at
 inline during the streaming encode path -- their cost overlaps with I/O for
 large objects (10MB+).
 
-MD5 is required by S3 (ETag = MD5 of body). Cannot be removed.
+MD5 is required by S3 (ETag = MD5 of body) when the client sends
+`Content-MD5`. When absent, we skip MD5 and use xxhash64 for the ETag.
 
-### Can MD5 be faster?
+### MD5 skip optimization (done, 2026-04-09)
 
-Investigated 2026-04-09:
+**Before**: MD5 computed inline on every PUT regardless of client headers.
+703 MB/s throughput = ~30% of L4 PUT time for 1GB objects.
+
+**After**: when `input.content_md5` is `None` (the common case -- aws-sdk-s3
+with `disable_payload_signing()`, mc, rclone all skip it), set
+`PutOptions.skip_md5 = true`. The encode path uses xxhash64 (~10+ GB/s)
+instead of MD5 for the ETag. Format: `{xxh64:016x}{size:016x}` (32 hex
+chars, same length as MD5 ETags).
+
+**Result**: L7 1GB PUT improved from 380 to **695 MB/s (+83%)**. Matrix
+PUT improved from 320 to **441 MB/s (+38%)**, now fastest of all three
+servers.
+
+Files changed:
+- `src/storage/metadata.rs` -- added `skip_md5: bool` to `PutOptions`
+- `src/storage/erasure_encode.rs` -- conditional MD5/xxhash in streaming path
+- `src/storage/volume_pool.rs` -- conditional MD5/xxhash in small-object path
+- `src/s3_service.rs` -- set `skip_md5` based on `content_md5` header
+
+### MD5 assembly research
+
+Investigated 2026-04-09 for cases where MD5 IS required:
 
 - **`md-5` crate `asm` feature**: ships x86_64 assembly via `md5-asm` crate.
   **Fails on MSVC** -- the `.S` files use GAS syntax which `cl.exe` cannot
   compile. Would work on Linux/macOS or with `x86_64-pc-windows-gnu` target.
 - **Go's `crypto/md5`** (what MinIO uses): has hand-written amd64 assembly
-  that runs automatically. This is why Go MD5 is faster than Rust's pure
-  software implementation on Windows.
-- **MinIO skips MD5** when not in strict compatibility mode and client didn't
-  send `Content-MD5` (`cmd/object-api-utils.go:1061`). It uses random bytes
-  for ETag instead. However, normal PutObject has `DisableMD5: false`.
-- **Impact ceiling**: even if MD5 were free, L4 PUT would go from 556 to
-  ~800 MB/s. The L4->L6 gap (556->344, s3s overhead) is still the bigger
-  bottleneck. MD5 is ~30% of L4 time, but L4 is not the limiting layer.
-
-### Decision
-
-**No change now.** MD5 is not the primary bottleneck (s3s is). When we move
-to Linux, enable `md-5 = { features = ["asm"] }` for a free ~40% MD5 speedup.
-On Windows, consider the `md5` crate with MSVC-compatible intrinsics if one
-emerges, or skip MD5 for UNSIGNED-PAYLOAD requests (MinIO approach).
+  that runs automatically.
+- **RustCrypto/asm-hashes archived** (Aug 2025). Official recommendation:
+  port to Rust `global_asm!` inline assembly in RustCrypto/hashes. SHA-1
+  already has `compress/x86.rs`; MD5 does not yet have x86_64 inline asm.
+- **Future**: write x86_64 MD5 compress using `global_asm!` (works on all
+  targets including MSVC). On Linux, enable `md-5 = { features = ["asm"] }`.
 
 ---
 
@@ -170,9 +183,10 @@ for (i, shard_data) in shards.iter().enumerate() {
 }
 ```
 
-L4 PUT at 439 MB/s vs L3 disk write at 1625 MB/s = 3.7x overhead from inline
-hashing (MD5 + blake3), RS encode, metadata writes, and the sequential shard
-write loop.
+L4 PUT at 510 MB/s (with skip_md5) vs L3 disk write at 1625 MB/s = 3.2x
+overhead from inline hashing (blake3 + xxhash64), RS encode, metadata
+writes, and the sequential shard write loop. Without skip_md5 (MD5
+required): 439 MB/s, 3.7x overhead.
 
 ### PUT parallelism experiments (all failed)
 
@@ -354,42 +368,45 @@ external matrix benchmarks.
 
 | Operation | L6 (no auth, reqwest) | L6A (auth, reqwest) | L7 (auth, aws-sdk-s3) |
 |---|---|---|---|
-| PUT | 344 MB/s | 337 MB/s | 380 MB/s |
-| GET | 535 MB/s | -- | 752 MB/s |
+| PUT (before skip-md5) | 344 MB/s | 337 MB/s | 380 MB/s |
+| PUT (after skip-md5) | -- | -- | **695 MB/s** |
+| GET | 535 MB/s | -- | 696 MB/s |
 
 ### Analysis
 
 L7 runs in-process with auth enabled and the full aws-sdk-s3 client --
-same path as real users. The key finding: **L7 is fast (380 MB/s PUT)**.
+same path as real users. aws-sdk-s3 does not send `Content-MD5`, so
+`skip_md5` is active and xxhash64 is used for the ETag.
+
 The matrix benchmark previously showed 52 MB/s because it was running an
 unoptimized debug binary (`target/debug/abixio.exe`). After fixing the
 binary path to use release builds, matrix results match L7.
 
 Auth overhead is negligible (L6 vs L6A: 344 vs 337 MB/s, within noise).
-aws-sdk-s3 client overhead is negligible (L6 vs L7: 344 vs 380 MB/s).
+aws-sdk-s3 client overhead is negligible (L6 vs L7: 344 vs 380 MB/s pre-skip-md5).
 
 ---
 
 ## Layer-to-layer gaps
 
-Where throughput is lost between layers (1GB, 2026-04-09):
+Where throughput is lost between layers (1GB, 2026-04-09, after skip-md5):
 
 | Path | L4 | L6 | L7 | Matrix | Biggest gap |
 |------|----|----|-----|--------|-------------|
-| PUT | 556 MB/s | 344 MB/s | 380 MB/s | 320 MB/s | **L4->L6: -38%** (s3s overhead) |
-| GET | instant | 535 MB/s | 752 MB/s | 555 MB/s | **L4->L6** (s3s response serialization) |
+| PUT (skip-md5) | 510 MB/s | -- | **695 MB/s** | **441 MB/s** | **L7->Matrix: -37%** (process boundary) |
+| PUT (with MD5) | 556 MB/s | 344 MB/s | 380 MB/s | 320 MB/s | **L4->L6: -38%** (s3s overhead) |
+| GET | instant | 535 MB/s | 696 MB/s | 484 MB/s | **L7->Matrix: -30%** |
 
 | Gap | Current | Ceiling | Ratio | Notes |
 |-----|---------|---------|-------|-------|
-| L6 PUT vs L4 PUT | 344 vs 556 MB/s | 1.6x | s3s dispatch overhead |
-| L4 PUT vs L3 write | 556 vs 1625 MB/s | 2.9x | hashing + RS + metadata |
-| L6 GET (mc) vs L6 GET (curl) | 354 vs 1220 MB/s | 3.4x | mc client overhead (SigV4, Go HTTP) |
+| L7 PUT vs Matrix PUT | 695 vs 441 MB/s | 1.6x | process boundary + separate binary overhead |
+| L4 PUT vs L3 write | 510 vs 1625 MB/s | 3.2x | blake3 + xxhash + RS + metadata (skip-md5) |
+| L7 GET vs Matrix GET | 696 vs 484 MB/s | 1.4x | process boundary |
 | EC GET vs 1+0 GET | 1236 vs page cache | -- | RS decode (inherent cost of EC) |
 
-The largest server-side gap is **L4->L6** (s3s protocol overhead). The L4
-PUT gap (2.9x vs disk) is from inline hashing (MD5 at 703 MB/s is the floor)
-plus RS encode plus metadata writes -- fundamental costs of erasure-coded
-storage.
+The largest remaining gap is **L7->Matrix** (in-process vs separate process).
+The s3s overhead is still significant for the with-MD5 path, but the common
+case (skip-md5) bypasses that bottleneck for PUT.
 
 ---
 
@@ -405,8 +422,29 @@ storage.
 | 6 | Zero-alloc EC GET fast path | L4 | **EC GET +35%** (919->1236 MB/s at 1GB). Slices from mmap, no Vec alloc | done |
 | 7 | Debug binary fix | -- | **Matrix PUT 52->320 MB/s** (was benchmarking debug build) | done |
 | 8 | Pipeline experiments | L4 | Double-buffer -96%, channel -96%, 4MB chunks -11%. All worse | reverted |
+| 9 | Skip MD5 (xxhash64 ETag) | L1+L4+L7 | **L7 PUT +83%** (380->695 MB/s). Matrix PUT +38% (320->441). Fastest PUT at all sizes | done |
 
-### Before and after (L6, end-to-end S3 path)
+### Before and after (L7, full client path -- what users see)
+
+```
+Operation          Before          After           Change
+-----------        -----------     -----------     -------
+PUT 1GB            380 MB/s        695 MB/s        +83%    (skip MD5)
+GET 1GB            752 MB/s        696 MB/s        ~same   (GET unchanged)
+```
+
+### Before and after (matrix, external benchmark)
+
+```
+Operation          Before          After           Change
+-----------        -----------     -----------     -------
+PUT 4KB            442 obj/s       2037 obj/s      +361%   (debug binary fix + skip MD5)
+PUT 10MB           50 MB/s         330 MB/s        +560%   (debug binary fix + skip MD5)
+PUT 1GB            52 MB/s         441 MB/s        +748%   (debug binary fix + skip MD5)
+GET 1GB            577 MB/s        484 MB/s        ~same
+```
+
+### Before and after (L6, S3 protocol in-process)
 
 ```
 Operation          Before          After           Change
@@ -427,7 +465,7 @@ GET 10MB (1d)      1175 MB/s       19098 MB/s      mmap page cache
 GET 1GB (1d)       1244 MB/s       (page cache)    mmap instant
 GET 10MB (4d EC)   774 MB/s        1048 MB/s       +35% (zero-alloc mmap)
 GET 1GB (4d EC)    919 MB/s        1236 MB/s       +35% (zero-alloc mmap)
-PUT (all sizes)    unchanged       unchanged       0%
+PUT 1GB (1d)       439 MB/s        510 MB/s        +16% (skip MD5, xxhash64)
 ```
 
 ---
@@ -632,9 +670,11 @@ HTTP/s3s layer, not the storage layer.
 
 ## Future optimization candidates
 
-- **s3s upgrade or bypass**: s3s 0.13 adds ~38% overhead on PUT. Newer versions
-  or a custom protocol layer could reduce this. This is the single biggest
-  optimization opportunity
+- **s3s upgrade or bypass**: s3s 0.13 adds ~38% overhead on PUT (when MD5 is
+  required). For the common skip-md5 path, the L7->Matrix gap (695->441 MB/s)
+  suggests process boundary overhead is now the bigger factor
+- **MD5 assembly via `global_asm!`**: write x86_64 MD5 compress in Rust inline
+  asm (works on MSVC). For Content-MD5 requests where MD5 can't be skipped
 - **Multi-disk benchmark on separate physical devices**: parallel shard writes
   would likely help when shards map to different NVMe drives
 - **io_uring on Linux**: zero-copy I/O could narrow the L4-vs-L3 gap
