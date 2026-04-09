@@ -75,9 +75,29 @@ large objects (10MB+).
 
 MD5 is required by S3 (ETag = MD5 of body). Cannot be removed.
 
+### Can MD5 be faster?
+
+Investigated 2026-04-09:
+
+- **`md-5` crate `asm` feature**: ships x86_64 assembly via `md5-asm` crate.
+  **Fails on MSVC** -- the `.S` files use GAS syntax which `cl.exe` cannot
+  compile. Would work on Linux/macOS or with `x86_64-pc-windows-gnu` target.
+- **Go's `crypto/md5`** (what MinIO uses): has hand-written amd64 assembly
+  that runs automatically. This is why Go MD5 is faster than Rust's pure
+  software implementation on Windows.
+- **MinIO skips MD5** when not in strict compatibility mode and client didn't
+  send `Content-MD5` (`cmd/object-api-utils.go:1061`). It uses random bytes
+  for ETag instead. However, normal PutObject has `DisableMD5: false`.
+- **Impact ceiling**: even if MD5 were free, L4 PUT would go from 556 to
+  ~800 MB/s. The L4->L6 gap (556->344, s3s overhead) is still the bigger
+  bottleneck. MD5 is ~30% of L4 time, but L4 is not the limiting layer.
+
 ### Decision
 
-**No change.** Hashing is not the bottleneck at any layer above it.
+**No change now.** MD5 is not the primary bottleneck (s3s is). When we move
+to Linux, enable `md-5 = { features = ["asm"] }` for a free ~40% MD5 speedup.
+On Windows, consider the `md5` crate with MSVC-compatible intrinsics if one
+emerges, or skip MD5 for UNSIGNED-PAYLOAD requests (MinIO approach).
 
 ---
 
