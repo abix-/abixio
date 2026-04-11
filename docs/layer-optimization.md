@@ -853,15 +853,91 @@ the file tier. 130x faster.**
 Bench: `tests/layer_bench.rs::bench_pool_l1_slot_write`
 Output: `bench-results/phase2-slot-writes.txt`
 
-### Next: Phase 2.5 (faster JSON serializer)
+### Next: Phase 2.5 (faster JSON serializer) -- DONE, see Pool L1.5 below
 
-Phase 2 found compact JSON to be neutral on speed even though it
-should be cheaper. The next experiment measures `simd-json` and
-`sonic-rs` against `serde_json` on the same workload to see if a
-faster serializer is actually a real win at this size. Maximum
-JSON speed is the goal.
+---
 
-After 2.5: Phase 3 (rename worker in isolation).
+## Pool L1.5: JSON serializer comparison (Phase 2.5)
+
+Phase 2 found that compact `serde_json::to_vec` showed no measurable
+speed improvement over `to_vec_pretty` -- despite producing 35%
+smaller output. The user wanted maximum possible JSON speed for the
+pool hot path, so Phase 2.5 measured drop-in alternatives in
+isolation.
+
+### Numbers (Windows 10, 100k iters, ~500-byte ObjectMetaFile)
+
+| Crate | avg | p50 | p99 | output | vs serde_json::to_vec |
+|---|---|---|---|---|---|
+| **simd-json::serde::to_vec** | **383ns** | **400ns** | **400ns** | 391 bytes | **-161ns (-30%)** |
+| serde_json::to_vec | 544ns | 500ns | 700ns | 391 bytes | baseline |
+| sonic-rs::to_vec | 614ns | 600ns | 700ns | 391 bytes | +70ns (+13%) |
+| serde_json::to_vec_pretty | 858ns | 800ns | 1100ns | 597 bytes | +314ns (+58%) |
+
+### Findings
+
+**simd-json wins.** 383ns avg, 30% faster than `serde_json::to_vec`
+on this payload. Output is compact (391 bytes) and round-trips
+through `serde_json::from_slice` cleanly so destination meta.json
+files stay fully compatible.
+
+**sonic-rs is slower** in this regime, by 13%. The marketing claim
+of 2-3x faster than serde_json applies to parsing larger documents,
+not serializing 500-byte structs. The per-call codec overhead
+dominates at this size. Rejected.
+
+**simd-json's 30% win is also smaller than its marketing.** Same
+reason -- simd-json shines on parsing large documents with SIMD
+acceleration. At 391 bytes the SIMD setup cost eats most of the
+theoretical speedup. We still get a real 30% improvement, just not
+the 2-3x.
+
+### Methodology lesson: Phase 2 had it wrong about compact JSON
+
+Phase 2 concluded that compact JSON was "neutral on speed" because
+strategy E (compact) was within noise of strategy D (pretty) when
+measured end-to-end through the slot write path. **Phase 2.5 in
+isolation shows compact serde_json IS 314ns faster than pretty.**
+The 314ns difference disappeared into the I/O variance in Phase 2.
+
+This is a generalizable insight: **components measured in isolation
+can reveal real wins that end-to-end I/O variance buries.** When a
+microbench result says "no change," check if the noise floor is
+larger than the expected effect. If yes, drop one layer down and
+measure the component alone.
+
+### Production caveat
+
+simd-json's effectiveness depends on runtime SIMD detection
+(SSE4.2/AVX2 on x86_64; NEON on ARM64). The 30% win was measured
+on this Windows x86_64 development box. **Re-run this bench on the
+production target before committing to simd-json in Phase 4.**
+sonic-rs and serde_json are the fallbacks if simd-json doesn't work
+on a given target.
+
+### The bigger truth
+
+All four serializers complete in under 1us. The actual file syscall
+on the meta write is ~10us. The full pool hot path is ~6us.
+Switching to simd-json saves 161ns per PUT -- about 2-3% of the
+end-to-end hot path. Real, but small in absolute terms.
+
+We're shipping it because (a) the user explicitly said maximum JSON
+speed is the goal, (b) round-trip parses validate, (c) the
+dependency is small and stable, (d) every nanosecond matters when
+the pool is competing with the log store's microsecond-level
+operations.
+
+### Decision
+
+Phase 4 will use `simd_json::serde::to_vec` as the meta serializer
+in the pool hot path, with `serde_json::to_vec` as the fallback if
+the target doesn't support SIMD acceleration. sonic-rs is dropped.
+
+Bench: `tests/layer_bench.rs::bench_pool_l1_5_json_serializers`
+Output: `bench-results/phase2.5-json-serializers.txt`
+
+After Phase 2.5: **Phase 3 (rename worker in isolation).**
 
 ---
 

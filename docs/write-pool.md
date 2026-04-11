@@ -146,21 +146,27 @@ Phase 2 measured 33us serial vs 6.3us joined at 4KB. The savings is
 larger than just the meta write time -- the tokio blocking-pool
 dispatch overlaps too.
 
-**2. Compact JSON instead of pretty JSON.** **MEASURED neutral on
-speed, ~35% smaller on disk.**
+**2. simd-json compact output instead of `serde_json::to_vec_pretty`.**
+**MEASURED 30% faster than serde_json, ~35% smaller on disk.**
 
-`metadata.rs:170` currently uses `serde_json::to_vec_pretty`. Switch
-to `serde_json::to_vec`. Compact output is 391 bytes vs 597 bytes
-pretty in the bench. Phase 2 showed no measurable speed change
-(differences were within the high variance band), but the disk-size
-win is real and free. There's no audience for the pretty whitespace
-inside meta.json files.
+Phase 2.5 measured four serializers in isolation. `simd_json::serde::to_vec`
+won at 383ns avg vs `serde_json::to_vec_pretty` at 858ns -- a 55%
+speed win combined with 35% smaller output. Round-trip parses through
+`serde_json::from_slice` cleanly so destination meta.json files stay
+fully compatible with the rest of the codebase.
 
-**Follow-up (Phase 2.5):** since compact serde_json was neutral on
-CPU, the maximum-JSON-speed goal moves to measuring `simd-json` and
-`sonic-rs` as drop-in replacements. Both claim 2-3x faster than
-`serde_json` on small payloads. Phase 2.5 measures them; if they
-deliver, they replace `serde_json::to_vec` here as the default.
+```rust
+let meta_json = simd_json::serde::to_vec(&meta_file)?;
+slot.meta_file.write_all(&meta_json).await?;
+```
+
+`sonic-rs` was measured and rejected (13% slower than serde_json at
+this payload size). `serde_json::to_vec` (compact) is the fallback
+if simd-json isn't available on the target.
+
+The absolute win is small (~475ns vs the current pretty path), but
+on a sub-microsecond serialization step the percentage matters. See
+Phase 2.5 results under "Implementation status" for the full table.
 
 **3. Sync `std::fs::File::write_all` for small payloads.**
 **REJECTED by Phase 2 measurement.** Predicted to save 2-4us per
@@ -174,15 +180,17 @@ this size class. Either way, the verdict is clear: don't ship.
 
 ```rust
 let WriteSlot { mut data_file, mut meta_file, .. } = pool.try_pop().unwrap();
+let meta_json = simd_json::serde::to_vec(&meta_file)?;
 tokio::try_join!(
     data_file.write_all(&shard_bytes),
-    meta_file.write_all(&compact_meta_json),
+    meta_file.write_all(&meta_json),
 )?;
 ```
 
 Measured 4KB pre-ack path: ~6us through the pool vs ~776us through
 the file tier. **130x faster** on the hot path itself, before any
-read-path or worker integration.
+read-path or worker integration. simd-json saves another ~161ns
+on the meta serialization step.
 
 ### Async rename worker (one task per disk)
 
@@ -442,7 +450,7 @@ make a data-driven call before deleting the loser.
 |---|---|---|---|
 | 1 | `write_slot_pool.rs`: pool, slot, replenish | core data structures | **done** (63ns pop+release, see "Implementation status" below) |
 | 1.5 | Slot-write strategy bench (Phase 2) | measured optimization stack | **done** (pool 23x faster than file tier at 4KB, see "Phase 2 results" below) |
-| 1.6 | Faster JSON serializer bench (Phase 2.5) | maximum JSON speed via simd-json / sonic-rs | **next** (compact serde_json was neutral; need to measure faster crates) |
+| 1.6 | Faster JSON serializer bench (Phase 2.5) | maximum JSON speed via simd-json / sonic-rs | **done** (simd-json wins at 383ns avg, 30% faster than serde_json; sonic-rs rejected as slower; see "Phase 2.5 results" below) |
 | 2 | `ObjectMetaFile` `bucket` and `key` fields | self-describing meta | pending |
 | 3 | Wire `write_shard` to use the pool when enabled | buffered PUT fast path | pending |
 | 4 | Wire `open_shard_writer` to use the pool | streaming PUT fast path | pending |
@@ -498,17 +506,13 @@ With 32 slots * 4MB = 128MB per disk reserved. Tunable. Measure
 at 1MB and 4MB sizes. Decision: enable pre-allocation if it shows
 >=10% improvement at any common size, otherwise leave it off.
 
-**Faster JSON serializer.** Promoted to **Phase 2.5** -- see the
-"Phase 2.5: faster JSON serializer" section under "Implementation
-status" above. The Phase 2 result that compact `serde_json::to_vec`
-was neutral on CPU made this the next priority: maximum JSON speed
-is the goal.
-
-`simd-json` and `sonic-rs` both claim 2-3x faster than `serde_json`
-on small payloads. The destination meta.json must remain valid JSON
-(so any drop-in serializer is fine). Add behind a `feature` flag if
-portability is a concern (simd-json requires SSE4.2/AVX2). Decision
-threshold: enable by default if it shows >=2us improvement at 4KB.
+**Faster JSON serializer.** **DECIDED in Phase 2.5: simd-json wins.**
+See the "Phase 2.5: faster JSON serializer -- DONE" section under
+"Implementation status" for the measured numbers. Verdict:
+`simd_json::serde::to_vec` at 383ns avg, 30% faster than
+`serde_json::to_vec`. Phase 4 will use simd-json as the default
+meta serializer in the pool hot path. sonic-rs was measured and
+rejected (slower at this payload size).
 
 ## Implementation status
 
@@ -686,33 +690,66 @@ worker integration.
    problem, but a future bench should use 5-10x more iterations in
    this band for cleaner avgs.
 
-### Phase 2.5: faster JSON serializer -- next
+### Phase 2.5: faster JSON serializer -- DONE
 
-Phase 2 found that `serde_json::to_vec` (compact) gave no measurable
-speed improvement over `to_vec_pretty` despite producing smaller
-output. The win was on disk size, not CPU time. **The goal is
-maximum possible JSON speed**, so the next experiment measures
-serializer alternatives:
+The bench function `bench_pool_l1_5_json_serializers` in
+`tests/layer_bench.rs` runs four serializers against the same
+representative `ObjectMetaFile` (391 bytes compact) over 100k
+iterations, with round-trip parse validation through `serde_json`
+to confirm output compatibility. Output:
+`bench-results/phase2.5-json-serializers.txt`. Re-run with:
 
-- `serde_json::to_vec` (current default, baseline)
-- `simd-json` -- claimed 2-3x faster, requires SSE4.2/AVX2
-- `sonic-rs` -- alternative, also 2-3x faster than serde_json
+```bash
+k3sc cargo-lock test --release --test layer_bench -- \
+    --ignored --nocapture bench_pool_l1_5_json_serializers
+```
 
-Add a new bench function `bench_pool_l1_5_json_serializers` that
-serializes a representative `ObjectMetaFile` with each library and
-measures avg / p50 / p99 over 10k iterations. If a faster serializer
-shows >=2us improvement at 4KB, ship it as the default in the pool
-hot path. Add behind a `feature` flag if portability is a concern.
+**Numbers (Windows 10, 100k iters):**
 
-Files to touch:
-- `Cargo.toml` -- optional dev-dep on `simd-json`, `sonic-rs`
-- `tests/layer_bench.rs` -- new bench function
-- `bench-results/phase2.5-json-serializers.txt` -- output
+| Crate | avg | p50 | p99 | output | vs serde_json::to_vec |
+|---|---|---|---|---|---|
+| **C: simd-json::serde::to_vec** | **383ns** | **400ns** | **400ns** | 391 bytes | **-161ns (-30%)** |
+| B: serde_json::to_vec | 544ns | 500ns | 700ns | 391 bytes | baseline |
+| D: sonic-rs::to_vec | 614ns | 600ns | 700ns | 391 bytes | +70ns (+13%) |
+| A: serde_json::to_vec_pretty | 858ns | 800ns | 1100ns | 597 bytes | +314ns (+58%) |
+
+**Winner: simd-json.** 383ns avg, 30% faster than `serde_json::to_vec`.
+Round-trip parses cleanly through serde_json (the destination
+meta.json reader), output is byte-identical in size to compact
+serde_json. **Phase 4 will use `simd_json::serde::to_vec` as the
+meta serializer in the pool hot path.**
+
+**Rejected: sonic-rs.** Measured 13% *slower* than serde_json on this
+workload. The marketing claims of 2-3x speedup are for parsing larger
+documents; at 391 bytes the per-call overhead dominates. Not shipped.
+
+**Important caveat:** the absolute win is small (~161ns saved per
+PUT). The 30% percentage win is real but it's 30% of a sub-microsecond
+operation. Compared to the ~10us file syscall, the JSON step is not
+the bottleneck. simd-json shaves 161ns off a ~6us hot path -- about
+2-3% improvement end-to-end. We're shipping it because (a) the
+explicit goal is maximum JSON speed, (b) the round-trip validates,
+(c) the dep is small and stable, (d) every nanosecond counts on a
+hot path that we're trying to make competitive with the log store.
+
+**Methodology lesson:** Phase 2 concluded that compact JSON was
+"neutral on speed." Phase 2.5 in isolation showed compact is 314ns
+faster than pretty (544ns vs 858ns), but the I/O variance in Phase 2
+hid that 314ns difference completely. **Components measured in
+isolation can reveal real wins that I/O variance buries.** Worth
+remembering for future bench design -- if a number "doesn't change"
+through end-to-end I/O, measure the component alone before drawing
+conclusions.
+
+**Production caveat:** the 30% simd-json win was measured on this
+Windows x86_64 development box. simd-json's effectiveness depends on
+runtime SIMD detection. Linux production targets may differ. Re-run
+this bench on the production target before committing in Phase 4.
 
 ### Phase 3-9: pending
 
 See `Implementation phases` table above. Phase 3 (rename worker in
-isolation) starts after Phase 2.5 measures the JSON win.
+isolation) is the next step.
 
 ## Open questions for implementation
 

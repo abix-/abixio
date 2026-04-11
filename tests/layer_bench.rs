@@ -797,6 +797,154 @@ async fn bench_pool_l1_slot_write() {
 }
 
 // ============================================================================
+// Pool L1.5: JSON serializer comparison
+// ============================================================================
+//
+// Phase 2.5 of the write-pool work. Phase 2 found that compact serde_json
+// gave no measurable speed improvement over pretty serde_json, even though
+// it produced ~35% smaller output. The user's stated goal is maximum JSON
+// speed for the pool hot path. This bench measures three faster
+// alternatives against serde_json on the exact same payload, with
+// round-trip parse validation to confirm output compatibility.
+//
+// Run with:
+//   k3sc cargo-lock test --release --test layer_bench -- --ignored \
+//       --nocapture bench_pool_l1_5_json_serializers
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_pool_l1_5_json_serializers() {
+    use abixio::storage::metadata::{ErasureMeta, ObjectMeta, ObjectMetaFile};
+    use std::collections::HashMap;
+
+    fn make_test_meta() -> ObjectMetaFile {
+        let meta = ObjectMeta {
+            size: 4096,
+            etag: "d41d8cd98f00b204e9800998ecf8427e".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            created_at: 1700000000,
+            erasure: ErasureMeta {
+                ftt: 1,
+                index: 0,
+                epoch_id: 1,
+                volume_ids: vec![
+                    "vol-0".to_string(),
+                    "vol-1".to_string(),
+                    "vol-2".to_string(),
+                    "vol-3".to_string(),
+                ],
+            },
+            checksum: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_string(),
+            user_metadata: HashMap::new(),
+            tags: HashMap::new(),
+            version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+            inline_data: None,
+        };
+        ObjectMetaFile {
+            versions: vec![meta],
+        }
+    }
+
+    fn report(label: &str, iters: usize, mut samples: Vec<Duration>) {
+        samples.sort();
+        let total: Duration = samples.iter().sum();
+        let avg = total / iters as u32;
+        let p50 = samples[iters / 2];
+        let p99 = samples[(iters * 99) / 100];
+        let p999_idx = ((iters * 999) / 1000).min(iters - 1);
+        let p999 = samples[p999_idx];
+        eprintln!(
+            "  {:<32}  avg {:>6}ns  p50 {:>6}ns  p99 {:>6}ns  p999 {:>6}ns",
+            label,
+            avg.as_nanos(),
+            p50.as_nanos(),
+            p99.as_nanos(),
+            p999.as_nanos(),
+        );
+    }
+
+    let meta = make_test_meta();
+    let iters = 100_000;
+
+    eprintln!("\n=== Pool L1.5: JSON serializer comparison ===\n");
+    eprintln!("  payload: ObjectMetaFile with 1 version");
+    eprintln!("  iterations: {}", iters);
+    eprintln!();
+
+    // sanity check + output sizes
+    let json_serde_pretty = serde_json::to_vec_pretty(&meta).unwrap();
+    let json_serde = serde_json::to_vec(&meta).unwrap();
+    let json_simd = simd_json::serde::to_vec(&meta).unwrap();
+    let json_sonic = sonic_rs::to_vec(&meta).unwrap();
+
+    // round-trip parse via serde_json (the destination meta.json reader)
+    for (label, bytes) in [
+        ("serde_pretty", &json_serde_pretty),
+        ("serde", &json_serde),
+        ("simd-json", &json_simd),
+        ("sonic-rs", &json_sonic),
+    ] {
+        let parsed: ObjectMetaFile = serde_json::from_slice(bytes).unwrap_or_else(|e| {
+            panic!("{} produced JSON that serde_json cannot parse: {}", label, e)
+        });
+        assert_eq!(parsed, meta, "{} round-trip changed the struct", label);
+    }
+
+    eprintln!("  output sizes (bytes):");
+    eprintln!("    A serde_json::to_vec_pretty:  {}", json_serde_pretty.len());
+    eprintln!("    B serde_json::to_vec:         {}", json_serde.len());
+    eprintln!("    C simd-json::serde::to_vec:   {}", json_simd.len());
+    eprintln!("    D sonic-rs::to_vec:           {}", json_sonic.len());
+    eprintln!();
+
+    // warmup
+    for _ in 0..10_000 {
+        let _ = serde_json::to_vec(&meta).unwrap();
+    }
+
+    // A: serde_json::to_vec_pretty
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let _ = serde_json::to_vec_pretty(&meta).unwrap();
+        samples.push(t.elapsed());
+    }
+    report("A: serde_json::to_vec_pretty", iters, samples);
+
+    // B: serde_json::to_vec
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let _ = serde_json::to_vec(&meta).unwrap();
+        samples.push(t.elapsed());
+    }
+    report("B: serde_json::to_vec", iters, samples);
+
+    // C: simd-json::serde::to_vec
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let _ = simd_json::serde::to_vec(&meta).unwrap();
+        samples.push(t.elapsed());
+    }
+    report("C: simd-json::serde::to_vec", iters, samples);
+
+    // D: sonic-rs::to_vec
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let _ = sonic_rs::to_vec(&meta).unwrap();
+        samples.push(t.elapsed());
+    }
+    report("D: sonic-rs::to_vec", iters, samples);
+
+    eprintln!();
+}
+
+// ============================================================================
 // bench_perf: structured multi-size benchmark with JSON output and comparison
 // ============================================================================
 //
