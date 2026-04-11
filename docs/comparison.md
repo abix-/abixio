@@ -138,6 +138,17 @@ metadata files (one file instead of two). AbixIO goes further by eliminating
 the per-object file entirely. A 4KB PUT on 4 disks creates 4 sequential
 appends instead of 12 filesystem operations.
 
+### Pre-opened temp file pool (alternative write path)
+
+A second mechanism for the same goal: keep a small pool of already-open
+temp files per disk so that PUTs don't pay for `mkdir`, file create, or
+file open on the hot path. The PUT writes shard bytes to one slot's
+pre-opened data file and meta JSON to its companion meta file, then
+acks. The mkdir and the rename to the destination happen on a background
+worker. Two syscalls on the hot path instead of seven. Designed as an
+alternative to the log store and benchmarked side-by-side; the winner
+ships as the default. See [write-pool.md](write-pool.md).
+
 ### Per-object erasure coding
 
 This is the clearest current differentiator.

@@ -299,20 +299,28 @@ crash safe).
 ```
 WRITE PATH (fastest to slowest):
 
-  Tier 0: RAM write cache        ~0.001ms  (DashMap insert)
+  Tier 0: RAM write cache         ~0.001ms  (DashMap insert)
     |
     v (background, ~100ms)
-  Tier 1: Log-structured store   ~0.002ms  (segment append)
+  Tier 1: Log-structured store    ~0.002ms  (segment append, <=64KB)
+       OR
+  Tier 1: Pre-opened temp pool    ~0.002ms  (write to pre-opened slot)
     |
-    v (when segment full)
-  Tier 2: File tier              ~0.4ms    (mkdir + file create)
+    v (rename worker drains)
+  Tier 2: File tier               ~0.4ms    (mkdir + file create)
 
 READ PATH (checked in order):
 
-  Tier 0: RAM write cache        ~0.001ms  (DashMap lookup)
-  Tier 1: Log store index        ~0.05ms   (HashMap + mmap slice)
-  Tier 2: File tier              ~0.7ms    (file open + read)
+  Tier 0: RAM write cache         ~0.001ms  (DashMap lookup)
+  Tier 1: Log store index         ~0.05ms   (HashMap + mmap slice)
+       OR
+  Tier 1: pending_renames table   ~0.001ms  (DashMap lookup) + ~0.1ms file read
+  Tier 2: File tier               ~0.7ms    (file open + read)
 ```
 
 Each tier is a fallback for the one above. Writes flow down asynchronously.
 Reads check each tier in order, returning on the first hit.
+
+The log store and the temp pool are alternatives at tier 1, gated by
+`--write-tier`. See [write-pool.md](write-pool.md) for the pool design
+and the benchmark plan.

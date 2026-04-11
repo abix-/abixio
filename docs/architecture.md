@@ -65,6 +65,14 @@ cluster-control direction.
     than file tier). 4KB GET: 1.2ms (37% faster). No fsync -- page cache
     serves both read and write paths. See [write-log.md](write-log.md).
 
+14. **Pre-opened temp file pool for the file tier.** An alternative
+    write path that keeps a small pool of already-open temp files per
+    disk. PUT writes shard bytes and meta JSON into a slot's two pre-opened
+    files and acks. The mkdir + rename to the destination happen on a
+    background worker. Two syscalls on the hot path instead of seven.
+    Designed as an alternative to the log store, evaluated by benchmark.
+    See [write-pool.md](write-pool.md).
+
 ## Data flow
 
 ### PUT path

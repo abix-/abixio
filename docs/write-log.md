@@ -178,3 +178,15 @@ Remaining:
 | `src/storage/local_volume.rs` | Integration: write_shard/read_shard/stat_object/mmap_shard route through log |
 | `src/storage/volume_pool.rs` | S3 routing: small PUTs collected and encoded via write_shard path |
 | `src/s3_service.rs` | Passes content_length to put_object_stream for size-based routing |
+
+## See also
+
+- [Pre-opened temp file pool](write-pool.md) -- an alternative write
+  path being benchmarked against the log store. Same
+  eliminate-syscalls-from-the-hot-path goal, different mechanism (one
+  pre-opened file per object instead of many objects per segment).
+  The two are gated by `--write-tier` until benchmarks decide which
+  ships as the default.
+- [RAM write cache](write-cache.md) -- orthogonal: writes to a DashMap
+  in RAM with peer replication, flushes to whichever lower tier is
+  active.
