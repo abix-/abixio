@@ -93,6 +93,7 @@ the storage-layer optimizations got built.
   - [Phase 6: crash recovery scan (done)](#phase-6-crash-recovery-scan-done)
   - [Phase 8: end-to-end three-tier matrix (done)](#phase-8-end-to-end-three-tier-matrix-done)
   - [Phase 8.5: where the missing 900us actually lives (done)](#phase-85-where-the-missing-900us-actually-lives-done)
+  - [Phase 8.6: DRY pool optimizations into the file tier (done)](#phase-86-dry-pool-optimizations-into-the-file-tier-done)
   - [Phase 7, 9: pending](#phase-7-9-pending)
 - [Open questions for implementation](#open-questions-for-implementation)
 - [Files to modify (when phase 2 begins)](#files-to-modify-when-phase-2-begins)
@@ -579,6 +580,7 @@ The production default remains the three-tier handoff above.
 | 7 | Admin endpoint `GET /_admin/pool/status` | operator visibility | pending |
 | 8 | End-to-end three-tier matrix (HTTP layer) | data-driven decision | **done** (Phase 8: bench_pool_l4_tier_matrix measures PUT+GET p50 through the full hyper/s3s/VolumePool stack at 5 sizes for file/log/pool tiers. **Result: pool only wins 1MB-10MB, log store dominates <=64KB, file tier wins 100MB. Storage-layer 53x claims do not translate end-to-end.**) |
 | 8.5 | Stack breakdown via layer subtraction | attribute the missing 900us | **done** (Phase 8.5: bench_pool_l4_5_stack_breakdown with 10 stages proves HTTP stack is 93us, abixio dispatch is 32us, and the rest is file-tier work plus **two hidden choke points in the default pool config**: depth 32 starves under sustained load, and channel buffer 256 backpresses tx.send. With depth 1024 + channel 100k the pool p50 drops from 942us to 318us, giving a real 2.55x win over file tier. Default config is undersized for sustained throughput.) |
+| 8.6 | DRY pool optimizations into the file tier | shared optimization pattern across write paths | **done** (Phase 8.6: swapped `write_meta_file` to simd-json across all 9 call sites, collapsed file tier's 3x path validation to 1, added `tokio::try_join!` for concurrent shard+meta writes on non-inline file tier. Modest direct impact, largest maintenance win.) |
 | 9 | Benchmark all three tiers under concurrency | concurrent load picture | pending |
 
 ## Benchmark plan
@@ -2029,6 +2031,103 @@ real. It just requires a pool depth and channel buffer larger
 than the current defaults, plus acknowledging that under
 sustained load the "async rename worker" is not truly async
 without sufficient buffering in the producer-consumer queue.
+
+### Phase 8.6: DRY pool optimizations into the file tier (done)
+
+Phases 2 through 5.6 accumulated four hot-path optimizations in the
+pool branch of `write_shard`. The file tier branch received none of
+them. Phase 8.6 propagated the three that can live outside the pool
+design (the fourth, moving file handle drops off the hot path, is
+inherent to the pool's pre-opened file model and cannot apply to
+the file tier without rebuilding the pool).
+
+#### What landed
+
+1. **`write_meta_file` uses simd-json.** `src/storage/metadata.rs:182`
+   swapped `serde_json::to_vec_pretty` for `simd_json::serde::to_vec`.
+   Every one of the 9 callers of `write_meta_file` (write_shard,
+   multipart finalize, versioning, tagging, etc.) gets the Phase 2.5
+   speedup for free. Compact JSON instead of pretty is backward
+   compatible because `read_meta_file` uses `serde_json::from_slice`
+   which parses both.
+2. **Path computation collapse** in the file tier branch of
+   `write_shard`. Previously the file tier called
+   `pathing::object_dir`, then `pathing::object_shard_path`, then
+   `pathing::object_meta_path`. The second and third helpers
+   re-invoke `object_dir` internally, so each PUT was running
+   `validate_bucket_name` + `validate_object_key` + `safe_join`
+   three times. Fixed to one call plus two `.join()`s, matching
+   the pool's Phase 4.5 pattern.
+3. **Concurrent shard + meta writes** in the non-inline file tier
+   branch. Previously shard.dat was written with `tokio::fs::write`
+   (awaits) and then meta.json was written (awaits again). Now
+   both run concurrently via `tokio::try_join!` for objects
+   larger than 64KB, matching the pool's Phase 2 pattern.
+
+The inline path (<=64KB, data base64-encoded into meta.json) is
+unchanged because it only writes one file and `try_join!` has
+nothing to parallelize.
+
+#### Measured impact
+
+Measured via `bench_pool_l4_5_stack_breakdown` (4KB only) and
+`bench_pool_l4_tier_matrix` (5 sizes). Absolute numbers are noisy
+between runs on NTFS, especially at 10MB+ where OS cache state
+between runs dominates. The reliable signal:
+
+- **Stage B (direct write_shard at 4KB)**: 677us → 641us (~35us
+  improvement). Likely from the path collapse; simd-json is
+  too small to measure at 4KB meta sizes.
+- **File tier 64KB PUT**: 1506us → 1329us (~177us improvement).
+  Plausibly from `try_join!` parallelizing the meta write with
+  the shard write at a size where the non-inline path is used.
+- **File tier 4KB PUT**: swung wildly (1406us → 882us) between
+  runs but the delta is not attributable to Phase 8.6 alone
+  because 4KB takes the inline path which cannot benefit from
+  `try_join!`. Probably warm cache from prior bench runs.
+- **File tier 1MB-100MB PUT**: noise floor dominated. The ~30-60us
+  theoretical savings from parallel meta+shard writes is well
+  below the ~500us to ~5ms cross-run variance at those sizes.
+
+**Net claim:** the DRY cleanup landed. The direct perf impact is
+real at 64KB (~177us via `try_join!`) and small at other sizes
+(~5-35us via path collapse + simd-json). The biggest value is
+**reducing future maintenance burden**: both write paths now
+share the same optimization pattern, and improvements to
+`write_meta_file` now benefit all 9 of its callers simultaneously.
+
+#### What did NOT apply
+
+- **Phase 5.6's "move file drops off the hot path."** The pool's
+  win there came from the fact that it uses pre-opened files and
+  can hand the close-and-drop work to a background worker. The
+  file tier opens files inside `tokio::fs::write` itself, which
+  closes them synchronously before returning. Fixing that would
+  require the file tier to hold open file handles between writes
+  and close them asynchronously somewhere, which is
+  architecturally equivalent to rebuilding the pool. Out of scope.
+- **The inline base64 path at <=64KB.** The file tier encodes
+  small-object data as base64 into meta.json, writing one file
+  instead of two. This saves one file create at the cost of a
+  base64 encode pass (~25us at 4KB) and a larger meta.json. The
+  tradeoff is a design question, not a Phase 8.6 cleanup target.
+  Whether removing the inline path and letting `try_join!`
+  parallelize two files instead would be faster at 4KB is worth
+  a future bench. Not addressed here.
+- **VolumePool::put_object_stream** optimization. That layer
+  sits above `write_shard` and has its own per-PUT bookkeeping
+  (hash, RS encode at ftt=0, placement, metadata build). Phase
+  8.5 measured it at ~27us total at 4KB which is already minimal.
+  No low-hanging fruit there.
+
+#### Files touched
+
+- `src/storage/metadata.rs`: `write_meta_file` swapped to
+  `simd_json::serde::to_vec`.
+- `src/storage/local_volume.rs`: file tier branch of
+  `write_shard` rewritten with path collapse and `try_join!`.
+
+All 355 existing tests pass unchanged.
 
 ### Phase 7, 9: pending
 

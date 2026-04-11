@@ -180,7 +180,11 @@ impl ObjectMeta {
 }
 
 pub async fn write_meta_file(path: &Path, meta: &ObjectMetaFile) -> io::Result<()> {
-    let json = serde_json::to_vec_pretty(meta)
+    // Phase 8.6: use simd-json (30% faster than serde_json::to_vec_pretty
+    // per Phase 2.5; ~35% smaller output). Compact vs pretty has no
+    // functional impact because read_meta_file uses serde_json::from_slice
+    // which parses both.
+    let json = simd_json::serde::to_vec(meta)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     tokio::fs::write(path, json).await
 }

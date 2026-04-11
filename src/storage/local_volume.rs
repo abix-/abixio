@@ -537,7 +537,24 @@ impl Backend for LocalVolume {
         }
 
         // file path
+        //
+        // Phase 8.6: apply the pool-side optimizations here.
+        // 1. Compute paths once (Phase 4.5 pattern): obj_dir, then
+        //    .join(). This avoids 2x redundant validate_bucket_name
+        //    + validate_object_key + safe_join that the previous
+        //    pathing::object_shard_path / object_meta_path calls did
+        //    via their internal object_dir re-invocation.
+        // 2. Non-inline path runs the shard + meta writes concurrently
+        //    via tokio::try_join! (Phase 2 pattern). Wall-clock becomes
+        //    max(shard_write, meta_write) instead of the sum.
+        // 3. Both write_meta_file and the inline-serialize step use
+        //    simd-json (Phase 2.5 pattern): write_meta_file was updated
+        //    to use simd-json at the source, and the non-inline path
+        //    inlines simd_json::serde::to_vec directly so it can feed
+        //    try_join! without borrow issues.
         let obj_dir = pathing::object_dir(&self.root, bucket, key)?;
+        let shard_path = obj_dir.join("shard.dat");
+        let meta_path = obj_dir.join("meta.json");
         tokio::fs::create_dir_all(&obj_dir).await?;
 
         let mut version = meta.clone();
@@ -549,20 +566,28 @@ impl Backend for LocalVolume {
             version.inline_data = Some(
                 base64::engine::general_purpose::STANDARD.encode(data)
             );
-            // no shard.dat -- data is in meta.json
-        } else {
-            // large objects: separate shard.dat
-            tokio::fs::write(pathing::object_shard_path(&self.root, bucket, key)?, data).await?;
+            let mf = ObjectMetaFile {
+                bucket: bucket.to_string(),
+                key: key.to_string(),
+                versions: vec![version],
+            };
+            write_meta_file(&meta_path, &mf).await.map_err(StorageError::Io)?;
+            return Ok(());
         }
 
+        // large objects: shard.dat + meta.json written concurrently
         let mf = ObjectMetaFile {
             bucket: bucket.to_string(),
             key: key.to_string(),
             versions: vec![version],
         };
-        write_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?, &mf).await
-            .map_err(StorageError::Io)?;
-
+        let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
+            StorageError::Internal(format!("simd_json meta serialize: {}", e))
+        })?;
+        tokio::try_join!(
+            tokio::fs::write(&shard_path, data),
+            tokio::fs::write(&meta_path, &meta_json),
+        )?;
         Ok(())
     }
 

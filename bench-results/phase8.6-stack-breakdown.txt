@@ -1,0 +1,305 @@
+[cargo-lock] 13:33:28 waiting for build lock...
+[cargo-lock] 13:33:28 acquired lock, running: cargo test --release --test layer_bench --manifest-path C:\code\abixio\Cargo.toml -- --ignored --nocapture bench_pool_l4_5_stack_breakdown
+[cargo-lock] 13:33:28 running: cargo build --release --test layer_bench --manifest-path C:\code\abixio\Cargo.toml
+warning: unused import: `WriteSlot`
+  --> src\storage\local_volume.rs:11:87
+   |
+11 |     recover_pool_dir, run_rename_worker, PendingEntry, PendingRenames, RenameRequest, WriteSlot,
+   |                                                                                       ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `DEFAULT_SEGMENT_SIZE`
+  --> src\storage\log_store.rs:11:52
+   |
+11 | use super::segment::{ActiveSegment, SealedSegment, DEFAULT_SEGMENT_SIZE};
+   |                                                    ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `self`
+  --> src\storage\segment.rs:10:21
+   |
+10 | use super::needle::{self, Needle, NeedleLocation, HEADER_SIZE};
+   |                     ^^^^
+
+warning: unused import: `tokio::io::AsyncReadExt`
+ --> src\storage\erasure_decode.rs:4:5
+  |
+4 | use tokio::io::AsyncReadExt;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:261:29
+    |
+261 |     fn bucket_exists(&self, bucket: &str) -> bool {
+    |                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:267:33
+    |
+267 |     fn bucket_created_at(&self, bucket: &str) -> u64 {
+    |                                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+
+warning: unused variable: `size`
+   --> src\storage\volume_pool.rs:502:21
+    |
+502 |                 let size = entry.original_size as usize;
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: struct `BufPool` is never constructed
+  --> src\storage\erasure_decode.rs:17:8
+   |
+17 | struct BufPool {
+   |        ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new`, `take`, and `return_buf` are never used
+  --> src\storage\erasure_decode.rs:23:8
+   |
+22 | impl BufPool {
+   | ------------ associated items in this implementation
+23 |     fn new(count: usize, capacity: usize) -> Arc<Self> {
+   |        ^^^
+...
+31 |     fn take(&self) -> Vec<u8> {
+   |        ^^^^
+...
+39 |     fn return_buf(&self, mut buf: Vec<u8>) {
+   |        ^^^^^^^^^^
+
+warning: struct `PooledBuf` is never constructed
+  --> src\storage\erasure_decode.rs:50:8
+   |
+50 | struct PooledBuf {
+   |        ^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> src\storage\write_cache.rs:93:16
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<CacheKey, CacheEntry>> {
+   |                ^^^^^ the lifetime is elided here         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<'_, CacheKey, CacheEntry>> {
+   |                                                                                    +++
+
+warning: `abixio` (lib) generated 11 warnings (run `cargo fix --lib -p abixio` to apply 7 suggestions)
+warning: unused import: `WriteSlot`
+   --> tests\layer_bench.rs:972:67
+    |
+972 |         process_rename_request, run_rename_worker, RenameRequest, WriteSlot, WriteSlotPool,
+    |                                                                   ^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `RenameRequest`
+    --> tests\layer_bench.rs:1407:44
+     |
+1407 |     use abixio::storage::write_slot_pool::{RenameRequest, WriteSlot, WriteSlotPool};
+     |                                            ^^^^^^^^^^^^^
+
+warning: unused import: `WriteSlot`
+    --> tests\layer_bench.rs:1620:38
+     |
+1620 |         PendingEntry, RenameRequest, WriteSlot, WriteSlotPool,
+     |                                      ^^^^^^^^^
+
+warning: unused variable: `iters`
+   --> tests\layer_bench.rs:218:9
+    |
+218 |     let iters = 10;
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_iters`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `label`
+    --> tests\layer_bench.rs:2251:17
+     |
+2251 |             let label = human(size);
+     |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_label`
+
+warning: `abixio` (test "layer_bench") generated 5 warnings (run `cargo fix --test "layer_bench" -p abixio` to apply 5 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.49s
+[cargo-lock] 13:33:28 build ok, running: cargo test --release --test layer_bench --manifest-path C:\code\abixio\Cargo.toml -- --ignored --nocapture bench_pool_l4_5_stack_breakdown
+warning: unused import: `WriteSlot`
+  --> src\storage\local_volume.rs:11:87
+   |
+11 |     recover_pool_dir, run_rename_worker, PendingEntry, PendingRenames, RenameRequest, WriteSlot,
+   |                                                                                       ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `DEFAULT_SEGMENT_SIZE`
+  --> src\storage\log_store.rs:11:52
+   |
+11 | use super::segment::{ActiveSegment, SealedSegment, DEFAULT_SEGMENT_SIZE};
+   |                                                    ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `self`
+  --> src\storage\segment.rs:10:21
+   |
+10 | use super::needle::{self, Needle, NeedleLocation, HEADER_SIZE};
+   |                     ^^^^
+
+warning: unused import: `tokio::io::AsyncReadExt`
+ --> src\storage\erasure_decode.rs:4:5
+  |
+4 | use tokio::io::AsyncReadExt;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:261:29
+    |
+261 |     fn bucket_exists(&self, bucket: &str) -> bool {
+    |                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:267:33
+    |
+267 |     fn bucket_created_at(&self, bucket: &str) -> u64 {
+    |                                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+
+warning: unused variable: `size`
+   --> src\storage\volume_pool.rs:502:21
+    |
+502 |                 let size = entry.original_size as usize;
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: struct `BufPool` is never constructed
+  --> src\storage\erasure_decode.rs:17:8
+   |
+17 | struct BufPool {
+   |        ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new`, `take`, and `return_buf` are never used
+  --> src\storage\erasure_decode.rs:23:8
+   |
+22 | impl BufPool {
+   | ------------ associated items in this implementation
+23 |     fn new(count: usize, capacity: usize) -> Arc<Self> {
+   |        ^^^
+...
+31 |     fn take(&self) -> Vec<u8> {
+   |        ^^^^
+...
+39 |     fn return_buf(&self, mut buf: Vec<u8>) {
+   |        ^^^^^^^^^^
+
+warning: struct `PooledBuf` is never constructed
+  --> src\storage\erasure_decode.rs:50:8
+   |
+50 | struct PooledBuf {
+   |        ^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> src\storage\write_cache.rs:93:16
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<CacheKey, CacheEntry>> {
+   |                ^^^^^ the lifetime is elided here         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<'_, CacheKey, CacheEntry>> {
+   |                                                                                    +++
+
+warning: `abixio` (lib) generated 11 warnings (run `cargo fix --lib -p abixio` to apply 7 suggestions)
+warning: unused import: `WriteSlot`
+   --> tests\layer_bench.rs:972:67
+    |
+972 |         process_rename_request, run_rename_worker, RenameRequest, WriteSlot, WriteSlotPool,
+    |                                                                   ^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `RenameRequest`
+    --> tests\layer_bench.rs:1407:44
+     |
+1407 |     use abixio::storage::write_slot_pool::{RenameRequest, WriteSlot, WriteSlotPool};
+     |                                            ^^^^^^^^^^^^^
+
+warning: unused import: `WriteSlot`
+    --> tests\layer_bench.rs:1620:38
+     |
+1620 |         PendingEntry, RenameRequest, WriteSlot, WriteSlotPool,
+     |                                      ^^^^^^^^^
+
+warning: unused variable: `iters`
+   --> tests\layer_bench.rs:218:9
+    |
+218 |     let iters = 10;
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_iters`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `label`
+    --> tests\layer_bench.rs:2251:17
+     |
+2251 |             let label = human(size);
+     |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_label`
+
+warning: `abixio` (test "layer_bench") generated 5 warnings (run `cargo fix --test "layer_bench" -p abixio` to apply 5 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.47s
+     Running tests\layer_bench.rs (C:\code\endless\rust\target\release\deps\layer_bench-af8d33570fba9a2a.exe)
+
+running 1 test
+
+=== Pool L4.5: Stack breakdown at 4KB PUT (1000 iters, sequential) ===
+
+  client -> reqwest -> hyper -> [increasing stack layers]
+  1 disk, ftt=0, 127.0.0.1 TCP loopback
+
+  Bimodal buckets: fast = samples <300us, slow = samples >500us
+  Fast path = pool hit OR pure-HTTP baseline; slow path = file-tier write
+
+  Stage A  hyper_bare            avg    106.8us  p50     94.5us  p99     186.3us   fast  999  mid   1  slow    0
+  Stage B  hyper_manual_handler  avg    777.3us  p50    641.8us  p99    2570.2us   fast    0  mid   0  slow 1000
+  Stage C  abixio_null_backend   avg    133.0us  p50    127.7us  p99     240.3us   fast  996  mid   3  slow    1
+  Stage D  file_tier             avg   1056.5us  p50    857.3us  p99    3694.8us   fast    0  mid   0  slow 1000
+  Stage E  pool_tier (depth 32)  avg   1109.3us  p50    730.4us  p99   24001.0us   fast   21  mid 398  slow  581
+  Stage E* pool_tier (depth 100) avg   1484.1us  p50    593.9us  p99   26258.8us   fast   63  mid 409  slow  528
+  Stage E' pool_tier_drained(32) avg    415.8us  p50    346.4us  p99    1313.9us   fast  101  mid 720  slow  179
+  Stage E'' pool_tier_big(1024)  avg   1830.4us  p50   1317.5us  p99   23028.0us   fast    5  mid 253  slow  742
+  Stage E+ pool_tier(depth32,ch100k) avg   1046.7us  p50    740.8us  p99   24335.7us   fast    5  mid 403  slow  592
+  Stage E# pool_tier(depth1024,ch100k) avg    412.8us  p50    359.4us  p99    1066.8us   fast   32  mid 822  slow  146
+
+=== Layer attribution (p50 subtraction) ===
+
+  hyper + TCP + reqwest floor                (A)               94.5us
+  + body read + minimal write_shard          (B - A)          547.3us
+  + s3s + AbixioS3 + VolumePool dispatch     (C - A)           33.2us
+  + real file-tier storage work              (D - C)          729.6us
+
+=== Pool starvation analysis ===
+
+  Pool tier, no drain (depth 32)      (E)                     730.4us
+  Pool tier, no drain (depth 100)     (E*)                    593.9us
+  Pool tier, drained every 32 iters   (E', depth 32)          346.4us
+  Pool tier, depth 1024, no drain     (E'', never empty)     1317.5us
+  Pool tier, channel 100k, depth 32   (E+, unbounded ch)      740.8us
+  Pool tier, channel 100k, depth 1024 (E#, fully unblocked)   359.4us
+
+  Pool starvation cost                (E - E')                384.0us
+  Fast path cost at HTTP layer        (E'' - C)              1189.8us
+  Pool savings vs file tier at HTTP   (D - E'')              -460.2us
+
+=== Cross-check ===
+  Phase 8 file tier 4KB p50:  ~1406us   (this run Stage D p50:   857.3us)
+  Phase 8 pool tier 4KB p50:  ~942us    (this run Stage E p50:   730.4us)
+  Phase 5.6 pool fast-path:   ~11us     (this run Stage E'' p50: 1317.5us HTTP)
+
+test bench_pool_l4_5_stack_breakdown ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 18.08s
+
+[cargo-lock] 13:33:47 released lock
