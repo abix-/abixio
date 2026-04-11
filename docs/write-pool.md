@@ -72,6 +72,10 @@ rename request to the per-disk async worker.
 
 ### PUT hot path
 
+Only the bare minimum needed for correctness runs before ack: two
+disk writes (for crash safety) and one DashMap insert (for
+read-after-write consistency). Everything else is post-ack housekeeping.
+
 ```
 PUT 1MB to bucket/key:
 
@@ -83,18 +87,31 @@ PUT 1MB to bucket/key:
     v
   slot.meta_file.write_all(meta_json)           <- 1 syscall
     |
-    v
-  pending_renames.insert((bucket,key), entry)   <- DashMap insert
+    v   data is now durable on disk (page cache + recovery handles crash)
     |
+  pending_renames.insert((bucket,key), entry)   <- DashMap insert, ~100ns
+    |                                              required: makes the object
+    |                                              visible to read-after-write
     v
-  rename_tx.send(slot_id)                       <- non-blocking channel send
+  ack to client                                 total before ack: 2 syscalls
     |
-    v
-  ack to client                                 total: 2 syscalls
+    v   (after the client has been told)
+  rename_tx.send(slot_id)                       <- non-blocking, worker-side hint
 ```
 
-Two syscalls. The mkdir, both file creates, the close cycles, and
-the meta open+write+close have all moved off the request path.
+Two syscalls and one DashMap insert before ack. The mkdir, both file
+creates, the close cycles, and the meta open+write+close have all
+moved off the request path. So has the channel send to the rename
+worker -- crash before the send is harmless because recovery picks
+up the orphaned temp files on next startup.
+
+**Why the DashMap insert can't move after ack.** Without it in the
+pre-ack path, this sequence becomes possible: client PUTs, gets 200
+OK, immediately GETs the same key, hits an empty `pending_renames`
+(insert hasn't happened yet), falls through to the file tier (worker
+hasn't renamed yet), gets a 404. Read-after-write consistency is an
+S3 guarantee; the existing log store and RAM write cache also
+populate their in-memory index before acking, for the same reason.
 
 For the streaming `LocalShardWriter` path, `open_shard_writer` returns
 a writer that holds the slot internally. `write_chunk` writes to the
