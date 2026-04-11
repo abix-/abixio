@@ -2,7 +2,7 @@
 *.exe
 site/
 .claude/
-bench-results/*.json
+bench-results/
 scratch_ccusage.json
 scratch_ccusage_report.py
 scratch_token_ratios.py
