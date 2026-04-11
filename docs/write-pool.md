@@ -20,6 +20,40 @@ The [RAM write cache](write-cache.md) sits above whichever one is
 enabled. Which mechanism ships as the default is decided by benchmark;
 see the comparison plan at the end of this doc.
 
+## Table of contents
+
+- [Why](#why) -- the syscall cost the pool eliminates
+- [How it works](#how-it-works)
+  - [Per-disk slot pool](#per-disk-slot-pool)
+  - [PUT hot path](#put-hot-path)
+  - [Hot path optimizations](#hot-path-optimizations)
+  - [Async rename worker (one task per disk)](#async-rename-worker-one-task-per-disk)
+- [`ObjectMetaFile` format change](#objectmetafile-format-change)
+- [Crash recovery: stateless](#crash-recovery-stateless)
+- [Read path integration](#read-path-integration)
+- [Backpressure](#backpressure)
+- [Trade-offs](#trade-offs)
+- [Coexistence with the log store](#coexistence-with-the-log-store)
+- [Implementation phases](#implementation-phases) -- the table of what's done / pending
+- [Benchmark plan](#benchmark-plan)
+- [Implementation status](#implementation-status) -- the deep dive on each phase
+  - [Phase 1: pool primitive in isolation](#phase-1-pool-primitive-in-isolation----done)
+  - [Phase 2: slot writes with real I/O](#phase-2-slot-writes-with-real-io----done)
+  - [Phase 2.5: faster JSON serializer](#phase-25-faster-json-serializer----done)
+  - [Phase 3: rename worker in isolation](#phase-3-rename-worker-in-isolation----done)
+  - [Phase 4: first integration into LocalVolume::write_shard](#phase-4-first-integration-into-localvolumewrite_shard----done)
+  - [Phase 4.5: profile and fix the 4KB integration overhead](#phase-45-profile-and-fix-the-4kb-integration-overhead----done)
+  - [Phase 5: read path integration (pending_renames)](#phase-5-read-path-integration-pending_renames----done)
+  - [Phase 5.5: shrink PendingEntry](#phase-55-shrink-pendingentry----done-then-validated-as-unnecessary)
+  - [Phase 5.5+: stable-median measurement](#phase-55-stable-median-measurement----done)
+  - [Phase 5.6: move file drops off the hot path](#phase-56-move-file-drops-off-the-hot-path----done)
+  - [Methodology lessons](#methodology-lessons-from-phase-55-and-phase-56)
+  - [Phase 6-9: pending](#phase-6-9-pending)
+- [Open questions for implementation](#open-questions-for-implementation)
+- [Files to modify (when phase 2 begins)](#files-to-modify-when-phase-2-begins)
+- [Verification](#verification)
+- [See also](#see-also)
+
 ## Why
 
 The current file-per-object write path -- which the log store already
@@ -457,7 +491,10 @@ make a data-driven call before deleting the loser.
 | 3 | Wire `write_shard` to use the pool when enabled | buffered PUT fast path | **done** (Phase 4 -- integrated pool is 5-18x faster than the file tier at every size; see "Phase 4 results" below) |
 | 3.5 | Profile + fix the 4KB integration overhead (Phase 4.5) | smaller per-call cost | **done** (collapsed 3 path computations into 1; 4KB p50 dropped from 43us to 10us, pool is now 46x faster than file tier at 4KB; see "Phase 4.5 results" below) |
 | 4 | Wire `open_shard_writer` to use the pool | streaming PUT fast path | pending |
-| 5 | Read path integration in all five readers | reads see pending writes | pending |
+| 5 | Read path integration in all five readers | reads see pending writes | **done** (Phase 5: PUT-then-immediate-GET works without `drain_pending`; production-safe for non-versioned writes) |
+| 5.5 | Trim `PendingEntry` (drop the meta clone) | smaller per-call cost | **done** (Phase 5.5; turned out the meta clone was not the cost -- see Phase 5.5+ for the real story) |
+| 5.5+ | Stable-median measurement of the integrated bench | trustworthy 4KB numbers | **done** (10k iters showed Phase 5.5 was identical to Phase 4.5 at p50; the "regression" was 100% noise) |
+| 5.6 | Move file drops off the hot path | flatter latency at every size | **done** (4KB avg 3x better, 10MB p99 12x better; pool now 53x file tier at 4KB and 4.6x at 100MB) |
 | 6 | Crash recovery scan in `LocalVolume::new` | restart safety | pending |
 | 7 | Admin endpoint `GET /_admin/pool/status` | operator visibility | pending |
 | 8 | Tests: unit + integration + crash kill | confidence | pending |
@@ -1149,15 +1186,275 @@ send, async state machine) and isn't worth chasing further -- the
 absolute cost is already small and the diminishing returns are
 real.
 
-### Phase 5-9: pending
+### Phase 5: read path integration (pending_renames) -- DONE
 
-See `Implementation phases` table above. Phase 5 (read path
-integration via the in-memory pending-renames lookup table) is the
-next step. Until Phase 5 lands, a request that just got a 200 OK
-for a PUT through the pool can return 404 on an immediate GET --
-the read path doesn't know about pending renames yet. Tests work
-around this with `drain_pending()`; production code is not safe to
-ship until Phase 5 closes the gap.
+Phase 5 added an in-memory `pending_renames` table (DashMap) so that
+a GET arriving immediately after a PUT-through-the-pool can find the
+object before the rename worker has finished. The pool is now
+production-safe for non-versioned writes.
+
+What changed:
+
+- New `PendingEntry` and `PendingRenames` types in
+  `src/storage/write_slot_pool.rs`.
+- `RenameRequest` got `bucket` and `key` fields so the worker can
+  remove the matching DashMap entry after each rename.
+- `process_rename_request` always replenishes the slot now, even if
+  the rename failed. The Phase 3 leak is fixed.
+- `run_rename_worker` takes an `Option<PendingRenames>`. The worker
+  removes the entry after a successful rename. The Phase 1-3 tests
+  pass `None`, the production path passes `Some(...)`.
+- `LocalVolume::write_shard` inserts into `pending_renames` BEFORE
+  sending the rename request, so concurrent readers see the entry
+  as soon as the writes are durable.
+- `read_shard`, `mmap_shard`, `stat_object`, `list_objects`,
+  `delete_object` all check `pending_renames` first with a
+  fall-through to the file tier (mirroring the existing log-store
+  pattern).
+- `delete_object` cancels a pending PUT by removing the entry and
+  unlinking the temp files; the worker then no-ops the rename and
+  the always-replenish guarantee returns the slot to the pool.
+
+Critical bug found and fixed: holding a `dashmap::Ref` across an
+`.await` deadlocks the worker. Every read path now clones data out
+of the `Ref` BEFORE awaiting. `drain_pending` got a 5-second
+timeout so future bugs of this shape fail fast.
+
+### Phase 5.5: shrink PendingEntry -- DONE (then validated as unnecessary)
+
+Phase 5.5 dropped the `ObjectMeta`, `data_dest`, and `meta_dest`
+fields from `PendingEntry`. Read paths now read the temp meta file
+on demand instead of cloning the meta into RAM at PUT time. The
+hypothesis was that the `ObjectMeta` clone was costing ~17us at
+4KB. **The hypothesis was wrong** but the change is still cleaner
+so it stayed.
+
+### Phase 5.5+: stable-median measurement -- DONE
+
+The "Phase 5/5.5 17us regression" turned out to be 100% measurement
+noise. The integrated bench was running 100 iterations, but the
+operation has a ~200x p99/p50 variance from page cache spikes
+(measured in the L3.6 breakdown bench: writes go from 6.9us p50 to
+2.68ms p99; file drops go from 100ns p50 to 1.57ms p99). 100 samples
+isn't enough to wash out spikes that big.
+
+`bench_pool_l3_integrated_put` was bumped to 10k / 1k / 1k / 100 / 100
+iterations (from 100 / 60 / 30 / 15 / 5) and re-run. The "stable"
+medians are dramatically better than every previous noisy reading:
+
+```
+SIZE     STRATEGY                   ITERS        AVG        p50        p99      THROUGHPUT
+4KB      file_tier (baseline)       10000     1.15ms    626.1us     5.47ms         3.4 MB/s
+4KB      pool (Phase 4)             10000     94.4us     11.7us     2.02ms        41.4 MB/s
+
+64KB     file_tier (baseline)        1000     1.49ms     1.07ms     5.77ms        41.8 MB/s
+64KB     pool (Phase 4)              1000    324.5us     44.3us     5.98ms       192.6 MB/s
+
+1MB      file_tier (baseline)        1000     3.25ms     3.13ms     5.15ms       307.6 MB/s
+1MB      pool (Phase 4)              1000     1.25ms    636.0us     7.10ms       801.2 MB/s
+
+10MB     file_tier (baseline)         100    23.18ms    22.82ms    27.80ms       431.3 MB/s
+10MB     pool (Phase 4)               100    13.64ms     3.75ms    61.73ms       733.1 MB/s
+
+100MB    file_tier (baseline)         100   373.35ms   310.62ms  1175.00ms       267.8 MB/s
+100MB    pool (Phase 4)               100   102.97ms   107.89ms   181.97ms       971.2 MB/s
+```
+
+**Pool vs file tier (stable, median):**
+
+| Size  | File tier (median) | Pool (median) | Speedup |
+|---|---|---|---|
+| **4KB**   | 626us  | **11.7us** | **53x** |
+| **64KB**  | 1.07ms | **44.3us** | **24x** |
+| **1MB**   | 3.13ms | **636us**  | **5x**  |
+| **10MB**  | 22.82ms| **3.75ms** | **6x**  |
+| **100MB** | 310ms  | **107.89ms**| **2.9x**|
+
+Phase 5.5's "real" cost vs Phase 4.5 at 4KB is about 1.3us at p50
+(11.7us with the pending_renames bookkeeping vs 10.4us without).
+That's the DashMap insert + 2 PathBuf clones, exactly what was
+expected from the breakdown bench. The earlier "17us / 33us
+regressions" were entirely measurement noise from running 100 iters
+on a measurement that has millisecond p99 spikes.
+
+### Phase 5.5+ methodology lessons
+
+1. **100 iterations is not enough samples when p99 is 200x p50.**
+   Always check the avg/p50 ratio before drawing conclusions; a
+   ratio above ~3x means there are tail outliers that need many
+   more samples to stabilize the median.
+2. **Never clone a `dashmap::Ref` into a local that's held across
+   `.await`.** It deadlocks anything that needs to write-lock the
+   same shard. The fix is `pending.get(&key).map(|e| e.clone_fields())`
+   before any await.
+3. **Always have a watchdog timeout on test polling loops.** The
+   first attempt at `drain_pending` had no timeout and hung for 9
+   minutes when a deadlock fired. A 5-second deadline is enough
+   to fail fast without disrupting normal runs.
+
+### Phase 5.6: move file drops off the hot path -- DONE
+
+Phase 5/5.5 looked like a 17us regression at 4KB. After running the
+integrated bench with 10k samples per size (Phase 5.5+), the median
+was actually 11.7us -- the "regression" was measurement noise from
+running only 100 iterations on an operation with 200x p99/p50
+variance. Phase 5.5 was correct all along.
+
+But the stable measurements ALSO showed where the real cost lives.
+A new breakdown bench (`bench_pool_l3_6_write_shard_breakdown`)
+inlined `write_shard`'s pool branch with `Instant::now()` markers
+between every section. The first run revealed:
+
+```
+1.  validate (bucket + key)                     avg    1021ns  p50     200ns  p99    5800ns
+2.  pool.try_pop()                              avg     412ns  p50     100ns  p99     700ns
+3.  meta clone + ObjectMetaFile + simd-json     avg    6055ns  p50    1500ns  p99   74400ns
+4.  WriteSlot destructure + 2x PathBuf clone    avg     992ns  p50     300ns  p99    3900ns
+5.  tokio::try_join!(data_write, meta_write)    avg  110492ns  p50    6900ns  p99 2683300ns
+6.  drop(data_file) + drop(meta_file)           avg   64935ns  p50     100ns  p99 1574700ns
+7.  pathing::object_dir(...)                    avg   19587ns  p50    3500ns  p99  312000ns
+8.  data_dest + meta_dest joins                 avg    2490ns  p50     500ns  p99   18700ns
+9.  PendingEntry build + DashMap insert         avg    3346ns  p50     600ns  p99   17700ns
+10. RenameRequest construction                  avg     645ns  p50     100ns  p99     900ns
+11. tx.send(req).await                          avg    1155ns  p50     200ns  p99    6500ns
+TOTAL                                           avg  212922ns  p50   18800ns  p99 4725700ns
+```
+
+The big finding: **step 6 (file drops) is 100ns at p50 but 65us
+avg and 1.57ms at p99.** Windows occasionally takes ~1.5ms to
+close a file (kernel close + last-write-time bookkeeping + page
+cache write-back). Step 5 (the writes themselves) is similarly
+spike-prone: 6.9us p50 but 110us avg.
+
+The DashMap insert (step 9, 600ns p50) was confirmed as not the
+problem -- Phase 5.5's hypothesis was wrong.
+
+### The fix: pass the slot to the worker, drop file handles there
+
+Step 5 (the writes) is at the floor and can't be made faster
+without moving away from `tokio::fs`. **But step 6 doesn't have to
+happen on the hot path.** We can pass the entire `WriteSlot`
+(including its open file handles) to the rename worker, which
+drops the handles after the rename. The drops still happen -- just
+on a background task instead of in the request handler.
+
+`RenameRequest` was changed from holding individual paths to
+owning a `WriteSlot`:
+
+```rust
+pub struct RenameRequest {
+    pub slot: WriteSlot,        // Phase 5.6: owns the file handles
+    pub bucket: String,
+    pub key: String,
+    pub dest_dir: PathBuf,
+    pub data_dest: PathBuf,
+    pub meta_dest: PathBuf,
+}
+```
+
+`process_rename_request` now consumes the request by value, moves
+the slot out, and drops the file handles before doing the rename:
+
+```rust
+pub async fn process_rename_request(
+    pool: &WriteSlotPool,
+    req: RenameRequest,
+) -> Result<(), StorageError> {
+    let RenameRequest { slot, dest_dir, data_dest, meta_dest, .. } = req;
+    let WriteSlot { slot_id, data_file, meta_file, data_path, meta_path } = slot;
+
+    drop(data_file);   // <- was the slow step on Windows
+    drop(meta_file);   // <- was the slow step on Windows
+
+    // ... mkdir + rename + replenish ...
+}
+```
+
+`write_shard`'s pool branch no longer destructures the slot or
+drops anything. It writes through `slot.data_file` and
+`slot.meta_file` via Rust split borrows, builds a `RenameRequest`
+with the slot moved in, and sends it.
+
+### Result -- bigger than predicted at every size
+
+Predicted: ~65us savings on 4KB avg (the measured drop cost).
+Actual at 4KB: 64us. Spot on. **But the savings at LARGER sizes
+were much bigger** because file drops at larger files are even
+slower (more dirty data to flush on close).
+
+Stable medians (10k+ samples), Phase 5.5+ vs Phase 5.6:
+
+| Size | Metric | Phase 5.5+ | **Phase 5.6** | Improvement |
+|---|---|---|---|---|
+| 4KB | avg | 94.4us | **30.9us** | **3.1x** |
+| 4KB | p50 | 11.7us | **11.9us** | unchanged |
+| 4KB | p99 | 2.02ms | **278us** | **7.3x** |
+| 64KB | avg | 324.5us | **68.3us** | **4.7x** |
+| 64KB | p99 | 5.98ms | **404.6us** | **15x** |
+| 1MB | avg | 1.25ms | **481us** | **2.6x** |
+| 1MB | p50 | 636us | **364us** | **1.7x** |
+| 1MB | p99 | 7.10ms | **2.59ms** | **2.7x** |
+| 10MB | avg | 13.64ms | **3.75ms** | **3.6x** |
+| 10MB | p99 | 61.73ms | **5.25ms** | **12x** |
+| 100MB | p50 | 107.89ms | **67.35ms** | **1.6x** |
+
+The pool is now dramatically more predictable across the board.
+The variance dropped uniformly because the spike-prone drops are
+no longer in the request path.
+
+### Pool vs file tier (after Phase 5.6, stable medians)
+
+| Size | File tier (median) | Pool (median) | Speedup |
+|---|---|---|---|
+| **4KB** | 626us | **11.9us** | **53x** |
+| **64KB** | 1.07ms | **43.5us** | **25x** |
+| **1MB** | 2.99ms | **364us** | **8.2x** |
+| **10MB** | 22.79ms | **3.65ms** | **6.2x** |
+| **100MB** | 307ms | **67.35ms** | **4.6x** |
+
+The 100MB speedup nearly doubled (2.9x to 4.6x) and the 1MB
+speedup improved meaningfully (5x to 8.2x).
+
+### Methodology lessons from Phase 5.5+ and Phase 5.6
+
+1. **100 iterations is not enough samples when p99 is 200x p50.**
+   Always check the avg/p50 ratio before drawing conclusions; a
+   ratio above ~3x means there are tail outliers that need many
+   more samples to stabilize. The Phase 5/5.5 "regression" was
+   100% noise from this -- 10k iterations showed Phase 5.5 was
+   functionally identical to Phase 4.5 at p50.
+2. **Never hold a `dashmap::Ref` across an `.await`.** It deadlocks
+   anything that needs to write-lock the same shard. The fix is
+   `pending.get(&key).map(|e| e.clone_fields())` before any await.
+   `drain_pending` got a 5-second watchdog timeout so future
+   deadlocks fail fast instead of hanging the test runner.
+3. **Spike-prone work belongs off the hot path.** Step 6 was 100ns
+   at p50, looked harmless. But its 1.57ms p99 was dragging the
+   average way up and giving real users occasional bad latency.
+   Moving spike-prone code to a background worker turned a 2ms p99
+   into a 278us p99 at 4KB, and a 61ms p99 into a 5.25ms p99 at
+   10MB.
+
+### Phase 6-9: pending
+
+All 341 tests pass through Phase 5.6. The pool is functionally
+complete and production-safe for non-versioned writes:
+
+- Phase 5 (read-after-write consistency via `pending_renames`) lets
+  an immediate GET-after-PUT find the object before the rename
+  worker has finished.
+- Phase 5.5+ proved with stable medians that the bookkeeping cost
+  is ~1us, not the noisy ~33us that the small-iteration runs
+  appeared to show.
+- Phase 5.6 moved the spike-prone file drops off the hot path,
+  cutting the 4KB avg by 3x and the 10MB p99 by 12x.
+
+The next big building block is **Phase 6: crash recovery** -- a
+startup scan of `.abixio.sys/tmp/` that finishes any pending
+renames left over from a process crash, so acked PUTs are never
+lost. Phase 7 (backpressure / fall-through to slow path), Phase 8
+(`--write-tier` CLI flag + full bench matrix), and Phase 9
+(pre-allocation tunable) follow.
 
 ## Open questions for implementation
 

@@ -983,29 +983,20 @@ async fn bench_pool_l2_worker_drain() {
     ) -> Vec<RenameRequest> {
         let mut requests = Vec::with_capacity(n);
         for i in 0..n {
-            let slot = pool
+            let mut slot = pool
                 .try_pop()
                 .expect("pool depth must match n in this bench");
-            let WriteSlot {
-                slot_id,
-                mut data_file,
-                mut meta_file,
-                data_path,
-                meta_path,
-            } = slot;
-            data_file.write_all(b"x").await.unwrap();
-            meta_file.write_all(b"y").await.unwrap();
-            drop(data_file);
-            drop(meta_file);
+            slot.data_file.write_all(b"x").await.unwrap();
+            slot.meta_file.write_all(b"y").await.unwrap();
 
             let dest_dir = dest_root.join(format!("obj_{}", i));
             if precreate_dest_dirs {
                 tokio::fs::create_dir_all(&dest_dir).await.unwrap();
             }
             requests.push(RenameRequest {
-                slot_id,
-                data_src: data_path,
-                meta_src: meta_path,
+                slot,
+                bucket: "bench".to_string(),
+                key: format!("obj_{}", i),
                 dest_dir: dest_dir.clone(),
                 data_dest: dest_dir.join("shard.dat"),
                 meta_dest: dest_dir.join("meta.json"),
@@ -1032,7 +1023,7 @@ async fn bench_pool_l2_worker_drain() {
         let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let pool_clone = Arc::clone(&pool);
         let worker = tokio::spawn(async move {
-            run_rename_worker(pool_clone, rx, shutdown_rx).await;
+            run_rename_worker(pool_clone, None, rx, shutdown_rx).await;
         });
 
         // Prefill the channel before timing so we measure the worker
@@ -1077,7 +1068,7 @@ async fn bench_pool_l2_worker_drain() {
         let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let pool_clone = Arc::clone(&pool);
         let worker = tokio::spawn(async move {
-            run_rename_worker(pool_clone, rx, shutdown_rx).await;
+            run_rename_worker(pool_clone, None, rx, shutdown_rx).await;
         });
 
         for req in requests {
@@ -1120,7 +1111,7 @@ async fn bench_pool_l2_worker_drain() {
         // Worker
         let pool_worker = Arc::clone(&pool);
         let worker = tokio::spawn(async move {
-            run_rename_worker(pool_worker, rx, shutdown_rx).await;
+            run_rename_worker(pool_worker, None, rx, shutdown_rx).await;
         });
 
         // Producer with rate-limited send
@@ -1138,22 +1129,14 @@ async fn bench_pool_l2_worker_drain() {
                     }
                     tokio::task::yield_now().await;
                 };
-                let WriteSlot {
-                    slot_id,
-                    mut data_file,
-                    mut meta_file,
-                    data_path,
-                    meta_path,
-                } = slot;
-                data_file.write_all(b"x").await.unwrap();
-                meta_file.write_all(b"y").await.unwrap();
-                drop(data_file);
-                drop(meta_file);
+                let mut slot = slot;
+                slot.data_file.write_all(b"x").await.unwrap();
+                slot.meta_file.write_all(b"y").await.unwrap();
                 let dest_dir = dest_root_clone.join(format!("obj_{}", i));
                 let req = RenameRequest {
-                    slot_id,
-                    data_src: data_path,
-                    meta_src: meta_path,
+                    slot,
+                    bucket: "bench".to_string(),
+                    key: format!("obj_{}", i),
                     dest_dir: dest_dir.clone(),
                     data_dest: dest_dir.join("shard.dat"),
                     meta_dest: dest_dir.join("meta.json"),
@@ -1225,7 +1208,7 @@ async fn bench_pool_l2_worker_drain() {
                         guard.recv().await
                     };
                     let Some(req) = msg else { break; };
-                    if let Err(e) = process_rename_request(&p, &req).await {
+                    if let Err(e) = process_rename_request(&p, req).await {
                         eprintln!("rename failed: {}", e);
                     }
                 }
@@ -1331,12 +1314,16 @@ async fn bench_pool_l3_integrated_put() {
         "SIZE", "STRATEGY", "ITERS", "AVG", "p50", "p99", "THROUGHPUT"
     );
 
+    // High iter counts at all sizes to get stable medians. Page cache
+    // spikes and file-close stalls add wild variance at p99 across
+    // every size; many samples are required to wash that out so the
+    // measured median actually means what it says.
     let sizes: &[(usize, usize)] = &[
-        (4 * 1024, 100),
-        (64 * 1024, 60),
-        (1 * MB, 30),
-        (10 * MB, 15),
-        (100 * MB, 5),
+        (4 * 1024, 10_000),
+        (64 * 1024, 1_000),
+        (1 * MB, 1_000),
+        (10 * MB, 100),
+        (100 * MB, 100),
     ];
 
     let meta = make_meta();
@@ -1588,48 +1575,323 @@ async fn bench_pool_l3_5_integration_breakdown() {
     }
     report("7. object_dir + shard_path + meta_path", iters, samples);
 
-    // ----- Step 8: RenameRequest construction -----
-    let dummy_dir = tmp.path().join("dummy");
-    let dummy_data = dummy_dir.join("shard.dat");
-    let dummy_meta = dummy_dir.join("meta.json");
-    let dummy_data_src = tmp.path().join("data.tmp");
-    let dummy_meta_src = tmp.path().join("meta.tmp");
-    let mut samples = Vec::with_capacity(iters);
-    for _ in 0..iters {
-        let t = Instant::now();
-        let _req = RenameRequest {
-            slot_id: 0,
-            data_src: dummy_data_src.clone(),
-            meta_src: dummy_meta_src.clone(),
-            dest_dir: dummy_dir.clone(),
-            data_dest: dummy_data.clone(),
-            meta_dest: dummy_meta.clone(),
-        };
-        samples.push(t.elapsed());
-    }
-    report("8. RenameRequest construction (5x PathBuf clone)", iters, samples);
+    // Steps 8 and 9 (RenameRequest construction + tx.send) were
+    // removed in Phase 5.6. The new RenameRequest owns a WriteSlot,
+    // so it can't be constructed from dummy paths -- you need a real
+    // open slot pair, and the construction itself is now just a
+    // single move (essentially free). The L3.6 in-context bench
+    // (`bench_pool_l3_6_write_shard_breakdown`) measures the
+    // request-build and send steps in the real flow with real slots.
 
-    // ----- Step 9: tx.send(req).await on a channel with plenty of space -----
-    let (tx, mut rx) =
-        tokio::sync::mpsc::channel::<RenameRequest>(iters + 16);
-    let mut samples = Vec::with_capacity(iters);
-    for _ in 0..iters {
-        let req = RenameRequest {
-            slot_id: 0,
-            data_src: dummy_data_src.clone(),
-            meta_src: dummy_meta_src.clone(),
-            dest_dir: dummy_dir.clone(),
-            data_dest: dummy_data.clone(),
-            meta_dest: dummy_meta.clone(),
+    eprintln!();
+}
+
+// ============================================================================
+// Pool L3.6: write_shard pool-branch in-context section timing (Phase 5.5+)
+// ============================================================================
+//
+// Phase 4.5's breakdown bench measured each step in isolation and the sum
+// was much smaller than the integrated measurement -- a 5x mystery
+// multiplier. Phase 5/5.5 made it worse by adding the pending_renames
+// table; the integrated 4KB call now takes ~43us p50 but isolated
+// per-step costs sum to far less.
+//
+// This bench inlines a copy of write_shard's pool branch with Instant
+// markers between every section, runs it inside the same setup as the
+// integrated bench (real LocalVolume, real worker draining behind it),
+// and reports per-section avg/p50/p99 plus a sum and a measured total.
+//
+// If sum ~= total, we know which specific steps are the cost.
+// If sum << total, there's hidden cost we still haven't found.
+//
+// Run with:
+//   k3sc cargo-lock test --release --test layer_bench -- --ignored \
+//       --nocapture bench_pool_l3_6_write_shard_breakdown
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_pool_l3_6_write_shard_breakdown() {
+    use abixio::storage::local_volume::LocalVolume;
+    use abixio::storage::metadata::{
+        ErasureMeta, ObjectMeta, ObjectMetaFile,
+    };
+    use abixio::storage::pathing;
+    use abixio::storage::write_slot_pool::{
+        PendingEntry, RenameRequest, WriteSlot, WriteSlotPool,
+    };
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tokio::io::AsyncWriteExt;
+
+    fn make_meta() -> ObjectMeta {
+        ObjectMeta {
+            size: 4096,
+            etag: "abc".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            created_at: 1700000000,
+            erasure: ErasureMeta {
+                ftt: 1,
+                index: 0,
+                epoch_id: 1,
+                volume_ids: vec!["vol-0".to_string(), "vol-1".to_string()],
+            },
+            checksum: "deadbeef".to_string(),
+            user_metadata: HashMap::new(),
+            tags: HashMap::new(),
+            version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+            inline_data: None,
+        }
+    }
+
+    fn report(label: &str, mut samples: Vec<Duration>) {
+        if samples.is_empty() {
+            return;
+        }
+        samples.sort();
+        let total: Duration = samples.iter().sum();
+        let n = samples.len();
+        let avg = total / n as u32;
+        let p50 = samples[n / 2];
+        let p99 = samples[((n * 99) / 100).min(n - 1)];
+        eprintln!(
+            "  {:<46}  avg {:>7}ns  p50 {:>7}ns  p99 {:>7}ns",
+            label,
+            avg.as_nanos(),
+            p50.as_nanos(),
+            p99.as_nanos(),
+        );
+    }
+
+    let tmp = TempDir::new().unwrap();
+    // Create the LocalVolume with the same setup as the integrated bench
+    // so we measure inside the real pool + worker context.
+    let mut disk_owned = LocalVolume::new(tmp.path()).unwrap();
+    disk_owned.enable_write_pool(64).await.unwrap();
+
+    // Create a bucket so the file tier exists when we fall back / drain.
+    use abixio::storage::Backend;
+    disk_owned.make_bucket("bench").await.unwrap();
+
+    // We need to access the pool, channel, and pending table directly to
+    // inline the section timing. Add public accessors? Simpler: build a
+    // SECOND pool ourselves (parallel to LocalVolume's) and instrument
+    // the same logic. The downside is we don't measure the exact
+    // production path, but the steps and types are identical, so the
+    // section costs should match within noise.
+    let pool_dir = tmp.path().join(".bench_l3_6_pool");
+    let pool = WriteSlotPool::new(&pool_dir, 64).await.unwrap();
+    let pending: abixio::storage::write_slot_pool::PendingRenames =
+        Arc::new(dashmap::DashMap::new());
+    let (tx, rx) =
+        tokio::sync::mpsc::channel::<RenameRequest>(256);
+    let (_shutdown_tx, shutdown_rx) =
+        tokio::sync::watch::channel(false);
+    let pool_for_worker = Arc::clone(&pool);
+    let pending_for_worker = Arc::clone(&pending);
+    tokio::spawn(async move {
+        abixio::storage::write_slot_pool::run_rename_worker(
+            pool_for_worker,
+            Some(pending_for_worker),
+            rx,
+            shutdown_rx,
+        )
+        .await;
+    });
+
+    // Pre-make a destination dir so the worker's mkdir is fast and the
+    // worker's drain rate doesn't bottleneck the bench.
+    tokio::fs::create_dir_all(tmp.path().join("bench"))
+        .await
+        .unwrap();
+
+    let bucket = "bench";
+    let meta = make_meta();
+    let data = vec![0x42u8; 4096];
+
+    // 100k iters for stable medians on every section. The actual
+    // write step has ~200x p99/p50 variance from page cache spikes,
+    // so we need a lot of samples to wash that out.
+    let iters = 100_000;
+    let warmup = 1_000;
+
+    // Phase 5.6: no destructure, no drops on hot path -- those steps
+    // moved to the worker. The breakdown reflects the new flow.
+    let mut s_validate = Vec::with_capacity(iters);
+    let mut s_try_pop = Vec::with_capacity(iters);
+    let mut s_meta_build_serialize = Vec::with_capacity(iters);
+    let mut s_writes = Vec::with_capacity(iters);
+    let mut s_object_dir = Vec::with_capacity(iters);
+    let mut s_join_paths = Vec::with_capacity(iters);
+    let mut s_pending_insert = Vec::with_capacity(iters);
+    let mut s_rename_req = Vec::with_capacity(iters);
+    let mut s_send_await = Vec::with_capacity(iters);
+    let mut s_total = Vec::with_capacity(iters);
+
+    eprintln!("\n=== Pool L3.6: write_shard pool-branch breakdown ===\n");
+    eprintln!("  iterations: {} (after {} warmup)", iters, warmup);
+    eprintln!();
+
+    // Drain helper so we don't run out of slots
+    let drain = |pool: &Arc<WriteSlotPool>| {
+        let pool = Arc::clone(pool);
+        async move {
+            while pool.available() < 32 {
+                tokio::task::yield_now().await;
+            }
+        }
+    };
+
+    for i in 0..(iters + warmup) {
+        let key_buf = format!("obj_{}", i);
+        let key = key_buf.as_str();
+
+        // If pool is getting low, wait for the worker
+        if pool.available() < 4 {
+            drain(&pool).await;
+        }
+
+        let t_total = Instant::now();
+
+        // Step 1: validate
+        let t = Instant::now();
+        pathing::validate_bucket_name(bucket).unwrap();
+        pathing::validate_object_key(key).unwrap();
+        let d_validate = t.elapsed();
+
+        // Step 2: try_pop
+        let t = Instant::now();
+        let slot = pool.try_pop().unwrap();
+        let d_try_pop = t.elapsed();
+
+        // Step 3: meta build + simd-json serialize
+        let t = Instant::now();
+        let mut version = meta.clone();
+        version.is_latest = true;
+        let mf = ObjectMetaFile {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            versions: vec![version],
         };
+        let meta_json = simd_json::serde::to_vec(&mf).unwrap();
+        let d_meta_build_serialize = t.elapsed();
+
+        // Phase 5.6: no destructure, no drops on hot path -- the slot
+        // moves into the RenameRequest and the worker drops the file
+        // handles after the rename. The l3_6 bench reflects this.
+
+        let mut slot = slot;
+
+        // Step 4: writes
+        let t = Instant::now();
+        tokio::try_join!(
+            slot.data_file.write_all(&data),
+            slot.meta_file.write_all(&meta_json),
+        )
+        .unwrap();
+        let d_writes = t.elapsed();
+
+        // Step 5: object_dir
+        let t = Instant::now();
+        let dest_dir = pathing::object_dir(tmp.path(), bucket, key).unwrap();
+        let d_object_dir = t.elapsed();
+
+        // Step 6: join paths
+        let t = Instant::now();
+        let data_dest = dest_dir.join("shard.dat");
+        let meta_dest = dest_dir.join("meta.json");
+        let d_join_paths = t.elapsed();
+
+        // Step 7: pending insert
+        let t = Instant::now();
+        let entry = PendingEntry {
+            slot_id: slot.slot_id,
+            data_path: slot.data_path.clone(),
+            meta_path: slot.meta_path.clone(),
+            data_len: data.len() as u64,
+        };
+        pending.insert(
+            (Arc::<str>::from(bucket), Arc::<str>::from(key)),
+            entry,
+        );
+        let d_pending_insert = t.elapsed();
+
+        // Step 8: rename request build (now just moves slot in)
+        let t = Instant::now();
+        let req = RenameRequest {
+            slot,
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            dest_dir,
+            data_dest,
+            meta_dest,
+        };
+        let d_rename_req = t.elapsed();
+
+        // Step 9: send
         let t = Instant::now();
         tx.send(req).await.unwrap();
-        samples.push(t.elapsed());
+        let d_send_await = t.elapsed();
+
+        let d_total = t_total.elapsed();
+
+        if i >= warmup {
+            s_validate.push(d_validate);
+            s_try_pop.push(d_try_pop);
+            s_meta_build_serialize.push(d_meta_build_serialize);
+            s_writes.push(d_writes);
+            s_object_dir.push(d_object_dir);
+            s_join_paths.push(d_join_paths);
+            s_pending_insert.push(d_pending_insert);
+            s_rename_req.push(d_rename_req);
+            s_send_await.push(d_send_await);
+            s_total.push(d_total);
+        }
     }
-    report("9. tx.send(req).await (channel has space)", iters, samples);
-    drop(tx);
-    // drain the channel so it doesn't accumulate
-    while rx.recv().await.is_some() {}
+
+    report("1. validate (bucket + key)", s_validate.clone());
+    report("2. pool.try_pop()", s_try_pop.clone());
+    report("3. meta clone + ObjectMetaFile + simd-json", s_meta_build_serialize.clone());
+    report("4. tokio::try_join!(data_write, meta_write)", s_writes.clone());
+    report("5. pathing::object_dir(...)", s_object_dir.clone());
+    report("6. data_dest + meta_dest joins", s_join_paths.clone());
+    report("7. PendingEntry build + DashMap insert", s_pending_insert.clone());
+    report("8. RenameRequest construction (move slot in)", s_rename_req.clone());
+    report("9. tx.send(req).await", s_send_await.clone());
+    eprintln!();
+    report("--- TOTAL (sum of timings)", s_total.clone());
+
+    let sum_of_medians: u128 = {
+        let mut all: [&mut Vec<Duration>; 9] = [
+            &mut s_validate,
+            &mut s_try_pop,
+            &mut s_meta_build_serialize,
+            &mut s_writes,
+            &mut s_object_dir,
+            &mut s_join_paths,
+            &mut s_pending_insert,
+            &mut s_rename_req,
+            &mut s_send_await,
+        ];
+        let mut sum = 0u128;
+        for v in all.iter_mut() {
+            v.sort();
+            sum += v[v.len() / 2].as_nanos();
+        }
+        sum
+    };
+    s_total.sort();
+    let total_p50 = s_total[s_total.len() / 2].as_nanos();
+    eprintln!();
+    eprintln!("  sum of step medians: {} ns", sum_of_medians);
+    eprintln!("  measured total p50:  {} ns", total_p50);
+    eprintln!(
+        "  unaccounted at p50:  {} ns ({:.0}%)",
+        total_p50.saturating_sub(sum_of_medians),
+        (total_p50.saturating_sub(sum_of_medians) as f64 / total_p50 as f64) * 100.0,
+    );
 
     eprintln!();
 }

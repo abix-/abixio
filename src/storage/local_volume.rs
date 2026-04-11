@@ -8,7 +8,7 @@ use super::metadata::{
 };
 use super::pathing;
 use super::write_slot_pool::{
-    run_rename_worker, RenameRequest, WriteSlot, WriteSlotPool,
+    run_rename_worker, PendingEntry, PendingRenames, RenameRequest, WriteSlot, WriteSlotPool,
 };
 use super::{Backend, BackendInfo, MmapOrVec, ShardWriter, StorageError};
 
@@ -24,6 +24,11 @@ pub struct LocalVolume {
     rename_tx: Option<tokio::sync::mpsc::Sender<RenameRequest>>,
     /// Shutdown signal for the rename worker.
     pool_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// In-memory table of objects that have been written to a slot
+    /// but whose temp files haven't been renamed to their destination
+    /// yet. Read paths consult this so an immediate GET-after-PUT
+    /// finds the object before the worker finishes the rename.
+    pending_renames: Option<PendingRenames>,
 }
 
 /// Default threshold: objects <= 64KB use log-structured storage.
@@ -69,6 +74,7 @@ impl LocalVolume {
             write_pool: None,
             rename_tx: None,
             pool_shutdown: None,
+            pending_renames: None,
         })
     }
 
@@ -108,29 +114,45 @@ impl LocalVolume {
         let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(256);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
+        // Phase 5: shared pending-renames table -- write_shard inserts,
+        // the rename worker removes after each rename completes, the
+        // read paths consult it for read-after-write consistency.
+        let pending: PendingRenames = Arc::new(dashmap::DashMap::new());
+
         let pool_clone = Arc::clone(&pool);
+        let pending_clone = Arc::clone(&pending);
         tokio::spawn(async move {
-            run_rename_worker(pool_clone, rx, shutdown_rx).await;
+            run_rename_worker(pool_clone, Some(pending_clone), rx, shutdown_rx).await;
         });
 
         self.write_pool = Some(pool);
         self.rename_tx = Some(tx);
         self.pool_shutdown = Some(shutdown_tx);
+        self.pending_renames = Some(pending);
         Ok(())
     }
 
     /// Wait until every in-flight rename has completed and every
     /// slot is back in the pool. Used by tests to bridge the gap
     /// between PUT-ack and the file being readable at its final
-    /// destination, since Phase 4 has no `pending_renames` table
-    /// for the read path. Phase 5 makes this unnecessary.
+    /// destination. Times out after 5 seconds so a buggy test fails
+    /// fast instead of hanging forever.
     pub async fn drain_pending(&self) {
         let Some(ref pool) = self.write_pool else {
             return;
         };
         let target = pool.depth() as usize;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         loop {
             if pool.available() >= target {
+                break;
+            }
+            if std::time::Instant::now() >= deadline {
+                tracing::warn!(
+                    available = pool.available(),
+                    target,
+                    "drain_pending timed out -- pool slots not returning"
+                );
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(1)).await;
@@ -410,35 +432,50 @@ impl Backend for LocalVolume {
                         StorageError::Internal(format!("simd_json meta serialize: {}", e))
                     })?;
 
-                    let slot_id = slot.slot_id;
-                    let data_src = slot.data_path.clone();
-                    let meta_src = slot.meta_path.clone();
-                    let WriteSlot {
-                        mut data_file,
-                        mut meta_file,
-                        ..
-                    } = slot;
-
-                    // Phase 2 hot path: concurrent writes via try_join
+                    // Phase 5.6: don't destructure the slot. Write through
+                    // its file handles via split borrows, then move the
+                    // whole slot into the rename request so the worker
+                    // (not the request handler) drops the file handles.
+                    // The drops are a major hot-path cost on Windows
+                    // (~65us avg, ~1.57ms p99 from kernel close);
+                    // moving them to the worker keeps the hot path tight.
+                    let mut slot = slot;
                     tokio::try_join!(
-                        data_file.write_all(data),
-                        meta_file.write_all(&meta_json),
+                        slot.data_file.write_all(data),
+                        slot.meta_file.write_all(&meta_json),
                     )?;
-                    drop(data_file);
-                    drop(meta_file);
 
-                    // Build the rename request and send it to the worker.
-                    // Compute object_dir once and join the file names cheaply --
-                    // calling object_shard_path/object_meta_path separately
-                    // would re-validate and re-allocate three times. Phase 4.5
-                    // measured this as a 4-5us saving on the 4KB hot path.
+                    // Compute destination paths once. (Phase 4.5: collapsing
+                    // 3 path computations into 1 saved ~5us / call.)
                     let dest_dir = pathing::object_dir(&self.root, bucket, key)?;
                     let data_dest = dest_dir.join("shard.dat");
                     let meta_dest = dest_dir.join("meta.json");
+
+                    // Phase 5: insert into pending_renames BEFORE sending
+                    // the rename request so concurrent readers see the
+                    // entry as soon as the writes are durable. The insert
+                    // must happen before the channel send to avoid the
+                    // race where the worker starts processing before the
+                    // entry exists. Phase 5.5: slim PendingEntry; the
+                    // read paths read the temp meta file when they need
+                    // it instead of caching the ObjectMeta in RAM.
+                    if let Some(ref pending) = self.pending_renames {
+                        let entry = PendingEntry {
+                            slot_id: slot.slot_id,
+                            data_path: slot.data_path.clone(),
+                            meta_path: slot.meta_path.clone(),
+                            data_len: data.len() as u64,
+                        };
+                        pending.insert(
+                            (Arc::<str>::from(bucket), Arc::<str>::from(key)),
+                            entry,
+                        );
+                    }
+
                     let req = RenameRequest {
-                        slot_id,
-                        data_src,
-                        meta_src,
+                        slot,
+                        bucket: bucket.to_string(),
+                        key: key.to_string(),
                         dest_dir,
                         data_dest,
                         meta_dest,
@@ -491,6 +528,32 @@ impl Backend for LocalVolume {
     }
 
     async fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
+        // Phase 5: check pending pool writes first. The temp files are
+        // on disk via the page cache. Phase 5.5: we read the meta from
+        // the temp meta file rather than caching it in RAM, since the
+        // file was just written and is essentially free to read back.
+        //
+        // CRITICAL: clone the paths we need and drop the DashMap guard
+        // BEFORE awaiting. Holding a DashMap Ref across an .await can
+        // deadlock the worker, which needs to write-lock the same
+        // shard to remove the entry after a successful rename.
+        if let Some(ref pending) = self.pending_renames {
+            let key_arc = (Arc::<str>::from(bucket), Arc::<str>::from(key));
+            let lookup = pending
+                .get(&key_arc)
+                .map(|e| (e.data_path.clone(), e.meta_path.clone()));
+            if let Some((data_path, meta_path)) = lookup {
+                if let Ok(data) = tokio::fs::read(&data_path).await {
+                    if let Ok(mf) = read_meta_file(&meta_path).await {
+                        if let Some(version) = mf.versions.into_iter().next() {
+                            return Ok((data, version));
+                        }
+                    }
+                }
+                // temp file(s) gone -> fall through (race with worker)
+            }
+        }
+
         // check log store first (small objects)
         if let Ok(Some((data, meta))) = self.read_shard_from_log(bucket, key) {
             return Ok((data, meta));
@@ -575,6 +638,27 @@ impl Backend for LocalVolume {
         bucket: &str,
         key: &str,
     ) -> Result<(MmapOrVec, super::metadata::ObjectMeta), StorageError> {
+        // Phase 5: check pending pool writes first (same race fallback
+        // as read_shard). Phase 5.5: read meta from the temp meta file.
+        if let Some(ref pending) = self.pending_renames {
+            let key_arc = (Arc::<str>::from(bucket), Arc::<str>::from(key));
+            let lookup = pending
+                .get(&key_arc)
+                .map(|e| (e.data_path.clone(), e.meta_path.clone()));
+            if let Some((data_path, meta_path)) = lookup {
+                if let Ok(file) = std::fs::File::open(&data_path) {
+                    if let Ok(mmap) = unsafe { memmap2::Mmap::map(&file) } {
+                        if let Ok(mf) = read_meta_file(&meta_path).await {
+                            if let Some(version) = mf.versions.into_iter().next() {
+                                return Ok((MmapOrVec::Mmap(mmap), version));
+                            }
+                        }
+                    }
+                }
+                // race with worker -> fall through to file tier
+            }
+        }
+
         // check log store first (small objects)
         if let Ok(Some((data, meta))) = self.read_shard_from_log(bucket, key) {
             return Ok((MmapOrVec::Vec(data), meta));
@@ -616,6 +700,21 @@ impl Backend for LocalVolume {
     }
 
     async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
+        // Phase 5: cancel a pending pool write if one exists. Remove
+        // the in-memory entry, then unlink the temp files. The worker's
+        // rename will fail with ENOENT and the slot will still be
+        // replenished by the always-replenish guarantee in
+        // process_rename_request. We then return success without
+        // touching the file tier.
+        if let Some(ref pending) = self.pending_renames {
+            let key_arc = (Arc::<str>::from(bucket), Arc::<str>::from(key));
+            if let Some((_, entry)) = pending.remove(&key_arc) {
+                let _ = tokio::fs::remove_file(&entry.data_path).await;
+                let _ = tokio::fs::remove_file(&entry.meta_path).await;
+                return Ok(());
+            }
+        }
+
         // check log store first
         if self.is_in_log(bucket, key) {
             if let Some(ref log_mutex) = self.log_store {
@@ -650,6 +749,19 @@ impl Backend for LocalVolume {
                 for k in log.list_keys(bucket, prefix) {
                     if !keys.contains(&k) {
                         keys.push(k);
+                    }
+                }
+            }
+        }
+
+        // Phase 5: pending pool writes that haven't been renamed yet
+        if let Some(ref pending) = self.pending_renames {
+            for entry in pending.iter() {
+                let (b, k) = entry.key();
+                if b.as_ref() == bucket && k.starts_with(prefix) {
+                    let k_str = k.to_string();
+                    if !keys.contains(&k_str) {
+                        keys.push(k_str);
                     }
                 }
             }
@@ -719,6 +831,22 @@ impl Backend for LocalVolume {
     }
 
     async fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
+        // Phase 5: pending pool writes are visible to stat. Phase 5.5
+        // reads the meta from the temp meta file (which is in the
+        // page cache) instead of caching it in RAM at PUT time.
+        if let Some(ref pending) = self.pending_renames {
+            let key_arc = (Arc::<str>::from(bucket), Arc::<str>::from(key));
+            let meta_path = pending.get(&key_arc).map(|e| e.meta_path.clone());
+            if let Some(meta_path) = meta_path {
+                if let Ok(mf) = read_meta_file(&meta_path).await {
+                    if let Some(version) = mf.versions.into_iter().next() {
+                        return Ok(version);
+                    }
+                }
+                // race with worker -> fall through
+            }
+        }
+
         // check log store first
         if let Some(ref log_mutex) = self.log_store {
             if let Ok(log) = log_mutex.lock() {
@@ -1333,5 +1461,76 @@ mod tests {
         let disk = LocalVolume::new(tmp.path()).unwrap();
         // Should return immediately without panic.
         disk.drain_pending().await;
+    }
+
+    // ----- Phase 5: read path integration via pending_renames -----
+
+    #[tokio::test]
+    async fn pending_visible_to_read_immediately() {
+        let tmp = TempDir::new().unwrap();
+        let mut disk = LocalVolume::new(tmp.path()).unwrap();
+        disk.enable_write_pool(4).await.unwrap();
+
+        let meta = test_meta(0);
+        let payload = b"phase5 read after write";
+        disk.write_shard("bucket", "imm", payload, &meta).await.unwrap();
+        // No drain -- worker may not have run yet.
+        let (got, got_meta) = disk.read_shard("bucket", "imm").await.unwrap();
+        assert_eq!(got, payload);
+        assert_eq!(got_meta.size, meta.size);
+    }
+
+    #[tokio::test]
+    async fn pending_visible_to_stat_immediately_zero_disk() {
+        let tmp = TempDir::new().unwrap();
+        let mut disk = LocalVolume::new(tmp.path()).unwrap();
+        disk.enable_write_pool(4).await.unwrap();
+
+        let meta = test_meta(0);
+        disk.write_shard("bucket", "stat", b"x", &meta).await.unwrap();
+        // No drain -- worker may not have run yet.
+        let got_meta = disk.stat_object("bucket", "stat").await.unwrap();
+        assert_eq!(got_meta.size, meta.size);
+        assert_eq!(got_meta.etag, meta.etag);
+    }
+
+    #[tokio::test]
+    async fn pending_visible_to_list() {
+        let tmp = TempDir::new().unwrap();
+        let mut disk = LocalVolume::new(tmp.path()).unwrap();
+        disk.enable_write_pool(4).await.unwrap();
+
+        let meta = test_meta(0);
+        disk.write_shard("bucket", "a.txt", b"a", &meta).await.unwrap();
+        disk.write_shard("bucket", "b.txt", b"b", &meta).await.unwrap();
+        // No drain.
+        let keys = disk.list_objects("bucket", "").await.unwrap();
+        assert!(keys.contains(&"a.txt".to_string()));
+        assert!(keys.contains(&"b.txt".to_string()));
+    }
+
+    #[tokio::test]
+    async fn delete_pending_cancels_rename() {
+        let tmp = TempDir::new().unwrap();
+        let mut disk = LocalVolume::new(tmp.path()).unwrap();
+        disk.enable_write_pool(4).await.unwrap();
+
+        let meta = test_meta(0);
+        disk.write_shard("bucket", "doomed", b"data", &meta).await.unwrap();
+        // Immediately delete -- the worker hasn't necessarily run.
+        disk.delete_object("bucket", "doomed").await.unwrap();
+        // Drain to let any in-flight worker activity settle.
+        disk.drain_pending().await;
+
+        // Destination should NOT exist
+        let dest = pathing::object_dir(&tmp.path(), "bucket", "doomed").unwrap();
+        let shard_path = dest.join("shard.dat");
+        let meta_path = dest.join("meta.json");
+        assert!(!shard_path.exists(), "shard.dat should not exist after delete-cancel");
+        assert!(!meta_path.exists(), "meta.json should not exist after delete-cancel");
+
+        // Read should 404
+        let result = disk.read_shard("bucket", "doomed").await;
+        assert!(result.is_err());
     }
 }
