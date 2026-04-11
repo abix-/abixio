@@ -8,7 +8,8 @@ use super::metadata::{
 };
 use super::pathing;
 use super::write_slot_pool::{
-    run_rename_worker, PendingEntry, PendingRenames, RenameRequest, WriteSlot, WriteSlotPool,
+    recover_pool_dir, run_rename_worker, PendingEntry, PendingRenames, RenameRequest, WriteSlot,
+    WriteSlotPool,
 };
 use super::{Backend, BackendInfo, MmapOrVec, ShardWriter, StorageError};
 
@@ -110,6 +111,28 @@ impl LocalVolume {
             return Ok(());
         }
         let pool_dir = self.root.join(".abixio.sys").join("tmp");
+
+        // Phase 6: finish any pending renames left over from a crash
+        // BEFORE WriteSlotPool::new truncates the slot files. Acked
+        // PUTs that didn't finish their rename on the previous run
+        // are recovered here. See write_slot_pool::recover_pool_dir.
+        let report = recover_pool_dir(&self.root, &pool_dir).await?;
+        if report.recovered_pairs
+            + report.half_renamed_fixed
+            + report.orphans_deleted
+            + report.unparseable_deleted
+            > 0
+        {
+            tracing::info!(
+                recovered = report.recovered_pairs,
+                half_renamed_fixed = report.half_renamed_fixed,
+                orphans_deleted = report.orphans_deleted,
+                unparseable_deleted = report.unparseable_deleted,
+                pool_dir = %pool_dir.display(),
+                "write pool crash recovery scan complete",
+            );
+        }
+
         let pool = WriteSlotPool::new(&pool_dir, depth).await?;
         let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(256);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1393,6 +1416,63 @@ mod tests {
     }
 
     // ----- Phase 4: write pool integration tests -----
+
+    #[tokio::test]
+    async fn enable_write_pool_recovers_crashed_put() {
+        // Simulate a crash state: a slot-0000.* pair exists in the
+        // pool dir from a previous run, but no pool had a chance to
+        // drain the rename. enable_write_pool must recover the PUT
+        // BEFORE WriteSlotPool::new truncates the slot-0000.*.tmp
+        // files, otherwise we would lose the acked write.
+
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        std::fs::create_dir_all(&pool_dir).unwrap();
+
+        // Lay out the temp pair by hand: data.tmp with some bytes,
+        // meta.tmp with a realistic ObjectMetaFile carrying the
+        // destination identity fields (bucket, key).
+        let data_tmp = pool_dir.join("slot-0000.data.tmp");
+        let meta_tmp = pool_dir.join("slot-0000.meta.tmp");
+        std::fs::write(&data_tmp, b"recovered bytes").unwrap();
+        let mf = ObjectMetaFile {
+            bucket: "bucket".to_string(),
+            key: "obj".to_string(),
+            versions: vec![ObjectMeta {
+                size: 15,
+                etag: "deadbeef".to_string(),
+                content_type: "application/octet-stream".to_string(),
+                created_at: 0,
+                erasure: ErasureMeta::default(),
+                checksum: String::new(),
+                ..Default::default()
+            }],
+        };
+        std::fs::write(&meta_tmp, serde_json::to_vec(&mf).unwrap()).unwrap();
+
+        let mut disk = LocalVolume::new(root).unwrap();
+        disk.enable_write_pool(4).await.unwrap();
+
+        // The destination must now exist with the recovered bytes.
+        let shard_path = pathing::object_shard_path(root, "bucket", "obj").unwrap();
+        let meta_path = pathing::object_meta_path(root, "bucket", "obj").unwrap();
+        assert!(shard_path.exists(), "shard.dat should exist after recovery");
+        assert!(meta_path.exists(), "meta.json should exist after recovery");
+        assert_eq!(std::fs::read(&shard_path).unwrap(), b"recovered bytes");
+
+        // Fresh pool must still be at full depth: recovery + slot
+        // creation at slot ids 0..4 coexist because recovery moved
+        // slot-0000.*.tmp to the destination first, then create_slot
+        // reopened empty files at those paths.
+        assert!(disk.write_pool_enabled());
+        let fresh_data_tmp = pool_dir.join("slot-0000.data.tmp");
+        let fresh_meta_tmp = pool_dir.join("slot-0000.meta.tmp");
+        assert!(fresh_data_tmp.exists());
+        assert!(fresh_meta_tmp.exists());
+        assert_eq!(std::fs::metadata(&fresh_data_tmp).unwrap().len(), 0);
+        assert_eq!(std::fs::metadata(&fresh_meta_tmp).unwrap().len(), 0);
+    }
 
     #[tokio::test]
     async fn enable_write_pool_creates_pool_and_worker() {

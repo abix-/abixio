@@ -14,6 +14,7 @@
 //!
 //! See docs/write-pool.md for the full design.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -21,6 +22,8 @@ use crossbeam_queue::ArrayQueue;
 use dashmap::DashMap;
 use tokio::fs::File;
 
+use super::metadata::read_meta_file;
+use super::pathing;
 use super::StorageError;
 
 /// In-memory record of a PUT that has been written to a slot but
@@ -279,6 +282,265 @@ async fn create_slot(pool_dir: &Path, slot_id: u32) -> Result<WriteSlot, Storage
     })
 }
 
+// -----------------------------------------------------------------------
+// Phase 6: crash recovery scan
+// -----------------------------------------------------------------------
+//
+// On process restart, the pool dir may contain slot-N.data.tmp and
+// slot-N.meta.tmp files from PUTs that were acked before a crash but
+// whose renames to the final destination had not completed. This
+// module's `recover_pool_dir` finishes those renames before the fresh
+// pool is created. It must run BEFORE `WriteSlotPool::new` because
+// that constructor calls `File::create` which truncates existing
+// files at the slot-N.*.tmp paths.
+//
+// The design is stateless: temp meta files carry `bucket` and `key`
+// as identity fields (added in Phase 4), so recovery finds each
+// pending PUT's destination from the file alone, without any in-RAM
+// index. See `docs/write-pool.md` section "Crash recovery: stateless"
+// for the full design.
+
+/// What happened to one recovered slot.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct RecoveryReport {
+    /// Both renames ran during recovery (data + meta moved to dest).
+    pub recovered_pairs: u32,
+    /// Only the meta rename ran (data was already at dest; we crashed
+    /// between the two renames).
+    pub half_renamed_fixed: u32,
+    /// Temp files with no parseable meta or no target destination. The
+    /// PUT was never acked, so we deleted them.
+    pub orphans_deleted: u32,
+    /// Meta files that failed to parse as `ObjectMetaFile`. Deleted
+    /// along with any matching data temp.
+    pub unparseable_deleted: u32,
+}
+
+/// Per-pair recovery outcome.
+enum RecoverResult {
+    /// Both renames succeeded during recovery.
+    Full,
+    /// Only the meta rename ran; data was already at dest.
+    HalfAlreadyDone,
+    /// Could not recover (parse failure, empty identity, invalid
+    /// destination, rename error). Caller deletes the temp files.
+    Unparseable,
+}
+
+/// Grouped state per slot id found in the pool dir.
+enum PairState {
+    /// Both data and meta temp files present.
+    Pair { data_path: PathBuf, meta_path: PathBuf },
+    /// Only the meta temp file present. May be half-renamed (data
+    /// already at dest) or a true orphan.
+    MetaOnly { meta_path: PathBuf },
+    /// Only the data temp file present. PUT was never acked.
+    DataOnly { data_path: PathBuf },
+}
+
+/// Scan `pool_dir` for leftover temp files from a previous crash
+/// and finish any renames that can still be completed. Unrecoverable
+/// files are deleted. Stray files that don't match the slot naming
+/// convention are also deleted. The pool directory is private to
+/// the pool.
+///
+/// Creates `pool_dir` if it doesn't exist. First-ever startup is a
+/// no-op and returns a zero report.
+///
+/// Must run BEFORE `WriteSlotPool::new` because that constructor
+/// truncates existing slot-*.tmp files.
+pub async fn recover_pool_dir(
+    root: &Path,
+    pool_dir: &Path,
+) -> Result<RecoveryReport, StorageError> {
+    tokio::fs::create_dir_all(pool_dir).await?;
+
+    let mut grouped: HashMap<u32, (Option<PathBuf>, Option<PathBuf>)> = HashMap::new();
+    let mut stray: Vec<PathBuf> = Vec::new();
+
+    let mut entries = tokio::fs::read_dir(pool_dir).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        // Only regular files matter. Skip subdirs quietly.
+        match entry.file_type().await {
+            Ok(ft) if ft.is_file() => {}
+            _ => continue,
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            stray.push(path);
+            continue;
+        };
+        match classify_slot_filename(name) {
+            Some((slot_id, SlotHalf::Data)) => {
+                grouped.entry(slot_id).or_default().0 = Some(path);
+            }
+            Some((slot_id, SlotHalf::Meta)) => {
+                grouped.entry(slot_id).or_default().1 = Some(path);
+            }
+            None => stray.push(path),
+        }
+    }
+
+    let mut report = RecoveryReport::default();
+
+    // Delete stray files. The pool dir is private to the pool.
+    for path in stray {
+        if let Err(e) = tokio::fs::remove_file(&path).await {
+            tracing::warn!(path = %path.display(), error = %e, "failed to delete stray file in pool dir");
+        }
+    }
+
+    for (_slot_id, (data_opt, meta_opt)) in grouped {
+        let state = match (data_opt, meta_opt) {
+            (Some(data_path), Some(meta_path)) => PairState::Pair { data_path, meta_path },
+            (None, Some(meta_path)) => PairState::MetaOnly { meta_path },
+            (Some(data_path), None) => PairState::DataOnly { data_path },
+            (None, None) => continue,
+        };
+
+        match state {
+            PairState::Pair { data_path, meta_path } => {
+                match parse_and_recover_pair(root, &data_path, &meta_path).await {
+                    RecoverResult::Full => report.recovered_pairs += 1,
+                    RecoverResult::HalfAlreadyDone => report.half_renamed_fixed += 1,
+                    RecoverResult::Unparseable => {
+                        // The PUT was never acked (meta didn't parse,
+                        // no destination, or rename failed). Delete
+                        // both temps so the fresh pool can claim the
+                        // slot id.
+                        let _ = tokio::fs::remove_file(&data_path).await;
+                        let _ = tokio::fs::remove_file(&meta_path).await;
+                        report.unparseable_deleted += 1;
+                    }
+                }
+            }
+            PairState::MetaOnly { meta_path } => {
+                match recover_meta_only(root, &meta_path).await {
+                    RecoverResult::HalfAlreadyDone => report.half_renamed_fixed += 1,
+                    _ => {
+                        // True orphan: data_dest doesn't exist and
+                        // there's no temp data file. The PUT was
+                        // never acked. Delete the meta.
+                        let _ = tokio::fs::remove_file(&meta_path).await;
+                        report.orphans_deleted += 1;
+                    }
+                }
+            }
+            PairState::DataOnly { data_path } => {
+                // No meta means the PUT was not acked (meta write is
+                // part of the pre-ack tokio::try_join!). Delete.
+                let _ = tokio::fs::remove_file(&data_path).await;
+                report.orphans_deleted += 1;
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+#[derive(Clone, Copy)]
+enum SlotHalf {
+    Data,
+    Meta,
+}
+
+/// Parse `slot-NNNN.(data|meta).tmp` into (slot_id, half). Returns
+/// None for any other filename.
+fn classify_slot_filename(name: &str) -> Option<(u32, SlotHalf)> {
+    let rest = name.strip_prefix("slot-")?;
+    let (digits, tail) = rest.split_at(rest.find('.')?);
+    if digits.len() != 4 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let slot_id: u32 = digits.parse().ok()?;
+    let half = match tail {
+        ".data.tmp" => SlotHalf::Data,
+        ".meta.tmp" => SlotHalf::Meta,
+        _ => return None,
+    };
+    Some((slot_id, half))
+}
+
+/// Parse the temp meta file, compute the destination from its
+/// `bucket` and `key` identity fields, mkdir the destination, and
+/// run the two renames. Handles the half-renamed case by skipping
+/// the data rename when `data_dest` already exists.
+async fn parse_and_recover_pair(
+    root: &Path,
+    data_path: &Path,
+    meta_path: &Path,
+) -> RecoverResult {
+    let Ok(mf) = read_meta_file(meta_path).await else {
+        return RecoverResult::Unparseable;
+    };
+    if mf.bucket.is_empty() || mf.key.is_empty() {
+        return RecoverResult::Unparseable;
+    }
+    // Phase 6 only supports non-versioned recovery. The pool's write
+    // path is non-versioned today.
+    let Ok(dest_dir) = pathing::object_dir(root, &mf.bucket, &mf.key) else {
+        return RecoverResult::Unparseable;
+    };
+    let data_dest = dest_dir.join("shard.dat");
+    let meta_dest = dest_dir.join("meta.json");
+
+    if tokio::fs::create_dir_all(&dest_dir).await.is_err() {
+        return RecoverResult::Unparseable;
+    }
+
+    // Half-renamed detection: if shard.dat is already at the dest,
+    // we crashed between the two renames. Skip the data rename and
+    // finish only the meta rename.
+    let data_already_at_dest = tokio::fs::try_exists(&data_dest).await.unwrap_or(false);
+    if !data_already_at_dest {
+        if tokio::fs::rename(data_path, &data_dest).await.is_err() {
+            return RecoverResult::Unparseable;
+        }
+    } else {
+        // Redundant stale temp data. Delete it so nothing blocks
+        // the next startup's fresh-slot creation.
+        let _ = tokio::fs::remove_file(data_path).await;
+    }
+
+    if tokio::fs::rename(meta_path, &meta_dest).await.is_err() {
+        return RecoverResult::Unparseable;
+    }
+
+    if data_already_at_dest {
+        RecoverResult::HalfAlreadyDone
+    } else {
+        RecoverResult::Full
+    }
+}
+
+/// Meta-only case. This is only recoverable as half-renamed: the
+/// data rename must have already completed and left a shard.dat at
+/// the destination. If `data_dest` doesn't exist, there's no way to
+/// finish the PUT and the meta is a true orphan.
+async fn recover_meta_only(root: &Path, meta_path: &Path) -> RecoverResult {
+    let Ok(mf) = read_meta_file(meta_path).await else {
+        return RecoverResult::Unparseable;
+    };
+    if mf.bucket.is_empty() || mf.key.is_empty() {
+        return RecoverResult::Unparseable;
+    }
+    let Ok(dest_dir) = pathing::object_dir(root, &mf.bucket, &mf.key) else {
+        return RecoverResult::Unparseable;
+    };
+    let data_dest = dest_dir.join("shard.dat");
+    let meta_dest = dest_dir.join("meta.json");
+    if !tokio::fs::try_exists(&data_dest).await.unwrap_or(false) {
+        return RecoverResult::Unparseable;
+    }
+    if tokio::fs::create_dir_all(&dest_dir).await.is_err() {
+        return RecoverResult::Unparseable;
+    }
+    if tokio::fs::rename(meta_path, &meta_dest).await.is_err() {
+        return RecoverResult::Unparseable;
+    }
+    RecoverResult::HalfAlreadyDone
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -527,5 +789,266 @@ mod tests {
         // Worker should have removed the pending entry after rename
         assert_eq!(pending.len(), 0);
         assert!(dest_dir.join("shard.dat").exists());
+    }
+
+    // -------------------------------------------------------------
+    // Phase 6: crash recovery scan
+    // -------------------------------------------------------------
+
+    use crate::storage::metadata::{ErasureMeta, ObjectMeta, ObjectMetaFile};
+
+    /// Write a realistic meta.tmp file with bucket/key populated.
+    async fn write_meta_tmp(path: &Path, bucket: &str, key: &str) {
+        let mf = ObjectMetaFile {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            versions: vec![ObjectMeta {
+                size: 5,
+                etag: "deadbeef".to_string(),
+                content_type: "application/octet-stream".to_string(),
+                created_at: 0,
+                erasure: ErasureMeta::default(),
+                checksum: String::new(),
+                ..Default::default()
+            }],
+        };
+        let json = serde_json::to_vec(&mf).unwrap();
+        tokio::fs::write(path, json).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn recover_full_pair_moves_both_files_to_destination() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        tokio::fs::create_dir_all(&pool_dir).await.unwrap();
+
+        let data_tmp = pool_dir.join("slot-0000.data.tmp");
+        let meta_tmp = pool_dir.join("slot-0000.meta.tmp");
+        tokio::fs::write(&data_tmp, b"hello").await.unwrap();
+        write_meta_tmp(&meta_tmp, "b", "k").await;
+
+        let report = recover_pool_dir(root, &pool_dir).await.unwrap();
+        assert_eq!(report.recovered_pairs, 1);
+        assert_eq!(report.half_renamed_fixed, 0);
+        assert_eq!(report.orphans_deleted, 0);
+        assert_eq!(report.unparseable_deleted, 0);
+
+        // Both files should now be at the destination.
+        let data_dest = root.join("b").join("k").join("shard.dat");
+        let meta_dest = root.join("b").join("k").join("meta.json");
+        assert!(data_dest.exists());
+        assert!(meta_dest.exists());
+        assert_eq!(std::fs::read(&data_dest).unwrap(), b"hello");
+        // Temp files should be gone.
+        assert!(!data_tmp.exists());
+        assert!(!meta_tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn recover_half_renamed_pair_finishes_meta_only() {
+        // Simulated crash state: the data rename completed, but the
+        // meta rename didn't, AND the data temp is still present
+        // (pre-Phase-6 would always delete that; we treat it as
+        // stale and drop it, then move the meta).
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        tokio::fs::create_dir_all(&pool_dir).await.unwrap();
+
+        // Pre-place shard.dat at the destination.
+        let dest_dir = root.join("b").join("k");
+        tokio::fs::create_dir_all(&dest_dir).await.unwrap();
+        tokio::fs::write(dest_dir.join("shard.dat"), b"final").await.unwrap();
+
+        // The temp pair still exists (stale data.tmp + real meta.tmp).
+        let data_tmp = pool_dir.join("slot-0000.data.tmp");
+        let meta_tmp = pool_dir.join("slot-0000.meta.tmp");
+        tokio::fs::write(&data_tmp, b"stale").await.unwrap();
+        write_meta_tmp(&meta_tmp, "b", "k").await;
+
+        let report = recover_pool_dir(root, &pool_dir).await.unwrap();
+        assert_eq!(report.half_renamed_fixed, 1);
+        assert_eq!(report.recovered_pairs, 0);
+
+        // Destination data must be untouched, meta must now be at dest.
+        assert_eq!(std::fs::read(dest_dir.join("shard.dat")).unwrap(), b"final");
+        assert!(dest_dir.join("meta.json").exists());
+        assert!(!data_tmp.exists());
+        assert!(!meta_tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn recover_meta_only_with_dest_present_finishes_meta() {
+        // Only slot-N.meta.tmp exists (data already renamed AND the
+        // stale temp data was somehow already cleaned up). If
+        // data_dest exists, we're half-renamed: finish the meta.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        tokio::fs::create_dir_all(&pool_dir).await.unwrap();
+
+        let dest_dir = root.join("b").join("k");
+        tokio::fs::create_dir_all(&dest_dir).await.unwrap();
+        tokio::fs::write(dest_dir.join("shard.dat"), b"final").await.unwrap();
+
+        let meta_tmp = pool_dir.join("slot-0000.meta.tmp");
+        write_meta_tmp(&meta_tmp, "b", "k").await;
+
+        let report = recover_pool_dir(root, &pool_dir).await.unwrap();
+        assert_eq!(report.half_renamed_fixed, 1);
+        assert!(dest_dir.join("meta.json").exists());
+        assert!(!meta_tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn recover_meta_only_without_dest_deletes_meta() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        tokio::fs::create_dir_all(&pool_dir).await.unwrap();
+
+        // Meta references bucket=b key=k but shard.dat doesn't exist.
+        let meta_tmp = pool_dir.join("slot-0000.meta.tmp");
+        write_meta_tmp(&meta_tmp, "b", "k").await;
+
+        let report = recover_pool_dir(root, &pool_dir).await.unwrap();
+        assert_eq!(report.orphans_deleted, 1);
+        assert!(!meta_tmp.exists());
+        // Destination should not have been fabricated.
+        assert!(!root.join("b").join("k").join("meta.json").exists());
+    }
+
+    #[tokio::test]
+    async fn recover_data_only_deletes_data() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        tokio::fs::create_dir_all(&pool_dir).await.unwrap();
+
+        let data_tmp = pool_dir.join("slot-0000.data.tmp");
+        tokio::fs::write(&data_tmp, b"unacked").await.unwrap();
+
+        let report = recover_pool_dir(root, &pool_dir).await.unwrap();
+        assert_eq!(report.orphans_deleted, 1);
+        assert!(!data_tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn recover_unparseable_meta_deletes_both() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        tokio::fs::create_dir_all(&pool_dir).await.unwrap();
+
+        let data_tmp = pool_dir.join("slot-0000.data.tmp");
+        let meta_tmp = pool_dir.join("slot-0000.meta.tmp");
+        tokio::fs::write(&data_tmp, b"bytes").await.unwrap();
+        tokio::fs::write(&meta_tmp, b"not json").await.unwrap();
+
+        let report = recover_pool_dir(root, &pool_dir).await.unwrap();
+        assert_eq!(report.unparseable_deleted, 1);
+        assert!(!data_tmp.exists());
+        assert!(!meta_tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn recover_empty_meta_deletes_both() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        tokio::fs::create_dir_all(&pool_dir).await.unwrap();
+
+        let data_tmp = pool_dir.join("slot-0000.data.tmp");
+        let meta_tmp = pool_dir.join("slot-0000.meta.tmp");
+        tokio::fs::write(&data_tmp, b"bytes").await.unwrap();
+        tokio::fs::File::create(&meta_tmp).await.unwrap(); // empty
+
+        let report = recover_pool_dir(root, &pool_dir).await.unwrap();
+        assert_eq!(report.unparseable_deleted, 1);
+        assert!(!data_tmp.exists());
+        assert!(!meta_tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn recover_meta_without_bucket_or_key_deletes_both() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        tokio::fs::create_dir_all(&pool_dir).await.unwrap();
+
+        let data_tmp = pool_dir.join("slot-0000.data.tmp");
+        let meta_tmp = pool_dir.join("slot-0000.meta.tmp");
+        tokio::fs::write(&data_tmp, b"bytes").await.unwrap();
+        // Valid JSON but bucket/key both empty (e.g. an old-format
+        // meta.json file that somehow landed in the pool dir).
+        let mf = ObjectMetaFile::default();
+        let json = serde_json::to_vec(&mf).unwrap();
+        tokio::fs::write(&meta_tmp, json).await.unwrap();
+
+        let report = recover_pool_dir(root, &pool_dir).await.unwrap();
+        assert_eq!(report.unparseable_deleted, 1);
+        assert!(!data_tmp.exists());
+        assert!(!meta_tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn recover_stray_files_are_deleted() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        tokio::fs::create_dir_all(&pool_dir).await.unwrap();
+
+        let stray = pool_dir.join("not-a-slot.txt");
+        tokio::fs::write(&stray, b"junk").await.unwrap();
+
+        let report = recover_pool_dir(root, &pool_dir).await.unwrap();
+        assert_eq!(report, RecoveryReport::default());
+        assert!(!stray.exists());
+    }
+
+    #[tokio::test]
+    async fn recover_empty_pool_dir_is_noop() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        tokio::fs::create_dir_all(&pool_dir).await.unwrap();
+
+        let report = recover_pool_dir(root, &pool_dir).await.unwrap();
+        assert_eq!(report, RecoveryReport::default());
+    }
+
+    #[tokio::test]
+    async fn recover_missing_pool_dir_creates_it_and_returns_zero() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        let pool_dir = root.join(".abixio.sys").join("tmp");
+        // Deliberately don't create it.
+        assert!(!pool_dir.exists());
+
+        let report = recover_pool_dir(root, &pool_dir).await.unwrap();
+        assert_eq!(report, RecoveryReport::default());
+        assert!(pool_dir.exists());
+    }
+
+    #[test]
+    fn classify_slot_filename_accepts_valid_names() {
+        assert!(matches!(
+            classify_slot_filename("slot-0000.data.tmp"),
+            Some((0, SlotHalf::Data))
+        ));
+        assert!(matches!(
+            classify_slot_filename("slot-0031.meta.tmp"),
+            Some((31, SlotHalf::Meta))
+        ));
+    }
+
+    #[test]
+    fn classify_slot_filename_rejects_bad_names() {
+        assert!(classify_slot_filename("slot-0000.dat.tmp").is_none());
+        assert!(classify_slot_filename("slot-00.data.tmp").is_none()); // wrong digit count
+        assert!(classify_slot_filename("slot-abcd.data.tmp").is_none());
+        assert!(classify_slot_filename("shard.dat").is_none());
+        assert!(classify_slot_filename("random.txt").is_none());
     }
 }

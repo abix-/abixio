@@ -12,7 +12,7 @@ The motivation is GC simplicity. The log store keeps many objects per
 segment file, which means reclaiming space from overwritten or deleted
 objects requires a segment compactor that scans live needles, copies
 them to a new segment, and unlinks the old one. The pool keeps one
-file per object, so reclaiming space is just `unlink()` -- the
+file per object, so reclaiming space is just `unlink()`. The
 filesystem handles it natively, no compactor needed.
 
 The pool and the log store are alternatives at the same tier level.
@@ -22,7 +22,7 @@ see the comparison plan at the end of this doc.
 
 ## Table of contents
 
-- [Why](#why) -- the syscall cost the pool eliminates
+- [Why](#why): the syscall cost the pool eliminates
 - [How it works](#how-it-works)
   - [Per-disk slot pool](#per-disk-slot-pool)
   - [PUT hot path](#put-hot-path)
@@ -34,21 +34,22 @@ see the comparison plan at the end of this doc.
 - [Backpressure](#backpressure)
 - [Trade-offs](#trade-offs)
 - [Coexistence with the log store](#coexistence-with-the-log-store)
-- [Implementation phases](#implementation-phases) -- the table of what's done / pending
+- [Implementation phases](#implementation-phases): the table of what's done and pending
 - [Benchmark plan](#benchmark-plan)
-- [Implementation status](#implementation-status) -- the deep dive on each phase
-  - [Phase 1: pool primitive in isolation](#phase-1-pool-primitive-in-isolation----done)
-  - [Phase 2: slot writes with real I/O](#phase-2-slot-writes-with-real-io----done)
-  - [Phase 2.5: faster JSON serializer](#phase-25-faster-json-serializer----done)
-  - [Phase 3: rename worker in isolation](#phase-3-rename-worker-in-isolation----done)
-  - [Phase 4: first integration into LocalVolume::write_shard](#phase-4-first-integration-into-localvolumewrite_shard----done)
-  - [Phase 4.5: profile and fix the 4KB integration overhead](#phase-45-profile-and-fix-the-4kb-integration-overhead----done)
-  - [Phase 5: read path integration (pending_renames)](#phase-5-read-path-integration-pending_renames----done)
-  - [Phase 5.5: shrink PendingEntry](#phase-55-shrink-pendingentry----done-then-validated-as-unnecessary)
-  - [Phase 5.5+: stable-median measurement](#phase-55-stable-median-measurement----done)
-  - [Phase 5.6: move file drops off the hot path](#phase-56-move-file-drops-off-the-hot-path----done)
+- [Implementation status](#implementation-status): the deep dive on each phase
+  - [Phase 1: pool primitive in isolation (done)](#phase-1-pool-primitive-in-isolation-done)
+  - [Phase 2: slot writes with real I/O (done)](#phase-2-slot-writes-with-real-io-done)
+  - [Phase 2.5: faster JSON serializer (done)](#phase-25-faster-json-serializer-done)
+  - [Phase 3: rename worker in isolation (done)](#phase-3-rename-worker-in-isolation-done)
+  - [Phase 4: first integration into LocalVolume::write_shard (done)](#phase-4-first-integration-into-localvolumewrite_shard-done)
+  - [Phase 4.5: profile and fix the 4KB integration overhead (done)](#phase-45-profile-and-fix-the-4kb-integration-overhead-done)
+  - [Phase 5: read path integration (pending_renames) (done)](#phase-5-read-path-integration-pending_renames-done)
+  - [Phase 5.5: shrink PendingEntry (done, then validated as unnecessary)](#phase-55-shrink-pendingentry-done-then-validated-as-unnecessary)
+  - [Phase 5.5+: stable-median measurement (done)](#phase-55-stable-median-measurement-done)
+  - [Phase 5.6: move file drops off the hot path (done)](#phase-56-move-file-drops-off-the-hot-path-done)
   - [Methodology lessons](#methodology-lessons-from-phase-55-and-phase-56)
-  - [Phase 6-9: pending](#phase-6-9-pending)
+  - [Phase 6: crash recovery scan (done)](#phase-6-crash-recovery-scan-done)
+  - [Phase 7-9: pending](#phase-7-9-pending)
 - [Open questions for implementation](#open-questions-for-implementation)
 - [Files to modify (when phase 2 begins)](#files-to-modify-when-phase-2-begins)
 - [Verification](#verification)
@@ -56,8 +57,8 @@ see the comparison plan at the end of this doc.
 
 ## Why
 
-The current file-per-object write path -- which the log store already
-bypasses for objects <=64KB and the pool aims to replace entirely --
+The current file-per-object write path, which the log store already
+bypasses for objects <=64KB and the pool aims to replace entirely,
 does this on every PUT, per disk:
 
 ```
@@ -136,7 +137,7 @@ PUT 1MB to bucket/key:
 Two syscalls and one DashMap insert before ack. The mkdir, both file
 creates, the close cycles, and the meta open+write+close have all
 moved off the request path. So has the channel send to the rename
-worker -- crash before the send is harmless because recovery picks
+worker. A crash before the send is harmless because recovery picks
 up the orphaned temp files on next startup.
 
 **Why the DashMap insert can't move after ack.** Without it in the
@@ -177,14 +178,14 @@ tokio::try_join!(
 
 Wall-clock cost becomes `max(data, meta)` instead of `data + meta`.
 Phase 2 measured 33us serial vs 6.3us joined at 4KB. The savings is
-larger than just the meta write time -- the tokio blocking-pool
+larger than just the meta write time, because the tokio blocking-pool
 dispatch overlaps too.
 
 **2. simd-json compact output instead of `serde_json::to_vec_pretty`.**
 **MEASURED 30% faster than serde_json, ~35% smaller on disk.**
 
 Phase 2.5 measured four serializers in isolation. `simd_json::serde::to_vec`
-won at 383ns avg vs `serde_json::to_vec_pretty` at 858ns -- a 55%
+won at 383ns avg vs `serde_json::to_vec_pretty` at 858ns: a 55%
 speed win combined with 35% smaller output. Round-trip parses through
 `serde_json::from_slice` cleanly so destination meta.json files stay
 fully compatible with the rest of the codebase.
@@ -268,7 +269,7 @@ request path.
 
 For the worker to be a literal `mv` (no parsing, no rewriting), the
 temp meta file must be byte-for-byte the destination meta.json.
-That means the meta file has to know its own destination -- which
+That means the meta file has to know its own destination: which
 bucket and which key it belongs to.
 
 `ObjectMeta` already carries `version_id`, `is_latest`, and
@@ -432,7 +433,7 @@ not a required path.
    The current `LocalShardWriter::finalize` versioned branch reads
    the existing meta.json, inserts a new version at the front, and
    writes the merged file back. The pool's rename worker has to do
-   the same -- which means the worker can't be a pure `mv` for
+   the same, which means the worker can't be a pure `mv` for
    versioned writes. It does the read-modify-write at rename time,
    not on the request path. Acceptable: it's serialized per-key,
    not globally, and it's off the hot path.
@@ -456,7 +457,7 @@ not a required path.
 The pool is designed as a replacement for the log store. The main
 motivation is GC: one file per object means `unlink()` reclaims space
 natively, with no segment compactor, no live needle scan, no
-copy-forward pass. The log store needs phase 8 GC -- the pool needs
+copy-forward pass. The log store needs phase 8 GC. The pool needs
 zero new code.
 
 The one known trade-off in the other direction is GET latency for
@@ -488,14 +489,14 @@ make a data-driven call before deleting the loser.
 | 1.6 | Faster JSON serializer bench (Phase 2.5) | maximum JSON speed via simd-json / sonic-rs | **done** (simd-json wins at 383ns avg, 30% faster than serde_json; sonic-rs rejected as slower; see "Phase 2.5 results" below) |
 | 1.7 | Rename worker in isolation (Phase 3) | drain rate ceiling | **done** (1 worker = 940 ops/sec, 27x file tier; 2 workers = 1744 ops/sec; ship 1 per disk; see "Phase 3 results" below) |
 | 2 | `ObjectMetaFile` `bucket` and `key` fields | self-describing meta | **done** (Phase 4) |
-| 3 | Wire `write_shard` to use the pool when enabled | buffered PUT fast path | **done** (Phase 4 -- integrated pool is 5-18x faster than the file tier at every size; see "Phase 4 results" below) |
+| 3 | Wire `write_shard` to use the pool when enabled | buffered PUT fast path | **done** (Phase 4: integrated pool is 5-18x faster than the file tier at every size; see "Phase 4 results" below) |
 | 3.5 | Profile + fix the 4KB integration overhead (Phase 4.5) | smaller per-call cost | **done** (collapsed 3 path computations into 1; 4KB p50 dropped from 43us to 10us, pool is now 46x faster than file tier at 4KB; see "Phase 4.5 results" below) |
 | 4 | Wire `open_shard_writer` to use the pool | streaming PUT fast path | pending |
 | 5 | Read path integration in all five readers | reads see pending writes | **done** (Phase 5: PUT-then-immediate-GET works without `drain_pending`; production-safe for non-versioned writes) |
-| 5.5 | Trim `PendingEntry` (drop the meta clone) | smaller per-call cost | **done** (Phase 5.5; turned out the meta clone was not the cost -- see Phase 5.5+ for the real story) |
+| 5.5 | Trim `PendingEntry` (drop the meta clone) | smaller per-call cost | **done** (Phase 5.5; turned out the meta clone was not the cost. See Phase 5.5+ for the real story) |
 | 5.5+ | Stable-median measurement of the integrated bench | trustworthy 4KB numbers | **done** (10k iters showed Phase 5.5 was identical to Phase 4.5 at p50; the "regression" was 100% noise) |
 | 5.6 | Move file drops off the hot path | flatter latency at every size | **done** (4KB avg 3x better, 10MB p99 12x better; pool now 53x file tier at 4KB and 4.6x at 100MB) |
-| 6 | Crash recovery scan in `LocalVolume::new` | restart safety | pending |
+| 6 | Crash recovery scan in `enable_write_pool` | restart safety | **done** (Phase 6: `recover_pool_dir` finishes any pending renames left from a crash before fresh slots are created; 14 new tests, all 355 total pass) |
 | 7 | Admin endpoint `GET /_admin/pool/status` | operator visibility | pending |
 | 8 | Tests: unit + integration + crash kill | confidence | pending |
 | 9 | Benchmark all three tiers | data-driven decision | pending |
@@ -547,7 +548,7 @@ at 1MB and 4MB sizes. Decision: enable pre-allocation if it shows
 >=10% improvement at any common size, otherwise leave it off.
 
 **Faster JSON serializer.** **DECIDED in Phase 2.5: simd-json wins.**
-See the "Phase 2.5: faster JSON serializer -- DONE" section under
+See the "Phase 2.5: faster JSON serializer (done)" section under
 "Implementation status" for the measured numbers. Verdict:
 `simd_json::serde::to_vec` at 383ns avg, 30% faster than
 `serde_json::to_vec`. Phase 4 will use simd-json as the default
@@ -556,13 +557,13 @@ rejected (slower at this payload size).
 
 ## Implementation status
 
-### Phase 1: pool primitive in isolation -- DONE
+### Phase 1: pool primitive in isolation (done)
 
 Landed in commit alongside this doc update. The new
 `src/storage/write_slot_pool.rs` contains `WriteSlotPool::new`,
-`try_pop`, `release`, and `available` -- the bare slot pool, no
-rename worker, no `pending_renames`, no integration. Backed by
-`crossbeam_queue::ArrayQueue` (lock-free MPMC).
+`try_pop`, `release`, and `available`. That is the bare slot pool,
+with no rename worker, no `pending_renames`, no integration. Backed
+by `crossbeam_queue::ArrayQueue` (lock-free MPMC).
 
 Measured on Windows 10 NTFS, depth=32:
 
@@ -589,7 +590,7 @@ pool primitive is 3-4 orders of magnitude faster than what it needs
 to be.
 
 The p50/p99/p999 percentiles all snap to exactly 100ns, which is
-the `Instant::now()` resolution on this hardware -- the operation
+the `Instant::now()` resolution on this hardware. The operation
 is genuinely faster than the timer can measure individually.
 
 Bench output: `bench-results/phase1-pool-primitive.txt`. Re-run with:
@@ -617,7 +618,7 @@ once Phase 4 wires it into `LocalVolume::write_shard`. Phase 2
 will add a per-size sweep (4KB / 64KB / 1MB / 10MB) so we can see
 where the pool wins most.
 
-### Phase 2: slot writes with real I/O -- DONE
+### Phase 2: slot writes with real I/O (done)
 
 The bench function `bench_pool_l1_slot_write` in `tests/layer_bench.rs`
 runs five sizes (4KB / 64KB / 1MB / 10MB / 100MB) through six write
@@ -632,12 +633,12 @@ k3sc cargo-lock test --release --test layer_bench -- \
 
 **Strategies measured:**
 
-- A: `file_tier_full` -- mkdir + write shard + write meta (current path)
-- B: `file_tier_no_mkdir` -- pre-create dir, only time the writes
-- C: `pool_serial` -- pop slot, sequential async writes
-- D: `pool_join` -- C + concurrent writes via `tokio::try_join!` (#1)
-- E: `pool_join_compact` -- D + compact JSON instead of pretty (#2)
-- F: `pool_sync_small` -- E + sync `std::fs::File::write_all` for small payloads (#3, only at <=4KB)
+- A: `file_tier_full`. mkdir + write shard + write meta (current path)
+- B: `file_tier_no_mkdir`. Pre-create dir, only time the writes
+- C: `pool_serial`. Pop slot, sequential async writes
+- D: `pool_join`. C + concurrent writes via `tokio::try_join!` (#1)
+- E: `pool_join_compact`. D + compact JSON instead of pretty (#2)
+- F: `pool_sync_small`. E + sync `std::fs::File::write_all` for small payloads (#3, only at <=4KB)
 
 **Headline numbers (Windows 10 NTFS, 1 disk, p50):**
 
@@ -698,7 +699,7 @@ makes subsequent syncs slow), or the tokio blocking pool may genuinely
 be faster than direct syscalls for this size class on Windows.
 
 **Verdict: REJECT.** Do not ship. This is exactly the kind of "obvious"
-optimization the methodology is meant to catch -- it sounded right on
+optimization the methodology is meant to catch. It sounded right on
 paper, the measurement says no, and the numbers force the answer.
 
 **Final hot path (Phase 4 will use this):**
@@ -730,7 +731,7 @@ worker integration.
    problem, but a future bench should use 5-10x more iterations in
    this band for cleaner avgs.
 
-### Phase 2.5: faster JSON serializer -- DONE
+### Phase 2.5: faster JSON serializer (done)
 
 The bench function `bench_pool_l1_5_json_serializers` in
 `tests/layer_bench.rs` runs four serializers against the same
@@ -766,8 +767,8 @@ documents; at 391 bytes the per-call overhead dominates. Not shipped.
 **Important caveat:** the absolute win is small (~161ns saved per
 PUT). The 30% percentage win is real but it's 30% of a sub-microsecond
 operation. Compared to the ~10us file syscall, the JSON step is not
-the bottleneck. simd-json shaves 161ns off a ~6us hot path -- about
-2-3% improvement end-to-end. We're shipping it because (a) the
+the bottleneck. simd-json shaves 161ns off a ~6us hot path, which is
+about 2-3% improvement end-to-end. We're shipping it because (a) the
 explicit goal is maximum JSON speed, (b) the round-trip validates,
 (c) the dep is small and stable, (d) every nanosecond counts on a
 hot path that we're trying to make competitive with the log store.
@@ -777,7 +778,7 @@ hot path that we're trying to make competitive with the log store.
 faster than pretty (544ns vs 858ns), but the I/O variance in Phase 2
 hid that 314ns difference completely. **Components measured in
 isolation can reveal real wins that I/O variance buries.** Worth
-remembering for future bench design -- if a number "doesn't change"
+remembering for future bench design. If a number "doesn't change"
 through end-to-end I/O, measure the component alone before drawing
 conclusions.
 
@@ -786,7 +787,7 @@ Windows x86_64 development box. simd-json's effectiveness depends on
 runtime SIMD detection. Linux production targets may differ. Re-run
 this bench on the production target before committing in Phase 4.
 
-### Phase 3: rename worker in isolation -- DONE
+### Phase 3: rename worker in isolation (done)
 
 The bench function `bench_pool_l2_worker_drain` in
 `tests/layer_bench.rs` runs four scenarios against the new
@@ -800,16 +801,16 @@ k3sc cargo-lock test --release --test layer_bench -- \
 
 **New code in `src/storage/write_slot_pool.rs`:**
 
-- `RenameRequest` struct -- the message type sent on the rename
-  channel by the (eventual) PUT path
-- `WriteSlotPool::replenish_slot(slot_id)` -- creates a fresh slot
+- `RenameRequest` struct. The message type sent on the rename
+  channel by the (eventual) PUT path.
+- `WriteSlotPool::replenish_slot(slot_id)`. Creates a fresh slot
   file pair at the same slot_id paths and pushes a new `WriteSlot`
-  to the queue
-- `process_rename_request(pool, req)` -- the actual work for one
+  to the queue.
+- `process_rename_request(pool, req)`. The actual work for one
   request: mkdir + 2 renames + open a fresh slot to replace the
-  consumed one. Public so the bench can drive parallel workers
-- `run_rename_worker(pool, rx, shutdown)` -- the loop. Matches the
-  heal worker shutdown pattern at `heal/worker.rs:181-226`
+  consumed one. Public so the bench can drive parallel workers.
+- `run_rename_worker(pool, rx, shutdown)`. The loop. Matches the
+  heal worker shutdown pattern at `heal/worker.rs:181-226`.
 
 **Numbers (Windows 10 NTFS, 1 disk):**
 
@@ -829,7 +830,7 @@ workers=4   drain   127.28ms    2011 ops/sec   2.12x scaling
 ```
 
 **Single worker drains at ~940 ops/sec.** Per-op cost is consistent
-at ~1100us across all batch sizes (32, 256, 1024) -- no per-batch
+at ~1100us across all batch sizes (32, 256, 1024), with no per-batch
 overhead. Estimated breakdown: ~200us mkdir, ~200us for both
 renames, ~400-500us for opening the two new slot files, ~200us
 tokio overhead. **Opening the new slot files is the single biggest
@@ -871,7 +872,7 @@ The hot-path PUT measured in Phase 2 is ~6us per request, which is
 **180x faster than the worker drain rate.** This means in any
 sustained load above 940 ops/sec, the rename queue grows and writes
 fall through to the slow path (Phase 7 backpressure handles that).
-The PUT request side is faster than the worker can keep up with --
+The PUT request side is faster than the worker can keep up with,
 not the other way around.
 
 ### Verdict
@@ -879,19 +880,19 @@ not the other way around.
 **Pass.** Ship 1 worker per disk in Phase 4. Design ready for 2
 workers per disk if production load shows the single worker is
 saturated (1.84x scaling already proven). Don't bother with 4
-workers -- the scaling falls off.
+workers. The scaling falls off.
 
 **Phase 3.5 backlog (defer until needed):**
 
-- mkdir caching -- many PUTs share dest dirs (same bucket+prefix);
+- mkdir caching. Many PUTs share dest dirs (same bucket+prefix);
   cache "I already mkdir'd this" set. Could shave 200us off
   per-op cost (~17% throughput improvement).
-- Optimistic rename + retry on ENOENT -- skip mkdir for the common
+- Optimistic rename + retry on ENOENT. Skip mkdir for the common
   case where the dest dir already exists from previous PUTs.
-- Concurrent renames within one request -- `tokio::try_join!` the
+- Concurrent renames within one request. `tokio::try_join!` the
   two renames. Currently serial. Could shave another 50-100us.
-- Parallel workers (2 per disk) -- if production load saturates
-  the single worker. Already proven at 1.84x scaling.
+- Parallel workers (2 per disk). Use them if production load
+  saturates the single worker. Already proven at 1.84x scaling.
 
 ### Methodology note: Scenario 3 was poorly designed
 
@@ -912,16 +913,16 @@ useful as a sanity check.
 
 1. **Opening fresh slot files dominates per-op cost.** ~400-500us
    for the two new file creates is larger than mkdir or rename
-   individually. Pre-allocation doesn't help here -- every steady-
+   individually. Pre-allocation doesn't help here; every steady-
    state slot replacement pays the same cost.
 2. **Parallel rename ceiling at 2 workers.** NTFS doesn't parallelize
    independent renames on a single disk past ~2 concurrent operations.
 3. **180x gap between hot path and worker drain.** ~6us PUT vs ~1100us
    worker. The pool's whole design depends on the queue absorbing
-   bursts -- the request side is much faster than the worker can
+   bursts. The request side is much faster than the worker can
    keep up with, and the queue is what bridges the two.
 
-### Phase 4: first integration into LocalVolume::write_shard -- DONE
+### Phase 4: first integration into LocalVolume::write_shard (done)
 
 Phase 4 stops treating the pool as a freestanding test object. After
 this phase, calling `LocalVolume::write_shard` with the pool turned on
@@ -937,7 +938,7 @@ adding bench code.
 
 - `ObjectMetaFile` got two new fields, `bucket` and `key`. They are
   the object's identity. Old `meta.json` files that don't have them
-  still load fine -- the fields default to empty strings and the rest
+  still load fine; the fields default to empty strings and the rest
   of the code keeps deriving them from the directory path.
 - `LocalVolume` got three new fields: a handle to the slot pool, a
   way to send rename messages to the worker, and a way to tell the
@@ -957,7 +958,7 @@ adding bench code.
   (versioned objects, pool empty, pool not enabled).
 - `LocalVolume::drain_pending()` is a test helper that waits until
   every in-flight rename has finished. Tests need it because Phase 4
-  has no read-path support yet -- a request that just got a 200 OK
+  has no read-path support yet, so a request that just got a 200 OK
   for a PUT might 404 on a GET until the worker has finished the
   rename. Phase 5 fixes that with the in-memory lookup table; for
   now, tests call `drain_pending()` between writes and reads.
@@ -997,7 +998,7 @@ SIZE     STRATEGY                    AVG       p50       p99    THROUGHPUT
 
 **Headline: at every size, the integrated pool is 5x to 18x faster
 than the file tier it replaces.** This is the real measurement,
-not a microbenchmark in isolation -- the bench calls
+not a microbenchmark in isolation. The bench calls
 `LocalVolume::write_shard` exactly as a real PUT request would.
 
 | Size | File tier (median) | Pool (median) | How much faster |
@@ -1009,13 +1010,13 @@ not a microbenchmark in isolation -- the bench calls
 | 100MB | 283ms | **35.56ms** | **8x** |
 
 At 100MB the pool sustains **2782 MB/s** versus the file tier's 352
-MB/s. That's real bandwidth -- not a microbench artifact -- written
+MB/s. That's real bandwidth, not a microbench artifact, written
 through the same code that production PUT requests use.
 
 ### The integration cost: ~30-40us of constant overhead per call
 
-Phase 2 measured just the write step in isolation -- pop a slot,
-write the data, write the meta, drop the slot -- at about 4us
+Phase 2 measured just the write step in isolation (pop a slot,
+write the data, write the meta, drop the slot) at about 4us
 median for a 4KB object. Phase 4 measures the full
 `LocalVolume::write_shard` call at about 43us median for the same
 4KB. The gap is about 39us, and it stays roughly the same across
@@ -1047,7 +1048,7 @@ the file tier is already a huge win.
   criterion was "Phase 4 should be within 20% of Phase 2's bare
   write step." That was the wrong yardstick. Phase 2 didn't include
   any of the per-call work that Phase 4 has to do, so Phase 4 could
-  never get within 20% of it at small sizes -- the fixed costs make
+  never get within 20% of it at small sizes; the fixed costs make
   it impossible. The yardstick that actually matters is the
   comparison against the path Phase 4 replaces (the file tier), and
   by that measure Phase 4 wins by 5x to 18x at every size. **The
@@ -1070,7 +1071,7 @@ the file tier is already a huge win.
    pool eliminates all of it. Below 64KB the file tier hits some
    per-file fixed cost ceiling that the pool walks straight past.
 
-### Phase 4.5: profile and fix the 4KB integration overhead -- DONE
+### Phase 4.5: profile and fix the 4KB integration overhead (done)
 
 Phase 4 left a puzzle: the integrated `LocalVolume::write_shard`
 call took ~43us median for 4KB even though Phase 2's bare write
@@ -1107,7 +1108,7 @@ Median per-step at 4KB:
 **Path computation was almost as expensive as the actual file
 writes.** Calling `object_dir`, `object_shard_path`, and
 `object_meta_path` as three separate functions ran the bucket and
-key validation three times AND built three independent PathBufs --
+key validation three times AND built three independent PathBufs,
 when really we only need one validation and one PathBuf, with two
 cheap `.join()` calls for the file names.
 
@@ -1127,7 +1128,7 @@ let data_dest = dest_dir.join("shard.dat");
 let meta_dest = dest_dir.join("meta.json");
 ```
 
-### Result -- much bigger than predicted
+### Result (much bigger than predicted)
 
 I predicted ~5us savings (would drop 4KB p50 from 43us to ~38us).
 Actual measurement after the fix:
@@ -1138,7 +1139,7 @@ Actual measurement after the fix:
 | 4KB pool median | 43.0us | **10.4us** | **4.1x faster** |
 | 4KB pool 99th percentile | 2.10ms | **184us** | **11x faster** |
 
-The 4KB median dropped by 33us, not 5us as predicted -- the path
+The 4KB median dropped by 33us, not 5us as predicted. The path
 computation was triggering more downstream cost than its isolated
 measurement suggested. The 11x improvement on the 99th percentile
 is the most telling: the variance wasn't measurement noise, it was
@@ -1165,8 +1166,8 @@ The breakdown bench measured the path computation at 6.6us in
 isolation. Removing it from the integrated path saved ~33us. **The
 isolated cost was about 1/5 of the actual cost.** The redundant
 validation and PathBuf allocation work was triggering downstream
-problems -- probably allocator hot paths, cache pressure, async
-state machine size -- that the isolated bench couldn't see because
+problems (probably allocator hot paths, cache pressure, async
+state machine size) that the isolated bench couldn't see because
 it didn't have the rest of `write_shard`'s code running around it.
 
 Generalizable: **when a microbench says "this step costs X" and the
@@ -1182,11 +1183,11 @@ Phase 4.5 closed most of the unexplained 28us gap from the Phase 4
 analysis. Pool 4KB p50 went from 43us to 10us; the bare Phase 2
 write step is ~4us. The remaining ~6us is genuine per-call code
 work (validation, meta build, simd-json serialization, channel
-send, async state machine) and isn't worth chasing further -- the
+send, async state machine) and isn't worth chasing further. The
 absolute cost is already small and the diminishing returns are
 real.
 
-### Phase 5: read path integration (pending_renames) -- DONE
+### Phase 5: read path integration (pending_renames) (done)
 
 Phase 5 added an in-memory `pending_renames` table (DashMap) so that
 a GET arriving immediately after a PUT-through-the-pool can find the
@@ -1220,7 +1221,7 @@ Critical bug found and fixed: holding a `dashmap::Ref` across an
 of the `Ref` BEFORE awaiting. `drain_pending` got a 5-second
 timeout so future bugs of this shape fail fast.
 
-### Phase 5.5: shrink PendingEntry -- DONE (then validated as unnecessary)
+### Phase 5.5: shrink PendingEntry (done, then validated as unnecessary)
 
 Phase 5.5 dropped the `ObjectMeta`, `data_dest`, and `meta_dest`
 fields from `PendingEntry`. Read paths now read the temp meta file
@@ -1229,7 +1230,7 @@ hypothesis was that the `ObjectMeta` clone was costing ~17us at
 4KB. **The hypothesis was wrong** but the change is still cleaner
 so it stayed.
 
-### Phase 5.5+: stable-median measurement -- DONE
+### Phase 5.5+: stable-median measurement (done)
 
 The "Phase 5/5.5 17us regression" turned out to be 100% measurement
 noise. The integrated bench was running 100 iterations, but the
@@ -1292,11 +1293,11 @@ on a measurement that has millisecond p99 spikes.
    minutes when a deadlock fired. A 5-second deadline is enough
    to fail fast without disrupting normal runs.
 
-### Phase 5.6: move file drops off the hot path -- DONE
+### Phase 5.6: move file drops off the hot path (done)
 
 Phase 5/5.5 looked like a 17us regression at 4KB. After running the
 integrated bench with 10k samples per size (Phase 5.5+), the median
-was actually 11.7us -- the "regression" was measurement noise from
+was actually 11.7us. The "regression" was measurement noise from
 running only 100 iterations on an operation with 200x p99/p50
 variance. Phase 5.5 was correct all along.
 
@@ -1327,7 +1328,7 @@ cache write-back). Step 5 (the writes themselves) is similarly
 spike-prone: 6.9us p50 but 110us avg.
 
 The DashMap insert (step 9, 600ns p50) was confirmed as not the
-problem -- Phase 5.5's hypothesis was wrong.
+problem. Phase 5.5's hypothesis was wrong.
 
 ### The fix: pass the slot to the worker, drop file handles there
 
@@ -1335,7 +1336,7 @@ Step 5 (the writes) is at the floor and can't be made faster
 without moving away from `tokio::fs`. **But step 6 doesn't have to
 happen on the hot path.** We can pass the entire `WriteSlot`
 (including its open file handles) to the rename worker, which
-drops the handles after the rename. The drops still happen -- just
+drops the handles after the rename. The drops still happen, just
 on a background task instead of in the request handler.
 
 `RenameRequest` was changed from holding individual paths to
@@ -1375,7 +1376,7 @@ drops anything. It writes through `slot.data_file` and
 `slot.meta_file` via Rust split borrows, builds a `RenameRequest`
 with the slot moved in, and sends it.
 
-### Result -- bigger than predicted at every size
+### Result (bigger than predicted at every size)
 
 Predicted: ~65us savings on 4KB avg (the measured drop cost).
 Actual at 4KB: 64us. Spot on. **But the savings at LARGER sizes
@@ -1421,7 +1422,7 @@ speedup improved meaningfully (5x to 8.2x).
    Always check the avg/p50 ratio before drawing conclusions; a
    ratio above ~3x means there are tail outliers that need many
    more samples to stabilize. The Phase 5/5.5 "regression" was
-   100% noise from this -- 10k iterations showed Phase 5.5 was
+   100% noise from this. 10k iterations showed Phase 5.5 was
    functionally identical to Phase 4.5 at p50.
 2. **Never hold a `dashmap::Ref` across an `.await`.** It deadlocks
    anything that needs to write-lock the same shard. The fix is
@@ -1435,10 +1436,113 @@ speedup improved meaningfully (5x to 8.2x).
    into a 278us p99 at 4KB, and a 61ms p99 into a 5.25ms p99 at
    10MB.
 
-### Phase 6-9: pending
+### Phase 6: crash recovery scan (done)
 
-All 341 tests pass through Phase 5.6. The pool is functionally
-complete and production-safe for non-versioned writes:
+Before Phase 6, `enable_write_pool` had a silent data-loss hole:
+`WriteSlotPool::new` calls `File::create` for each slot id, which
+**truncates** any existing file at `slot-NNNN.data.tmp` /
+`slot-NNNN.meta.tmp`. If the process crashed mid-flight with slot
+5 holding an acked PUT whose rename hadn't completed, the slot-5
+temp files were destroyed on next startup.
+
+Phase 6 closes this hole with a stateless recovery scan that runs
+at startup before the fresh pool is created. The temp meta files
+carry `bucket` and `key` as identity fields (added in Phase 4), so
+the recovery scan can find each pending PUT's destination from
+the file alone, with no in-RAM index required.
+
+### The recovery function
+
+New public function `recover_pool_dir(root, pool_dir)` in
+`src/storage/write_slot_pool.rs`. Returns a `RecoveryReport`
+struct with four counters:
+
+```rust
+pub struct RecoveryReport {
+    pub recovered_pairs: u32,       // both renames done in recovery
+    pub half_renamed_fixed: u32,    // only meta rename was left
+    pub orphans_deleted: u32,       // temp files that were not acked
+    pub unparseable_deleted: u32,   // meta failed to parse
+}
+
+pub async fn recover_pool_dir(
+    root: &Path,
+    pool_dir: &Path,
+) -> Result<RecoveryReport, StorageError>;
+```
+
+`enable_write_pool` calls it immediately after creating `pool_dir`
+and **before** `WriteSlotPool::new`. The order matters: if recovery
+ran after the constructor, the freshly-truncated empty slot files
+would destroy the pending PUT.
+
+### How the scan works
+
+1. `tokio::fs::read_dir` the pool dir.
+2. For each file, parse the name with `classify_slot_filename`.
+   Valid names match `slot-NNNN.(data|meta).tmp` where N is exactly
+   four digits. Anything else is a stray and gets deleted (the
+   pool dir is private to the pool).
+3. Group the recognized files into three states per slot id:
+   - **Pair**: both `slot-N.data.tmp` and `slot-N.meta.tmp` exist.
+   - **MetaOnly**: only `slot-N.meta.tmp` exists.
+   - **DataOnly**: only `slot-N.data.tmp` exists.
+4. Handle each state:
+   - **Pair**: parse the meta via `read_meta_file`, require non-empty
+     `bucket` and `key`, compute `dest_dir` via `pathing::object_dir`,
+     mkdir the destination, check whether `data_dest` already exists
+     (the half-renamed case), rename data if not, rename meta, done.
+     On any failure the pair is treated as unrecoverable and both
+     temp files are deleted.
+   - **MetaOnly**: only recoverable as half-renamed. If `data_dest`
+     exists, finish the meta rename. If not, the meta is a true
+     orphan and gets deleted.
+   - **DataOnly**: the meta write is part of the pre-ack
+     `tokio::try_join!` on the hot path, so data-without-meta means
+     the PUT was never acked. Delete.
+
+### Test coverage
+
+11 unit tests in `src/storage/write_slot_pool.rs::tests` plus 1
+integration test in `src/storage/local_volume.rs::tests`:
+
+- `recover_full_pair_moves_both_files_to_destination`: the
+  "crashed before first rename" case.
+- `recover_half_renamed_pair_finishes_meta_only`: data is at dest,
+  both temp files still exist, recovery drops the stale temp data
+  and moves the meta.
+- `recover_meta_only_with_dest_present_finishes_meta`: clean
+  half-renamed case (data at dest, only meta.tmp left).
+- `recover_meta_only_without_dest_deletes_meta`: true orphan meta.
+- `recover_data_only_deletes_data`: unacked PUT.
+- `recover_unparseable_meta_deletes_both`: garbage JSON.
+- `recover_empty_meta_deletes_both`: zero-byte meta.
+- `recover_meta_without_bucket_or_key_deletes_both`: valid JSON
+  with empty identity fields (old format or partial write).
+- `recover_stray_files_are_deleted`: non-slot files.
+- `recover_empty_pool_dir_is_noop`: clean shutdown.
+- `recover_missing_pool_dir_creates_it_and_returns_zero`: first-ever
+  startup.
+- `enable_write_pool_recovers_crashed_put` (integration): end-to-end
+  verification that a hand-laid temp pair becomes a readable object
+  at `<root>/bucket/obj/` AND that the fresh pool at slot 0 is
+  created afterwards with empty files at the original slot-0000.*.tmp
+  paths (no conflict with recovery).
+
+### Result
+
+- **Hot path cost:** zero. Recovery runs once at startup.
+- **Startup cost:** one `read_dir` on a directory that holds at most
+  depth + queue-depth = 288 files per disk in the worst case, plus
+  a small number of renames when recovery is needed. On a clean
+  shutdown it's one `read_dir` and done.
+- **All 355 tests pass** (341 pre-Phase-6 + 14 new).
+- **Safety:** acked PUTs survive process crash. The pool is now
+  fully production-safe for non-versioned writes with crash recovery
+  included.
+
+All 355 tests pass. The pool is functionally complete and
+production-safe for non-versioned writes:
 
 - Phase 5 (read-after-write consistency via `pending_renames`) lets
   an immediate GET-after-PUT find the object before the rename
@@ -1448,13 +1552,20 @@ complete and production-safe for non-versioned writes:
   appeared to show.
 - Phase 5.6 moved the spike-prone file drops off the hot path,
   cutting the 4KB avg by 3x and the 10MB p99 by 12x.
+- Phase 6 closes the crash-recovery gap so acked PUTs survive a
+  restart.
 
-The next big building block is **Phase 6: crash recovery** -- a
-startup scan of `.abixio.sys/tmp/` that finishes any pending
-renames left over from a process crash, so acked PUTs are never
-lost. Phase 7 (backpressure / fall-through to slow path), Phase 8
-(`--write-tier` CLI flag + full bench matrix), and Phase 9
-(pre-allocation tunable) follow.
+### Phase 7-9: pending
+
+The remaining phases are:
+
+- **Phase 7** (backpressure / fall-through to slow path) when the
+  pool is empty or the rename queue gets too long.
+- **Phase 8** (`--write-tier` CLI flag + full bench matrix) for
+  the data-driven call on log store vs pool.
+- **Phase 9** (pre-allocation tunable via fallocate / SetEndOfFile).
+- Streaming `open_shard_writer` integration through the pool.
+- Versioned writes through the pool.
 
 ## Open questions for implementation
 
@@ -1476,29 +1587,29 @@ lost. Phase 7 (backpressure / fall-through to slow path), Phase 8
 
 ## Files to modify (when phase 2 begins)
 
-- `src/storage/metadata.rs` -- add `bucket` and `key` fields to
+- `src/storage/metadata.rs`: add `bucket` and `key` fields to
   `ObjectMetaFile` with `#[serde(default)]`. Update writers in
   `local_volume.rs` to populate them.
-- New: `src/storage/write_slot_pool.rs` -- pool, slot, rename worker,
+- New: `src/storage/write_slot_pool.rs`: pool, slot, rename worker,
   recovery scan.
-- `src/storage/mod.rs` -- declare new module.
-- `src/storage/local_volume.rs` -- new `write_pool` field on
+- `src/storage/mod.rs`: declare new module.
+- `src/storage/local_volume.rs`: new `write_pool` field on
   `LocalVolume`. Modify `write_shard`, `open_shard_writer`,
   `read_shard`, `mmap_shard`, `stat_object`, `list_objects`, and
   `delete_object` to consult the pool and `pending_renames`. Spawn
   the rename worker. Run crash recovery in `new()`. Add
   `enable_write_pool(depth)` mirroring `enable_log_store()`.
-- `src/storage/pathing.rs` -- helpers `pool_dir(root)`,
+- `src/storage/pathing.rs`: helpers `pool_dir(root)`,
   `pool_data_path(root, slot_id)`, `pool_meta_path(root, slot_id)`.
   All return paths under `.abixio.sys/tmp/`.
-- `src/main.rs` -- new `--write-tier` CLI flag. Pass shutdown signal
+- `src/main.rs`: new `--write-tier` CLI flag. Pass shutdown signal
   into the rename worker (reuse the `tokio::sync::watch` channel
   used by the heal worker).
-- `src/admin/handlers.rs` -- new endpoint
+- `src/admin/handlers.rs`: new endpoint
   `GET /_admin/pool/status` returning per-disk pool depth, queue
   depth, pending count, and slot creation errors.
-- `src/config.rs` -- add `write_tier` field.
-- `tests/s3_integration.rs` -- pool integration tests.
+- `src/config.rs`: add `write_tier` field.
+- `tests/s3_integration.rs`: pool integration tests.
 
 ## Verification
 
@@ -1541,9 +1652,9 @@ size.
 
 ## See also
 
-- [Log-structured storage](write-log.md) -- the small-object tier
+- [Log-structured storage](write-log.md): the small-object tier
   this design competes with for sizes <=64KB.
-- [RAM write cache](write-cache.md) -- a different approach to
-  removing disk I/O from the write path; orthogonal to the pool.
-- [Architecture](architecture.md) -- where the pool fits in the
+- [RAM write cache](write-cache.md): a different approach to
+  removing disk I/O from the write path, orthogonal to the pool.
+- [Architecture](architecture.md): where the pool fits in the
   overall design principles.
