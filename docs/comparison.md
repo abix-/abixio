@@ -351,7 +351,7 @@ Specific upstream claims this page is anchored to:
 | Weakness | Reality today |
 |---|---|
 | Production credibility | None yet |
-| Benchmarks | [Published](benchmarks.md): fastest PUT at all sizes (4KB: 1618 vs MinIO 367, 1GB: 465 vs MinIO 356 MB/s). Fair test (all clients disk I/O): 1GB GET ~245 MB/s for all servers (disk-bound). mc GET shows network gap: AbixIO 352 vs MinIO 832. See [layer-optimization.md](layer-optimization.md) |
+| Benchmarks | Published cross-server matrix at [benchmarks.md::Comprehensive matrix](benchmarks.md#comprehensive-matrix) (3 servers x 3 clients x 3 sizes, HTTPS + SigV4 + UNSIGNED-PAYLOAD, single node, NTFS). Per-tier internal comparison at [write-path.md::Where the time goes](write-path.md#where-the-time-goes). L1-L7 layer ceilings at [layer-optimization.md](layer-optimization.md). Numbers are not duplicated here -- read those docs for the current measured story. |
 | Failure injection / long-haul testing | Not there yet |
 | Packaging / deployment story | Not there yet |
 | S3 surface completeness | Incomplete |

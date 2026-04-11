@@ -410,7 +410,6 @@ Audited against the codebase on 2026-04-11.
 | Phase 8 / 8.5 benchmark section names and commands | Verified | `tests/layer_bench.rs:3111-3164`, `3455-3499` |
 | Specific published numeric results in matrix tables | Verified | Re-run end-to-end on 2026-04-11 with the 5-server tier-aware harness (`AbixIO-file/log/pool` + RustFS + MinIO); raw output at `bench-results/2026-04-11-matrix-tls-tiers.txt` |
 | Phase 8.7 tier matrix and Phase 8.5 stack breakdown sections were duplicated here and in `write-path.md` | Corrected | Both sections deleted from this doc; `## Write tier comparison and stack breakdown` is now a one-block pointer to `write-path.md`. Each number lives in exactly one doc |
-| `1220 MB/s` curl GET and other historical perf numbers | Not independently re-run in this pass | Repeated consistently across docs, but not re-measured during this audit |
 | Matrix harness normalizes disk I/O and warmup across clients | Verified | `../abixio-ui/tests/bench.rs:882-904`, `951-962`, `1030-1040` |
 | `HTTPS + SigV4 + UNSIGNED-PAYLOAD` is the documented authoritative normalized client mode | Verified | `docs/benchmarks.md:7-15` |
 | Canonical benchmark harness now targets HTTPS instead of plain HTTP | Verified | `../abixio-ui/tests/bench.rs:646`, `650`, `658`, `847`, `1221`, `1240`, `1284`, `1309`; `../abixio-ui/tests/support/server.rs:147-192` |

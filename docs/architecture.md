@@ -123,9 +123,16 @@ HTTP GET request
   range/versioned: buffered path (read full object, slice, respond)
 ```
 
-1+0 fast path: 1220 MB/s (1GB via curl). EC: zero-alloc mmap slices.
-Small objects: log segment mmap. See [layer-optimization.md](layer-optimization.md)
-and [write-log.md](write-log.md) for design details.
+The 1+0 fast path uses zero-copy mmap. EC uses zero-alloc mmap slices.
+Small-object reads come from the log segment mmap. End-to-end PUT and
+GET numbers per tier and per size live in
+[write-path.md::Where the time goes](write-path.md#where-the-time-goes).
+The L1-L7 storage-pipeline ceilings (raw write, mmap GET, blake3, RS,
+hyper, full s3s, full client with auth) live in
+[layer-optimization.md](layer-optimization.md). Cross-server competitive
+numbers vs MinIO and RustFS live in
+[benchmarks.md](benchmarks.md#comprehensive-matrix). None of those are
+duplicated here.
 
 ## Cluster
 
@@ -230,8 +237,7 @@ Audited against the codebase on 2026-04-11.
 | Log-store PUT path includes `fsync + ack` | Corrected | Code comments and implementation explicitly say no fsync: `src/storage/local_volume.rs:251-253` |
 | Pool/default choice is still unsettled | Corrected | Newer docs and bench artifacts already establish the three-tier result; see `docs/benchmarks.md` and `docs/write-pool.md` |
 | 1+0 mmap fast path and EC mmap decode exist | Verified | `src/s3_service.rs:458-474`, `src/storage/erasure_decode.rs`, `src/storage/volume_pool.rs` |
-| `1220 MB/s` curl GET figure | Not re-run in this pass | Repeated consistently across docs, but not independently benchmarked during this audit |
-| Small-object latency numbers in this summary | Updated for consistency, not re-measured | Old values were stale relative to `docs/write-log.md`; current summary now points at newer published numbers |
+| Per-tier and per-size performance numbers in this doc | Removed (moved out) | Architecture doc no longer carries perf claims; see [write-path.md](write-path.md), [layer-optimization.md](layer-optimization.md), [benchmarks.md](benchmarks.md) for the canonical sources |
 | Dependency table | Mostly verified at a glance | The listed crates are present and used, but I did not exhaustively reconcile every crate entry against `Cargo.toml` in this pass |
 
 Verdict: the architecture summary is structurally accurate, but it had a few stale summary claims inherited from older benchmark/design phases. The corrected version now matches the current storage-tier story and no-fsync write model.
