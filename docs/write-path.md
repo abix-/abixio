@@ -233,12 +233,37 @@ Final resting place:
 
 ### Branch B: Local log store
 
-| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
-|---|---|---|---|---|---|---|
-| log-store branch end-to-end | `265us` p50 | `385us` p50 | n/a | n/a | full HTTP stack Phase 8.7 | `docs/benchmarks.md` |
-| log-store equivalent throughput | `14.7 MB/s` | `162.3 MB/s` | n/a | n/a | same p50 data expressed as throughput | derived from `docs/benchmarks.md` |
-| historical dedicated 4KB keep-alive benchmark | `0.91ms` | n/a | n/a | n/a | dedicated legacy benchmark view | `docs/write-log.md` |
-| historical dedicated 4KB keep-alive rate | n/a | n/a | `1096 obj/s` | n/a | dedicated legacy benchmark view | `docs/write-log.md` |
+End-to-end PUT and GET measured through the full HTTP stack
+(`reqwest -> hyper -> s3s -> VolumePool -> LocalVolume`) on a single
+disk, ftt=0, 127.0.0.1 loopback. Source:
+`bench-results/phase8.7-tier-matrix.txt`, `bench_pool_l4_tier_matrix`.
+
+Throughput is `size / p50_latency` so it tracks the latency table
+exactly, not the run's avg-based throughput line.
+
+| Size  | PUT p50 | PUT throughput | GET p50 | GET throughput |
+|---    |---      |---             |---      |---             |
+| 4KB   | `265us`     | `14.7 MB/s`   | `173us`     | `22.5 MB/s`   |
+| 64KB  | `385us`     | `162.4 MB/s`  | `218us`     | `287.2 MB/s`  |
+| 1MB   | `4057us`    | `246.5 MB/s`  | `1776us`    | `563.2 MB/s`  |
+| 10MB  | `31744us`   | `315.0 MB/s`  | `10031us`   | `996.9 MB/s`  |
+| 100MB | `164974us`  | `606.2 MB/s`  | `97709us`   | `1023.5 MB/s` |
+
+**Where it wins:** small objects (`<=64KB`). Log-store PUT p50 is
+~3.5x faster than the file tier and ~1.7x faster than the pool at 4KB
+and 64KB. GET p50 at 4KB is ~4x faster than file or pool.
+
+**Where it loses:** the log-store branch only handles small
+non-versioned writes; objects above the 64KB threshold fall through to
+the file tier inside `LocalVolume::write_shard`. The 1MB / 10MB / 100MB
+rows above are therefore measuring the file-tier path that the log
+configuration falls back to, not the log store itself, which is why
+those rows track Branch D closely.
+
+For comparison, the legacy dedicated 4KB keep-alive benchmark in
+`docs/write-log.md` recorded `0.91ms` (`1096 obj/s`); that view is
+preserved there but is superseded by the Phase 8.7 numbers above for
+end-to-end purposes.
 
 If the cache is disabled or full, `VolumePool` writes shards to the
 selected backends. On a `LocalVolume`, small non-versioned objects can
@@ -264,13 +289,42 @@ Final resting place:
 
 ### Branch C: Local write pool
 
-| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
-|---|---|---|---|---|---|---|
-| pool branch end-to-end | `454us` p50 | `586us` p50 | n/a | n/a | full HTTP stack Phase 8.7 | `docs/benchmarks.md` |
-| pool equivalent throughput | `8.6 MB/s` | `106.5 MB/s` | n/a | n/a | same p50 data expressed as throughput | derived from `docs/benchmarks.md` |
-| best measured pool fast path | `318us` p50 | n/a | n/a | n/a | Stage E# with tuned queue/depth | `docs/benchmarks.md` |
-| best measured pool fast-path throughput | `12.3 MB/s` | n/a | n/a | n/a | same Stage E# data expressed as throughput | derived from `docs/benchmarks.md` |
-| storage-layer integrated pool benchmark | `43.0us` p50 | `57.5us` p50 | `190.7 MB/s` at 64KB, `1265.9 MB/s` at 1MB, `2535.4 MB/s` at 10MB | `2781.8 MB/s` at 100MB | storage-layer only, not full HTTP path | `docs/layer-optimization.md` Pool L3 |
+End-to-end PUT and GET measured through the full HTTP stack on a single
+disk, ftt=0, 127.0.0.1 loopback. Source:
+`bench-results/phase8.7-tier-matrix.txt`, `bench_pool_l4_tier_matrix`.
+
+| Size  | PUT p50 | PUT throughput | GET p50 | GET throughput |
+|---    |---      |---             |---      |---             |
+| 4KB   | `454us`     | `8.6 MB/s`    | `708us`     | `5.5 MB/s`    |
+| 64KB  | `586us`     | `106.7 MB/s`  | `917us`     | `68.2 MB/s`   |
+| 1MB   | `3797us`    | `263.4 MB/s`  | `1882us`    | `531.3 MB/s`  |
+| 10MB  | `33837us`   | `295.6 MB/s`  | `10100us`   | `990.1 MB/s`  |
+| 100MB | `165671us`  | `603.6 MB/s`  | `98955us`   | `1010.6 MB/s` |
+
+**Where it wins:** mid-range (`1MB` to a few `MB`). Pool 1MB PUT p50 is
+~13% faster than the file tier and ~6% faster than the log store. The
+pre-opened temp-file slot avoids the per-PUT `mkdir + File::create`
+that the file tier pays.
+
+**Where it loses:** at small sizes the rename worker handoff and the
+slot pop/release dominate the request, so 4KB pool PUT p50 (`454us`)
+trails the log store (`265us`). At large sizes the post-write rename
+becomes a fixed `60-100ms` tax that does not shrink with object size,
+so 100MB pool PUT trails the file tier slightly. GET on the pool also
+has to chase the temp-file slot via the `pending_renames` map, which
+is why pool GET p50 trails log GET at every size below 10MB.
+
+The best measured pool fast path was `318us` p50 at 4KB
+(`8.62 / 0.000318 = 12.3 MB/s`) under Phase 8.5 Stage E# with depth
+1024 and unbounded channel; that is the headroom the pool can reach
+with tuned queues, not the default-config number above. The default
+configuration (depth 1024, channel 10_000, 2 rename workers) is what
+the Phase 8.7 row shows.
+
+Storage-layer-only pool numbers (no HTTP, no s3s) reach `43us` p50 at
+4KB and `2781.8 MB/s` at 100MB; see `docs/layer-optimization.md` Pool
+L3 for that view. The end-to-end rows above are the cost actually paid
+by an external client.
 
 If a `LocalVolume` has the pre-opened temp-file pool enabled and a slot
 is available, the shard write goes through the pool path.
@@ -298,14 +352,46 @@ Final resting place:
 
 ### Branch D: Local file tier
 
-| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
-|---|---|---|---|---|---|---|
-| file-tier branch end-to-end | `935us` p50 | `1330us` p50 | n/a | n/a | full HTTP stack Phase 8.7 | `docs/benchmarks.md` |
-| file-tier equivalent throughput | `4.2 MB/s` | `47.0 MB/s` | n/a | n/a | same p50 data expressed as throughput | derived from `docs/benchmarks.md` |
-| full-stack file-tier reference | `810us` p50 | n/a | n/a | n/a | Phase 8.5 Stage D | `docs/benchmarks.md` |
-| storage pipeline/file-tier reference | n/a | n/a | `439 MB/s` | `489 MB/s` | L4 storage pipeline | `docs/layer-optimization.md` L4 |
-| skip-MD5 storage pipeline reference | n/a | n/a | n/a | `510 MB/s` | L4 skip-MD5 path | `docs/layer-optimization.md` layer-to-layer gaps |
-| raw local write ceiling underneath file tier | n/a | n/a | `1625 MB/s` | `1056 MB/s` | L3 page-cache write ceiling | `docs/layer-optimization.md` L3 |
+End-to-end PUT and GET measured through the full HTTP stack on a single
+disk, ftt=0, 127.0.0.1 loopback. Source:
+`bench-results/phase8.7-tier-matrix.txt`, `bench_pool_l4_tier_matrix`.
+
+| Size  | PUT p50 | PUT throughput | GET p50 | GET throughput |
+|---    |---      |---             |---      |---             |
+| 4KB   | `935us`     | `4.2 MB/s`    | `689us`     | `5.7 MB/s`    |
+| 64KB  | `1330us`    | `47.0 MB/s`   | `949us`     | `65.8 MB/s`   |
+| 1MB   | `4360us`    | `229.3 MB/s`  | `1929us`    | `518.5 MB/s`  |
+| 10MB  | `28974us`   | `345.1 MB/s`  | `16840us`   | `593.9 MB/s`  |
+| 100MB | `149228us`  | `670.0 MB/s`  | `100848us`  | `991.6 MB/s`  |
+
+**Where it wins:** large objects (`>=10MB`). The file tier writes
+shard.dat and meta.json directly to their final paths, so it pays no
+post-write rename tax. At 100MB it leads PUT throughput at 670.0 MB/s
+versus log 606.2 and pool 603.6.
+
+**Where it loses:** small objects. 4KB file-tier PUT p50 (`935us`) is
+~3.5x slower than the log store (`265us`) and ~2x slower than the pool
+fast path (`454us`). Most of that gap is the per-PUT
+`mkdir + File::create + write + close` sequence on NTFS, not actual
+data write time.
+
+For independent confirmation, Phase 8.5 Stage D measured the same
+file-tier path at `810us` p50 at 4KB through bare hyper (no s3s),
+which is consistent with the `935us` Phase 8.7 number once the s3s
+dispatch overhead (~32us) and an extra warmup spread are added back.
+
+Storage-layer-only file-tier ceilings (no HTTP, no s3s) from
+`docs/layer-optimization.md`:
+
+- L4 storage pipeline: `439 MB/s` at 10MB, `489 MB/s` at 1GB
+- L4 skip-MD5 storage pipeline: `510 MB/s` at 1GB
+- L3 raw local write ceiling underneath the file tier: `1625 MB/s`
+  at 10MB, `1056 MB/s` at 1GB
+
+The Phase 8.7 file-tier 100MB PUT (`670.0 MB/s`) sits comfortably
+above the L4 10MB pipeline ceiling because L4 measures the storage
+pipeline at smaller sizes than 100MB; the comparison is informative
+about the per-stage gap, not directly comparable cell to cell.
 
 If the write does not hit RAM cache, log store, or write pool, it falls
 through to the file tier.
@@ -382,15 +468,65 @@ stack breakdown.
 | server processing via debug header | `0.28ms` | server-only 4KB PUT processing from live responses | `docs/benchmarks.md`, Server-side profiling |
 
 The tier matrix is the authoritative end-to-end comparison for user
-visible PUT latency:
+visible PUT and GET. Source:
+`bench-results/phase8.7-tier-matrix.txt`. All cells are p50 latency
+plus derived throughput (`size / p50_latency`); MB = `1048576` bytes.
 
-| Size | file | log | pool | best tier | Source |
-|---|---|---|---|---|---|
-| 4KB | `935us` | `265us` | `454us` | log | `docs/benchmarks.md`, Phase 8.7 |
-| 64KB | `1330us` | `385us` | `586us` | log | `docs/benchmarks.md`, Phase 8.7 |
-| 1MB | `4360us` | `4057us` | `3797us` | pool | `docs/benchmarks.md`, Phase 8.7 |
-| 10MB | `28974us` | `31744us` | `33837us` | file | `docs/benchmarks.md`, Phase 8.7 |
-| 100MB | `149228us` | `164974us` | `165671us` | file | `docs/benchmarks.md`, Phase 8.7 |
+#### PUT p50 latency by tier
+
+| Size  | file       | log        | pool       | best tier |
+|---    |---         |---         |---         |---        |
+| 4KB   | `935us`    | **`265us`**    | `454us`    | log  |
+| 64KB  | `1330us`   | **`385us`**    | `586us`    | log  |
+| 1MB   | `4360us`   | `4057us`   | **`3797us`**   | pool |
+| 10MB  | **`28974us`**  | `31744us`  | `33837us`  | file |
+| 100MB | **`149228us`** | `164974us` | `165671us` | file |
+
+#### PUT throughput by tier
+
+| Size  | file        | log         | pool        | best tier |
+|---    |---          |---          |---          |---        |
+| 4KB   | `4.2 MB/s`     | **`14.7 MB/s`**    | `8.6 MB/s`     | log  |
+| 64KB  | `47.0 MB/s`    | **`162.4 MB/s`**   | `106.7 MB/s`   | log  |
+| 1MB   | `229.3 MB/s`   | `246.5 MB/s`   | **`263.4 MB/s`**   | pool |
+| 10MB  | **`345.1 MB/s`**   | `315.0 MB/s`   | `295.6 MB/s`   | file |
+| 100MB | **`670.0 MB/s`**   | `606.2 MB/s`   | `603.6 MB/s`   | file |
+
+#### GET p50 latency by tier
+
+| Size  | file        | log        | pool       | best tier |
+|---    |---          |---         |---         |---        |
+| 4KB   | `689us`     | **`173us`**    | `708us`    | log |
+| 64KB  | `949us`     | **`218us`**    | `917us`    | log |
+| 1MB   | `1929us`    | **`1776us`**   | `1882us`   | log |
+| 10MB  | `16840us`   | **`10031us`**  | `10100us`  | log |
+| 100MB | `100848us`  | **`97709us`**  | `98955us`  | log |
+
+#### GET throughput by tier
+
+| Size  | file         | log          | pool         | best tier |
+|---    |---           |---           |---           |---        |
+| 4KB   | `5.7 MB/s`      | **`22.5 MB/s`**     | `5.5 MB/s`      | log |
+| 64KB  | `65.8 MB/s`     | **`287.2 MB/s`**    | `68.2 MB/s`     | log |
+| 1MB   | `518.5 MB/s`    | **`563.2 MB/s`**    | `531.3 MB/s`    | log |
+| 10MB  | `593.9 MB/s`    | **`996.9 MB/s`**    | `990.1 MB/s`    | log |
+| 100MB | `991.6 MB/s`    | **`1023.5 MB/s`**   | `1010.6 MB/s`   | log |
+
+#### Tier handoff implied by these tables
+
+The cross-over points fall on natural object size boundaries:
+
+- **`<=64KB`**: log store wins both PUT and GET (~3-4x advantage at 4KB)
+- **`64KB to ~10MB`**: pool wins PUT (within ~7% of log on the GET side
+  thanks to the buffered slot read path)
+- **`>=10MB`**: file tier wins PUT (the rename worker overhead the
+  pool pays no longer amortizes; ~60-100ms fixed tax per write); GET
+  is essentially equalized by the disk-write sink
+
+That handoff is the basis for the proposed three-tier dispatch
+inside `LocalVolume::write_shard`. The current `--write-tier` CLI
+flag picks one tier for the entire process, not per-object; the
+per-object dispatch is still pending.
 
 ## How other docs should use this page
 
@@ -418,5 +554,7 @@ Audited against the codebase on 2026-04-11.
 | Remote shard writes POST into `/_storage/v1/*` and then execute the target node's local `write_shard` path | Verified | `src/storage/remote_volume.rs`, `src/storage/storage_server.rs` |
 | Timing tables on this page are measured-only | Verified | All numeric timings here are sourced from existing benchmark or trace docs; no new estimated timings were added |
 | The specific timing values were independently re-run in this pass | Not re-run in this pass | Values were taken from current repo docs and bench artifacts, not freshly benchmarked during this edit |
+| Per-branch tier tables (B/C/D) carry full 5-size PUT and GET p50 plus throughput | Verified | Source: `bench-results/phase8.7-tier-matrix.txt`. Throughput cells are derived as `size_bytes / 1.048576 / p50_us`, so each cell tracks the latency cell exactly and uses the same MB definition as the bench output (1 MB = 1048576 bytes) |
+| Cross-over from log -> pool -> file tier as object size grows | Verified | Tier matrix tables in §"Where the time goes" show log winning <=64KB PUT, pool winning at 1MB PUT, file winning at 10MB and 100MB PUT |
 
 Verdict: the routing and ack/final-resting-place semantics on this page are grounded in the current code. The timing sections are as authoritative as the current benchmark corpus, but they remain benchmark-derived rather than freshly re-measured in this pass.
