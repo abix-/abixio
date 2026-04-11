@@ -6,33 +6,38 @@ The log IS the permanent storage. No flush, no second format.
 
 Large objects (>64KB) keep the existing file-per-object layout.
 
-## Measured performance
+## Performance
 
-Measured with `tests/bench_4kb.py`, a Python `requests.Session` with HTTP
-keep-alive (persistent connection, 1000 ops). This is how real S3 clients
-work. All via `127.0.0.1` (never `localhost` on Windows).
+End-to-end log-store PUT and GET at 4KB through 100MB live in
+[write-path.md::Branch B](write-path.md#branch-b-local-log-store).
+Per-tier comparison vs the file and pool tiers (the "log store vs file
+tier" view) lives in
+[write-path.md::Where the time goes](write-path.md#where-the-time-goes).
+Cross-server competitive numbers (AbixIO vs MinIO vs RustFS) live in
+[benchmarks.md::Comprehensive matrix](benchmarks.md#comprehensive-matrix).
+None of those tables are duplicated here.
 
-### vs competitors (4KB, keep-alive)
+The two pieces of perf information that *are* unique to this doc, and
+therefore live here:
 
-| Server | PUT obj/s | PUT MB/s | GET obj/s | GET MB/s |
-|--------|-----------|----------|-----------|----------|
-| **AbixIO (log store)** | **1096** | **4.3** | **1315** | **5.1** |
-| AbixIO (file tier) | 578 | 2.3 | 774 | 3.0 |
-| RustFS | 1329 | 5.2 | 1349 | 5.3 |
-| MinIO | 1189 | 4.6 | 1073 | 4.2 |
+### Filesystem-shape advantage
 
-### log store vs file tier
+| | File tier | Log store | Ratio |
+|---|---|---|---|
+| Filesystem ops per 4KB PUT (4 disks) | 12 | **4** | 3x fewer |
+| Files per 1M small objects             | 3M+ | ~3 segments | ~1000x fewer |
 
-| | File tier | Log store | Improvement |
-|--|----------|-----------|-------------|
-| **4KB PUT** | 578 obj/s, 1.73ms | **1096 obj/s, 0.91ms** | **90% more throughput** |
-| **4KB GET** | 774 obj/s, 1.29ms | **1315 obj/s, 0.76ms** | **70% more throughput** |
-| Filesystem ops per 4KB (4 disks) | 12 | **4** | 3x fewer |
-| Files per 1M small objects | 3M+ | ~3 segments | ~1000x fewer |
+This is a structural advantage, not a runtime measurement. It's the
+reason small-object PUT through the log store does so much less work
+at the storage layer.
+
+### Durability model
 
 No fsync on writes. Trust OS page cache, same as MinIO and RustFS.
 Writes go to page cache (RAM), reads from the same pages via mmap.
-Both sides hit RAM. Disk flush happens when the OS decides.
+Both sides hit RAM. Disk flush happens when the OS decides. The full
+durability story is in the [Durability model](#durability-model)
+section below.
 
 ## How it works
 

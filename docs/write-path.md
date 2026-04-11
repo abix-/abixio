@@ -81,22 +81,27 @@ The main code anchors are:
 
 ### 1. HTTP ingress
 
-| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
-|---|---|---|---|---|---|---|
-| raw HTTP ingress floor | `94us` p50 | n/a | `762 MB/s` | n/a | bare `hyper` / reqwest->hyper transport, before S3 semantics | `docs/benchmarks.md` Phase 8.5 Stage A; `docs/layer-optimization.md` L5 |
+| Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
+|---     |---      |---             |---           |---     |
+| raw HTTP ingress floor (bare `hyper` / reqwest->hyper) | `94us` | `41.5 MB/s` | not measured at 64KB / 1MB / 10MB / 100MB; `bench_pool_l4_5_stack_breakdown` is hardcoded to 4KB at `tests/layer_bench.rs:3509` | Phase 8.5 Stage A, raw at `bench-results/phase8.5-stack-breakdown-v5.txt` |
+| hyper transport ceiling (sustained, larger sizes) | n/a | n/a | `762 MB/s` at 10MB; layer L5 | `docs/layer-optimization.md` L5 |
 
-`hyper` accepts the request, parses HTTP/1.1, and exposes the body as a
-stream. This is the lowest measured floor in the stack.
+`hyper` accepts the request, parses HTTP/1.1, and exposes the body as
+a stream. This is the lowest measured floor in the stack. Per-layer
+attribution at sizes other than 4KB is a TODO -- it requires
+generalizing `bench_pool_l4_5_stack_breakdown` to take a size
+parameter (the underlying `run_l45_stage_*` helpers already accept
+one).
 
 ### 2. S3 protocol and AbixIO request setup
 
-| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
-|---|---|---|---|---|---|---|
-| `hyper + s3s + AbixioS3` dispatch | `126us` p50 | n/a | n/a | n/a | total protocol/dispatch overhead with null backend | `docs/benchmarks.md` Phase 8.5 Stage C |
-| incremental protocol overhead above bare `hyper` | `32us` p50 | n/a | n/a | n/a | Stage C minus Stage A | `docs/benchmarks.md` Phase 8.5 |
-| server-side request processing | `0.28ms` | n/a | n/a | n/a | from `x-debug-s3s-ms` live responses | `docs/benchmarks.md` server-side profiling |
-| full in-process S3 PUT path | n/a | n/a | `272 MB/s` | `310 MB/s` | `s3s` + full storage pipeline, no auth | `docs/layer-optimization.md` L6 |
-| full client path | n/a | n/a | n/a | `695 MB/s` | `aws-sdk-s3` + auth + full stack | `docs/layer-optimization.md` L7 |
+| Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
+|---     |---      |---             |---           |---     |
+| `hyper + s3s + AbixioS3` dispatch (null backend) | `126us` | `31.0 MB/s` | not measured | Phase 8.5 Stage C |
+| incremental protocol overhead above bare `hyper` (Stage C - Stage A) | `32us` | -- | not measured | Phase 8.5 |
+| server-side request processing via `x-debug-s3s-ms` live header | `0.28ms` | -- | not measured | benchmarks.md "Server-side profiling" |
+| full in-process S3 PUT path (s3s + storage pipeline, no auth) | n/a | n/a | `272 MB/s` at 10MB, `310 MB/s` at 1GB | `docs/layer-optimization.md` L6 |
+| full client path (aws-sdk-s3 + auth + full stack) | n/a | n/a | `695 MB/s` at 1GB | `docs/layer-optimization.md` L7 |
 
 `s3s` parses S3 headers and dispatches into `AbixioS3::put_object`.
 `src/s3_service.rs` then:
@@ -144,9 +149,9 @@ places for different reasons.
 
 ### 3. Validation and bucket existence
 
-| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
-|---|---|---|---|---|---|---|
-| validation + bucket existence | not isolated | not isolated | not isolated | not isolated | included inside protocol and storage-layer measurements, no standalone benchmark | current benchmark corpus |
+| Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
+|---     |---      |---             |---           |---     |
+| validation + bucket existence | not isolated | -- | not isolated | included inside §2 dispatch cost; no standalone benchmark exists |
 
 Before any data write, `VolumePool::put_object_stream` validates:
 
@@ -159,9 +164,9 @@ If the bucket does not exist, the write stops here.
 
 ### 4. Small-object body collection
 
-| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
-|---|---|---|---|---|---|---|
-| small-object branch decision + collect body | `~0.02ms` | n/a | not isolated | n/a | historical trace for the buffered small-object path only | `docs/write-cache.md` request trace |
+| Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
+|---     |---      |---             |---           |---     |
+| small-object branch decision + collect body into `Vec<u8>` | `~20us` | -- | not isolated; only runs for `<=64KB` non-versioned | synthesized 4KB trace, originally in `write-cache.md::Request trace` (now removed); not from a benchmark |
 
 For non-versioned requests with a declared `content_length <= 64KB`,
 the body stream is fully collected into a `Vec<u8>`. This is what makes
@@ -173,14 +178,14 @@ requests. Those stay on the streaming encode path.
 
 ### 5. EC resolution, hashing, and placement
 
-| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
-|---|---|---|---|---|---|---|
-| request-level config / versioning work | `~0.05ms` | n/a | n/a | n/a | historical 4KB trace | `docs/write-cache.md` request trace |
-| RS encode + checksum work | `~0.03ms` | n/a | n/a | n/a | historical 4KB trace | `docs/write-cache.md` request trace |
-| placement planning | `~0.01ms` | n/a | n/a | n/a | historical 4KB trace | `docs/write-cache.md` request trace |
-| blake3 hashing | n/a | n/a | `4303 MB/s` | `4303 MB/s` | per-shard checksum ceiling | `docs/layer-optimization.md` L1 |
-| MD5 hashing | n/a | n/a | `703 MB/s` | `703 MB/s` | required-body-MD5 ceiling | `docs/layer-optimization.md` L1 |
-| RS encode 3+1 | n/a | n/a | `2762 MB/s` | `2762 MB/s` | erasure-coding ceiling | `docs/layer-optimization.md` L2 |
+| Metric | 4KB p50 | 4KB throughput | per-byte ceiling at larger sizes | Source |
+|---     |---      |---             |---                                |---     |
+| request-level config / versioning work | `~50us` | -- | constant per request | synthesized 4KB trace, originally in `write-cache.md::Request trace` |
+| RS encode + checksum work | `~30us` | -- | scales with shard size; see ceilings below | synthesized 4KB trace |
+| placement planning | `~10us` | -- | constant per request | synthesized 4KB trace |
+| blake3 hashing per shard | n/a | -- | `4303 MB/s` | `docs/layer-optimization.md` L1 |
+| MD5 hashing of full body | n/a | -- | `703 MB/s` | `docs/layer-optimization.md` L1 |
+| RS encode 3+1 | n/a | -- | `2762 MB/s` | `docs/layer-optimization.md` L2 |
 
 Once the full small object is buffered, `VolumePool`:
 
@@ -199,11 +204,39 @@ instead of the small buffered path.
 
 ### Branch A: RAM write cache
 
-| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
-|---|---|---|---|---|---|---|
-| RAM-cache insert primitive | `~0.001ms` | same class | n/a | n/a | storage primitive only, not full request | `docs/write-cache.md` |
-| RAM-cache insert primitive rate | n/a | n/a | `1M+ obj/s` primitive rate | n/a | `DashMap` insert benchmark, not end-to-end PUT | `docs/write-cache.md` |
-| end-to-end RAM-cache branch | not published | not published | not published | not published | current repo lacks an isolated end-to-end benchmark for this branch | current benchmark corpus |
+| Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
+|---     |---      |---             |---           |---     |
+| `DashMap.insert` primitive | `~1us` | -- | `1M+ obj/s` primitive rate | not from a benchmark; primitive measurement |
+| end-to-end RAM-cache PUT branch | not published | -- | not published | no isolated end-to-end bench exists for this branch yet; the SDK matrix bench in `benchmarks.md` does not exercise it because the harness boots abixio without the cache enabled |
+| end-to-end RAM-cache GET branch | not published | -- | not published | same -- the harness does not enable the cache |
+
+Synthesized 4KB request trace (not from a benchmark, just a model
+showing where the time goes when the cache *is* enabled):
+
+```
+[~80us]   hyper: accept TCP, parse HTTP/1.1 headers, read body
+[~100us]  s3s: extract S3 headers, dispatch to AbixioS3::put_object()
+[~50us]   s3_service: versioning check, content_type, metadata, EC ftt
+[~20us]   volume_pool: collect 4KB body into Vec<u8>
+[~30us]   RS encode 3+1, MD5 ETag, blake3 per-shard checksum
+[~10us]   placement: hash key -> pick disk per shard
+[~1us]    >>> DashMap.insert(key, CacheEntry) <<<  THE ACTUAL STORAGE
+[~80us]   s3s: serialize 200 OK, hyper writes to TCP
+
+Storage:  ~1us    (~0.3% of total)
+Floor:    ~370us  (~99.7% of total) -- hyper + s3s + protocol work
+```
+
+The point of this trace is that the storage primitive is invisible
+under the protocol floor at 4KB. Cf. the SDK-matrix bench finding in
+`benchmarks.md::Comprehensive matrix`: file/log/pool tier choices are
+within 4% of each other at 4KB sdk PUT for exactly the same reason --
+the protocol floor dominates.
+
+Run `bench_pool_l4_tier_matrix` (`tests/layer_bench.rs`) to see the
+file/log/pool branches end-to-end at 4KB through 100MB. There is
+currently no equivalent bench that enables the RAM write cache in the
+process; adding one is on the TODO list.
 
 This branch exists only on the small-object buffered path. After the
 object has already been validated, buffered, encoded, and assigned to
@@ -527,6 +560,33 @@ That handoff is the basis for the proposed three-tier dispatch
 inside `LocalVolume::write_shard`. The current `--write-tier` CLI
 flag picks one tier for the entire process, not per-object; the
 per-object dispatch is still pending.
+
+#### Important: layer-bench tier deltas are larger than SDK-matrix tier deltas
+
+The Phase 8.7 numbers above measure each tier through `reqwest -> hyper
+-> s3s -> VolumePool -> LocalVolume` with no auth (`bench_pool_l4_tier_matrix`
+in `tests/layer_bench.rs`). The SDK matrix bench in `benchmarks.md`
+measures the same three tiers through `aws-sdk-s3 -> SigV4 -> hyper ->
+s3s -> ...` with auth enabled.
+
+At 4KB sdk PUT the SDK-matrix bench (`bench-results/2026-04-11-matrix-tls-tiers.txt`)
+shows file 1653 obj/s, log 1662, pool 1716 -- a ~4% spread. The
+Phase 8.7 tables above show file 935us, log 265us, pool 454us at the
+same size -- a ~3.5x spread (file -> log).
+
+Both numbers are correct in their own frame. The difference is the
+SDK + SigV4 + hyper per-request floor (~600 us measured), under
+which most of the storage-tier delta gets averaged out. The Phase 8.7
+numbers are the right way to compare *internal* tier performance and
+to choose which tier should handle which size. The SDK-matrix numbers
+are the right way to predict what an external S3 client actually
+sees. Don't use one to refute the other -- they measure different
+things.
+
+This caveat applies most strongly at 4KB. At 10MB the SDK-matrix
+shows pool +25% over file (421 vs 336 MB/s) and Phase 8.7 shows pool
++15% over file (3797 vs 4360 us); at 1GB both stories agree the
+spread between tiers is small.
 
 ## How other docs should use this page
 

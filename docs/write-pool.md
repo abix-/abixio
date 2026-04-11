@@ -27,47 +27,29 @@ pool branch, and how it relates to the other branches, see
 [write-path.md](write-path.md). This page stays focused on the pool's
 internal design and benchmark history.
 
-## Correction: what's actually true about the pool's end-to-end performance
+## End-to-end pool performance lives in write-path.md
 
-**Read this before anything else in the doc.**
+The pool's measured end-to-end PUT and GET at 4KB through 100MB,
+including the comparison vs the file tier and the log store, lives in
+[write-path.md::Branch C](write-path.md#branch-c-local-write-pool) and
+[write-path.md::Where the time goes](write-path.md#where-the-time-goes).
+That is the canonical, user-visible story.
 
-Phase 8 (`bench_pool_l4_tier_matrix`) measured the pool through the
-full HTTP stack (reqwest to hyper to s3s to VolumePool to LocalVolume)
-for the first time. The results contradict the storage-layer
-claims that appear many times below:
+The phase journey below (Phase 1 -> Phase 8.7) describes how each
+storage-layer optimization was *measured at the storage layer*, in
+isolation from HTTP, s3s, and the SDK. Those storage-layer numbers are
+still correct in their own frame, and they are useful context for
+*why* each optimization landed -- but they are not the numbers a user
+of the live server will see at 4KB. The pool's "53x faster at 4KB"
+claim from Phase 4.5 / 5.6 was a storage-layer tight-loop measurement
+on an idle tokio runtime; the user-visible 4KB win in the SDK matrix
+bench is much smaller because the ~600 us SDK + auth + hyper floor
+hides most of the storage-tier delta.
 
-- **The pool only clearly wins PUTs in the 1MB to 10MB range.** Outside
-  that window it is either tied with the file tier, slower than the
-  log store, or slower than the file tier.
-- **The log store beats the pool 3.2x at 4KB PUT and 4.5x at 4KB GET**
-  end-to-end. The pool is **not** a log store replacement for small
-  objects.
-- **The file tier beats the pool at 100MB PUT** (152ms vs 257ms p50).
-  The temp-file rename on NTFS adds ~100ms at that size that the
-  file tier never pays because it writes directly to the final
-  location.
-- **The "pool is 53x faster at 4KB" claim from Phase 4.5 and Phase 5.6
-  is storage-layer only.** End-to-end, the pool at 4KB PUT is
-  942us p50 with the default config (Phase 8) but drops to **318us
-  p50 when the pool depth and channel buffer are large enough to
-  prevent both starvation and backpressure** (Phase 8.5 Stage E#,
-  depth 1024 + channel 100k). That gives a **2.55x end-to-end win
-  over the file tier's 810us**, which is real and shippable but
-  nowhere near 53x. The HTTP stack is only 93us, abixio dispatch
-  adds only 32us, and the pool's own hot-path work costs ~192us on
-  a live tokio runtime (not the 11us from the Phase 5.6 tight-loop
-  measurement). The default pool config (depth 32, channel 256) is
-  undersized for sustained load and hits two hidden choke points
-  the previous benchmarks never measured. See the
-  [Phase 8.5 section](#phase-85-where-the-missing-900us-actually-lives-done)
-  for the full story.
-
-Earlier phase sections below describe the storage-layer work as it
-was measured at the time. Those numbers are still correct at the
-storage layer. They are not the numbers a user will see. Read the
-[Phase 8 section](#phase-8-end-to-end-three-tier-matrix-done) first
-for the honest end-to-end story, then the earlier phases for how
-the storage-layer optimizations got built.
+If you only care about what shipping the pool means for production,
+read [write-path.md::Branch C](write-path.md#branch-c-local-write-pool)
+first. The phase history below is the design journey, not the
+production claim.
 
 ## Table of contents
 
