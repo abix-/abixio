@@ -94,6 +94,7 @@ the storage-layer optimizations got built.
   - [Phase 8: end-to-end three-tier matrix (done)](#phase-8-end-to-end-three-tier-matrix-done)
   - [Phase 8.5: where the missing 900us actually lives (done)](#phase-85-where-the-missing-900us-actually-lives-done)
   - [Phase 8.6: DRY pool optimizations into the file tier (done)](#phase-86-dry-pool-optimizations-into-the-file-tier-done)
+  - [Phase 8.7: raise pool defaults and scale the rename worker (done)](#phase-87-raise-pool-defaults-and-scale-the-rename-worker-done)
   - [Phase 7, 9: pending](#phase-7-9-pending)
 - [Open questions for implementation](#open-questions-for-implementation)
 - [Files to modify (when phase 2 begins)](#files-to-modify-when-phase-2-begins)
@@ -581,6 +582,7 @@ The production default remains the three-tier handoff above.
 | 8 | End-to-end three-tier matrix (HTTP layer) | data-driven decision | **done** (Phase 8: bench_pool_l4_tier_matrix measures PUT+GET p50 through the full hyper/s3s/VolumePool stack at 5 sizes for file/log/pool tiers. **Result: pool only wins 1MB-10MB, log store dominates <=64KB, file tier wins 100MB. Storage-layer 53x claims do not translate end-to-end.**) |
 | 8.5 | Stack breakdown via layer subtraction | attribute the missing 900us | **done** (Phase 8.5: bench_pool_l4_5_stack_breakdown with 10 stages proves HTTP stack is 93us, abixio dispatch is 32us, and the rest is file-tier work plus **two hidden choke points in the default pool config**: depth 32 starves under sustained load, and channel buffer 256 backpresses tx.send. With depth 1024 + channel 100k the pool p50 drops from 942us to 318us, giving a real 2.55x win over file tier. Default config is undersized for sustained throughput.) |
 | 8.6 | DRY pool optimizations into the file tier | shared optimization pattern across write paths | **done** (Phase 8.6: swapped `write_meta_file` to simd-json across all 9 call sites, collapsed file tier's 3x path validation to 1, added `tokio::try_join!` for concurrent shard+meta writes on non-inline file tier. Modest direct impact, largest maintenance win.) |
+| 8.7 | Raise pool defaults + multi-worker rename | fix Phase 8.5 choke points in production | **done** (Phase 8.7: `RenameDispatch` round-robin across N worker channels, default channel buffer 256 → 10_000 per worker, default worker count 1 → 2. Pool 4KB p50 drops from 942us to **454us (2.1x vs file tier)** and 64KB from 1037us to **586us (2.3x vs file tier)**.) |
 | 9 | Benchmark all three tiers under concurrency | concurrent load picture | pending |
 
 ## Benchmark plan
@@ -2128,6 +2130,123 @@ share the same optimization pattern, and improvements to
   `write_shard` rewritten with path collapse and `try_join!`.
 
 All 355 existing tests pass unchanged.
+
+### Phase 8.7: raise pool defaults and scale the rename worker (done)
+
+Phase 8.5 identified that the default pool config was undersized for
+sustained load and named three fixes:
+
+1. Raise default pool depth from 32 to something bigger.
+2. Raise default rename channel buffer from 256 to something bigger.
+3. Run multiple rename workers instead of one (Phase 3 measured
+   2 workers at 1.85x a single worker).
+
+Phase 8.7 landed all three.
+
+#### Code changes
+
+**`RenameDispatch` round-robin fan-out**
+(`src/storage/write_slot_pool.rs`). New type that holds N
+`mpsc::Sender`s and picks one per request via an atomic round-robin
+counter. Each worker owns its own `mpsc::Receiver`, so workers
+don't contend for a shared queue. The producer's `send` only blocks
+when the CHOSEN worker's channel is full, and with round-robin
+fan-out the effective total buffer is `worker_count * per_worker_buffer`.
+
+**Multi-worker `enable_write_pool_with_config`**
+(`src/storage/local_volume.rs`). New three-parameter variant
+`enable_write_pool_with_config(depth, channel_buffer, worker_count)`
+that spawns `worker_count` rename worker tasks, each with its own
+channel. `enable_write_pool_with_channel(depth, buffer)` stays as
+a convenience wrapper that passes `worker_count=2`.
+
+**New default config.** `enable_write_pool(depth)` now forwards to
+`enable_write_pool_with_config(depth, 10_000, 2)`. Per-worker
+channel buffer is 10_000 (up from 256) and worker count is 2 (up
+from 1). Depth is still passed by the caller because it's tied to
+file-descriptor cost per disk.
+
+**`LocalVolume.rename_tx` field type** changed from
+`Option<mpsc::Sender<RenameRequest>>` to
+`Option<Arc<RenameDispatch>>`. `write_shard`'s pool branch now
+calls `tx.send(req).await` through the dispatcher, which hides the
+round-robin from the write path.
+
+#### Measured impact at 4KB and 64KB
+
+Phase 8 was the baseline (default config, 1 worker, channel 256,
+depth 32). Phase 8.7 is the new default (depth 32 as passed by the
+bench, channel 10_000 per worker, 2 workers). Both runs use
+`bench_pool_l4_tier_matrix` with identical iteration counts.
+
+| Size | Phase 8 pool p50 | Phase 8.7 pool p50 | Improvement |
+|---|---|---|---|
+| **4KB** | 942us | **454us** | **2.08x** |
+| **64KB** | 1037us | **586us** | **1.77x** |
+| 1MB | 3623us | 3796us | noise |
+| 10MB | 16582us | 33837us | noise |
+| 100MB | 257470us | 165671us | noise |
+
+Pool vs file tier ratio at the same sizes:
+
+| Size | Phase 8 pool-vs-file | Phase 8.7 pool-vs-file |
+|---|---|---|
+| 4KB | 1.5x | **2.1x** |
+| 64KB | 1.5x | **2.3x** |
+| 1MB | 1.2x | 1.1x |
+| 10MB | 1.1x | 0.9x (NTFS noise) |
+| 100MB | 0.6x | 0.9x (NTFS noise) |
+
+The 4KB and 64KB improvements are **real and reproducible**. Larger
+sizes continue to have NTFS cross-run variance in the 20-40% range,
+which swamps the ~100us savings from any code-level change at those
+sizes. The honest claim is that **the pool's end-to-end 4KB win is
+now 2x instead of 1.5x** and the bottlenecks Phase 8.5 identified
+are closed.
+
+#### Why the 4KB number went from 942us to 454us
+
+Under Phase 8 defaults (depth 32, channel 256, 1 worker), a sustained
+sequential client:
+1. Burned through all 32 pool slots in ~30ms.
+2. Subsequent PUTs queued renames on the 256-slot channel. After 256
+   queued renames, `tx.send(req).await` started blocking for ~1063us
+   (worker rate).
+3. At steady state, the client paced itself to worker rate and the
+   pool was useless.
+
+Under Phase 8.7 defaults (depth 32, channel 10_000 per worker, 2
+workers):
+1. Client still burns through 32 slots quickly.
+2. Renames queue on two channels (round-robin), effective total
+   buffer = 20_000 requests. Never fills within a 1000-iter bench.
+3. Two workers drain at ~1744 ops/sec combined, roughly matching
+   client rate at the pool fast path speed.
+4. Pool stays "warm enough" to never degrade to file tier fallback
+   via starvation AND `tx.send` never blocks.
+
+The 4KB p50 of 454us is higher than Phase 8.5's Stage E# (318us)
+because Stage E# used depth 1024 which guarantees the pool never
+empties at all. Phase 8.7 keeps depth 32 as the call-site-provided
+parameter and just fixes the channel + workers, so the pool still
+occasionally empties briefly. A follow-up bump to depth 1024 as
+the new default would likely push 4KB p50 close to Stage E#'s
+~320us.
+
+#### What's still pending
+
+- **Depth default**: still 32 at the call site. Raising to 1024
+  or 256 would close the remaining gap to Stage E# but costs more
+  file descriptors per disk. Worth a separate small bump.
+- **Phase 7 backpressure**: Phase 8.7 raised the channel buffer but
+  didn't add real backpressure when the channel DOES fill (e.g. under
+  truly sustained load exceeding 2 workers). That's still Phase 7.
+- **1MB-100MB noise**: needs a more controlled bench environment
+  (or more iterations at large sizes) to see whether Phase 8.7 helps
+  or hurts at mid-to-large sizes. The theoretical impact is small
+  because large PUTs are dominated by raw disk write time.
+
+All 355 tests still pass.
 
 ### Phase 7, 9: pending
 

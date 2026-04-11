@@ -8,8 +8,8 @@ use super::metadata::{
 };
 use super::pathing;
 use super::write_slot_pool::{
-    recover_pool_dir, run_rename_worker, PendingEntry, PendingRenames, RenameRequest, WriteSlot,
-    WriteSlotPool,
+    recover_pool_dir, run_rename_worker, PendingEntry, PendingRenames, RenameDispatch,
+    RenameRequest, WriteSlot, WriteSlotPool,
 };
 use super::{Backend, BackendInfo, MmapOrVec, ShardWriter, StorageError};
 
@@ -20,9 +20,10 @@ pub struct LocalVolume {
     /// Pre-opened temp file pool for the fast write path. None until
     /// `enable_write_pool` is called. See `docs/write-pool.md`.
     write_pool: Option<Arc<WriteSlotPool>>,
-    /// Sender for rename requests; held alongside the pool. Closing
-    /// this drains the worker.
-    rename_tx: Option<tokio::sync::mpsc::Sender<RenameRequest>>,
+    /// Rename request dispatcher (round-robin across N worker
+    /// channels). Closing it drains all workers. Phase 8.7 scaled
+    /// this from a single `mpsc::Sender` to a multi-worker dispatch.
+    rename_tx: Option<Arc<RenameDispatch>>,
     /// Shutdown signal for the rename worker.
     pool_shutdown: Option<tokio::sync::watch::Sender<bool>>,
     /// In-memory table of objects that have been written to a slot
@@ -107,21 +108,43 @@ impl LocalVolume {
     /// (`open_shard_writer`), reads, crash recovery, and the CLI flag
     /// land in later phases. See `docs/write-pool.md` for status.
     pub async fn enable_write_pool(&mut self, depth: u32) -> Result<(), StorageError> {
-        self.enable_write_pool_with_channel(depth, 256).await
+        // Phase 8.7 defaults: channel buffer 10_000 per worker and 2
+        // rename workers. Phase 8.5 measured the default 1-worker + 256
+        // channel as undersized for sustained sequential load. Phase 3
+        // measured 2 workers at 1744 ops/sec (1.85x of 1 worker), which
+        // is the single biggest lever for sustained throughput.
+        self.enable_write_pool_with_config(depth, 10_000, 2).await
     }
 
-    /// Same as `enable_write_pool` but lets the caller pick the
-    /// rename worker's channel buffer size. Used by benches to
-    /// measure what happens when channel backpressure is removed.
-    /// Production should stick with the default 256.
+    /// Same as `enable_write_pool` but lets the caller pick the rename
+    /// worker's channel buffer size. Worker count stays at the default
+    /// (2). Used by benches that measure backpressure behavior.
     pub async fn enable_write_pool_with_channel(
         &mut self,
         depth: u32,
         channel_buffer: usize,
     ) -> Result<(), StorageError> {
+        self.enable_write_pool_with_config(depth, channel_buffer, 2).await
+    }
+
+    /// Full pool configuration: depth, per-worker channel buffer, and
+    /// number of rename workers. Used by benches that need to vary
+    /// worker count and by `enable_write_pool` to apply defaults.
+    ///
+    /// Each worker owns its own channel. The producer fans requests
+    /// out round-robin via `RenameDispatch`, so the effective total
+    /// buffer is `worker_count * channel_buffer` and the effective
+    /// drain rate is ~`worker_count * single_worker_rate`.
+    pub async fn enable_write_pool_with_config(
+        &mut self,
+        depth: u32,
+        channel_buffer: usize,
+        worker_count: usize,
+    ) -> Result<(), StorageError> {
         if self.write_pool.is_some() {
             return Ok(());
         }
+        assert!(worker_count >= 1, "worker_count must be >= 1");
         let pool_dir = self.root.join(".abixio.sys").join("tmp");
 
         // Phase 6: finish any pending renames left over from a crash
@@ -146,22 +169,31 @@ impl LocalVolume {
         }
 
         let pool = WriteSlotPool::new(&pool_dir, depth).await?;
-        let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(channel_buffer);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
-        // Phase 5: shared pending-renames table -- write_shard inserts,
+        // Phase 5: shared pending-renames table: write_shard inserts,
         // the rename worker removes after each rename completes, the
         // read paths consult it for read-after-write consistency.
         let pending: PendingRenames = Arc::new(dashmap::DashMap::new());
 
-        let pool_clone = Arc::clone(&pool);
-        let pending_clone = Arc::clone(&pending);
-        tokio::spawn(async move {
-            run_rename_worker(pool_clone, Some(pending_clone), rx, shutdown_rx).await;
-        });
+        // Phase 8.7: spawn N workers, each with its own channel.
+        // Producer fans out via round-robin.
+        let mut senders = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(channel_buffer);
+            senders.push(tx);
+            let pool_clone = Arc::clone(&pool);
+            let pending_clone = Arc::clone(&pending);
+            let shutdown_clone = shutdown_rx.clone();
+            tokio::spawn(async move {
+                run_rename_worker(pool_clone, Some(pending_clone), rx, shutdown_clone).await;
+            });
+        }
+
+        let dispatch = Arc::new(RenameDispatch::new(senders));
 
         self.write_pool = Some(pool);
-        self.rename_tx = Some(tx);
+        self.rename_tx = Some(dispatch);
         self.pool_shutdown = Some(shutdown_tx);
         self.pending_renames = Some(pending);
         Ok(())

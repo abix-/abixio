@@ -164,6 +164,47 @@ pub struct RenameRequest {
     pub meta_dest: PathBuf,
 }
 
+/// Round-robin dispatcher that fans rename requests out across N
+/// worker channels. Phase 8.7 scales the pool's rename drain rate
+/// by running multiple workers in parallel instead of one.
+///
+/// Each worker owns its own `mpsc::Receiver`, so workers don't
+/// fight over a shared queue. The producer picks a sender via an
+/// atomic round-robin counter, which means with N workers and a
+/// per-worker channel buffer B, the effective total buffer before
+/// `send` blocks is N * B, and the effective rename throughput is
+/// ~N times a single worker (Phase 3 measured 1.85x at 2 workers).
+pub struct RenameDispatch {
+    senders: Vec<tokio::sync::mpsc::Sender<RenameRequest>>,
+    next: std::sync::atomic::AtomicUsize,
+}
+
+impl RenameDispatch {
+    pub fn new(senders: Vec<tokio::sync::mpsc::Sender<RenameRequest>>) -> Self {
+        Self {
+            senders,
+            next: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+
+    /// Send a rename request to the next worker in round-robin order.
+    /// Awaits if the chosen worker's channel is full (backpressure).
+    pub async fn send(
+        &self,
+        req: RenameRequest,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<RenameRequest>> {
+        let idx = self
+            .next
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            % self.senders.len();
+        self.senders[idx].send(req).await
+    }
+
+    pub fn worker_count(&self) -> usize {
+        self.senders.len()
+    }
+}
+
 /// Process a single rename request: drop the file handles (off the
 /// hot path), mkdir destination, two atomic renames, then **always**
 /// replenish the slot. The replenish happens regardless of whether

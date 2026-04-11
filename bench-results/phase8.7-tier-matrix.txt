@@ -1,0 +1,326 @@
+[cargo-lock] 13:41:49 waiting for build lock...
+[cargo-lock] 13:41:49 acquired lock, running: cargo test --release --test layer_bench --manifest-path C:\code\abixio\Cargo.toml -- --ignored --nocapture bench_pool_l4_tier_matrix
+[cargo-lock] 13:41:49 running: cargo build --release --test layer_bench --manifest-path C:\code\abixio\Cargo.toml
+warning: unused import: `WriteSlot`
+  --> src\storage\local_volume.rs:12:20
+   |
+12 |     RenameRequest, WriteSlot, WriteSlotPool,
+   |                    ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `DEFAULT_SEGMENT_SIZE`
+  --> src\storage\log_store.rs:11:52
+   |
+11 | use super::segment::{ActiveSegment, SealedSegment, DEFAULT_SEGMENT_SIZE};
+   |                                                    ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `self`
+  --> src\storage\segment.rs:10:21
+   |
+10 | use super::needle::{self, Needle, NeedleLocation, HEADER_SIZE};
+   |                     ^^^^
+
+warning: unused import: `tokio::io::AsyncReadExt`
+ --> src\storage\erasure_decode.rs:4:5
+  |
+4 | use tokio::io::AsyncReadExt;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:261:29
+    |
+261 |     fn bucket_exists(&self, bucket: &str) -> bool {
+    |                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:267:33
+    |
+267 |     fn bucket_created_at(&self, bucket: &str) -> u64 {
+    |                                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+
+warning: unused variable: `size`
+   --> src\storage\volume_pool.rs:502:21
+    |
+502 |                 let size = entry.original_size as usize;
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: struct `BufPool` is never constructed
+  --> src\storage\erasure_decode.rs:17:8
+   |
+17 | struct BufPool {
+   |        ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new`, `take`, and `return_buf` are never used
+  --> src\storage\erasure_decode.rs:23:8
+   |
+22 | impl BufPool {
+   | ------------ associated items in this implementation
+23 |     fn new(count: usize, capacity: usize) -> Arc<Self> {
+   |        ^^^
+...
+31 |     fn take(&self) -> Vec<u8> {
+   |        ^^^^
+...
+39 |     fn return_buf(&self, mut buf: Vec<u8>) {
+   |        ^^^^^^^^^^
+
+warning: struct `PooledBuf` is never constructed
+  --> src\storage\erasure_decode.rs:50:8
+   |
+50 | struct PooledBuf {
+   |        ^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> src\storage\write_cache.rs:93:16
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<CacheKey, CacheEntry>> {
+   |                ^^^^^ the lifetime is elided here         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<'_, CacheKey, CacheEntry>> {
+   |                                                                                    +++
+
+warning: `abixio` (lib) generated 11 warnings (run `cargo fix --lib -p abixio` to apply 7 suggestions)
+warning: unused import: `WriteSlot`
+   --> tests\layer_bench.rs:972:67
+    |
+972 |         process_rename_request, run_rename_worker, RenameRequest, WriteSlot, WriteSlotPool,
+    |                                                                   ^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `RenameRequest`
+    --> tests\layer_bench.rs:1407:44
+     |
+1407 |     use abixio::storage::write_slot_pool::{RenameRequest, WriteSlot, WriteSlotPool};
+     |                                            ^^^^^^^^^^^^^
+
+warning: unused import: `WriteSlot`
+    --> tests\layer_bench.rs:1620:38
+     |
+1620 |         PendingEntry, RenameRequest, WriteSlot, WriteSlotPool,
+     |                                      ^^^^^^^^^
+
+warning: unused variable: `iters`
+   --> tests\layer_bench.rs:218:9
+    |
+218 |     let iters = 10;
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_iters`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `label`
+    --> tests\layer_bench.rs:2251:17
+     |
+2251 |             let label = human(size);
+     |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_label`
+
+warning: `abixio` (test "layer_bench") generated 5 warnings (run `cargo fix --test "layer_bench" -p abixio` to apply 5 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.52s
+[cargo-lock] 13:41:50 build ok, running: cargo test --release --test layer_bench --manifest-path C:\code\abixio\Cargo.toml -- --ignored --nocapture bench_pool_l4_tier_matrix
+warning: unused import: `WriteSlot`
+  --> src\storage\local_volume.rs:12:20
+   |
+12 |     RenameRequest, WriteSlot, WriteSlotPool,
+   |                    ^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `DEFAULT_SEGMENT_SIZE`
+  --> src\storage\log_store.rs:11:52
+   |
+11 | use super::segment::{ActiveSegment, SealedSegment, DEFAULT_SEGMENT_SIZE};
+   |                                                    ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `self`
+  --> src\storage\segment.rs:10:21
+   |
+10 | use super::needle::{self, Needle, NeedleLocation, HEADER_SIZE};
+   |                     ^^^^
+
+warning: unused import: `tokio::io::AsyncReadExt`
+ --> src\storage\erasure_decode.rs:4:5
+  |
+4 | use tokio::io::AsyncReadExt;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:261:29
+    |
+261 |     fn bucket_exists(&self, bucket: &str) -> bool {
+    |                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:267:33
+    |
+267 |     fn bucket_created_at(&self, bucket: &str) -> u64 {
+    |                                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+
+warning: unused variable: `size`
+   --> src\storage\volume_pool.rs:502:21
+    |
+502 |                 let size = entry.original_size as usize;
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: struct `BufPool` is never constructed
+  --> src\storage\erasure_decode.rs:17:8
+   |
+17 | struct BufPool {
+   |        ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new`, `take`, and `return_buf` are never used
+  --> src\storage\erasure_decode.rs:23:8
+   |
+22 | impl BufPool {
+   | ------------ associated items in this implementation
+23 |     fn new(count: usize, capacity: usize) -> Arc<Self> {
+   |        ^^^
+...
+31 |     fn take(&self) -> Vec<u8> {
+   |        ^^^^
+...
+39 |     fn return_buf(&self, mut buf: Vec<u8>) {
+   |        ^^^^^^^^^^
+
+warning: struct `PooledBuf` is never constructed
+  --> src\storage\erasure_decode.rs:50:8
+   |
+50 | struct PooledBuf {
+   |        ^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> src\storage\write_cache.rs:93:16
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<CacheKey, CacheEntry>> {
+   |                ^^^^^ the lifetime is elided here         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<'_, CacheKey, CacheEntry>> {
+   |                                                                                    +++
+
+warning: `abixio` (lib) generated 11 warnings (run `cargo fix --lib -p abixio` to apply 7 suggestions)
+warning: unused import: `WriteSlot`
+   --> tests\layer_bench.rs:972:67
+    |
+972 |         process_rename_request, run_rename_worker, RenameRequest, WriteSlot, WriteSlotPool,
+    |                                                                   ^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `RenameRequest`
+    --> tests\layer_bench.rs:1407:44
+     |
+1407 |     use abixio::storage::write_slot_pool::{RenameRequest, WriteSlot, WriteSlotPool};
+     |                                            ^^^^^^^^^^^^^
+
+warning: unused import: `WriteSlot`
+    --> tests\layer_bench.rs:1620:38
+     |
+1620 |         PendingEntry, RenameRequest, WriteSlot, WriteSlotPool,
+     |                                      ^^^^^^^^^
+
+warning: unused variable: `iters`
+   --> tests\layer_bench.rs:218:9
+    |
+218 |     let iters = 10;
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_iters`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `label`
+    --> tests\layer_bench.rs:2251:17
+     |
+2251 |             let label = human(size);
+     |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_label`
+
+warning: `abixio` (test "layer_bench") generated 5 warnings (run `cargo fix --test "layer_bench" -p abixio` to apply 5 suggestions)
+    Finished `release` profile [optimized] target(s) in 0.48s
+     Running tests\layer_bench.rs (C:\code\endless\rust\target\release\deps\layer_bench-af8d33570fba9a2a.exe)
+
+running 1 test
+
+=== Pool L4: End-to-end three-tier matrix (sequential PUT + GET) ===
+
+  client -> reqwest -> hyper -> s3s -> VolumePool -> LocalVolume
+  1 disk, ftt=0, no erasure, 127.0.0.1 TCP loopback
+
+  --- Tier: file ---
+    PUT    4KB (1000 iters)  avg    1107.0us  p50     935.1us  p99     3219.9us       3.5 MB/s
+    GET    4KB (1000 iters)  avg    1365.5us  p50     688.5us  p99    12872.5us       2.9 MB/s
+    PUT   64KB ( 500 iters)  avg    2207.5us  p50    1329.6us  p99    11192.0us      28.3 MB/s
+    GET   64KB ( 500 iters)  avg    1355.0us  p50     949.2us  p99    10788.0us      46.1 MB/s
+    PUT    1MB ( 200 iters)  avg    4516.4us  p50    4360.4us  p99     7135.3us     221.4 MB/s
+    GET    1MB ( 200 iters)  avg    1973.1us  p50    1928.7us  p99     2907.9us     506.8 MB/s
+    PUT   10MB (  50 iters)  avg   30164.4us  p50   28973.9us  p99    49549.3us     331.5 MB/s
+    GET   10MB (  50 iters)  avg   21735.4us  p50   16840.3us  p99    36117.0us     460.1 MB/s
+    PUT  100MB (  10 iters)  avg  151030.5us  p50  149228.0us  p99   169386.0us     662.1 MB/s
+    GET  100MB (  10 iters)  avg   99202.6us  p50  100848.1us  p99   114721.2us    1008.0 MB/s
+
+  --- Tier: log ---
+    PUT    4KB (1000 iters)  avg     275.9us  p50     265.2us  p99      383.8us      14.2 MB/s
+    GET    4KB (1000 iters)  avg     179.5us  p50     173.4us  p99      262.3us      21.8 MB/s
+    PUT   64KB ( 500 iters)  avg     394.4us  p50     384.8us  p99      570.8us     158.5 MB/s
+    GET   64KB ( 500 iters)  avg     225.4us  p50     217.6us  p99      341.1us     277.2 MB/s
+    PUT    1MB ( 200 iters)  avg    4362.1us  p50    4057.4us  p99     8337.3us     229.2 MB/s
+    GET    1MB ( 200 iters)  avg    1879.6us  p50    1775.5us  p99     4035.6us     532.0 MB/s
+    PUT   10MB (  50 iters)  avg   33752.7us  p50   31744.3us  p99    76775.6us     296.3 MB/s
+    GET   10MB (  50 iters)  avg   10333.2us  p50   10031.4us  p99    13146.0us     967.8 MB/s
+    PUT  100MB (  10 iters)  avg  169696.7us  p50  164973.7us  p99   218599.0us     589.3 MB/s
+    GET  100MB (  10 iters)  avg   98599.1us  p50   97709.2us  p99   110783.4us    1014.2 MB/s
+
+  --- Tier: pool ---
+    PUT    4KB (1000 iters)  avg    1741.7us  p50     454.0us  p99    36923.8us       2.2 MB/s
+    GET    4KB (1000 iters)  avg    2025.0us  p50     708.3us  p99    25408.7us       1.9 MB/s
+    PUT   64KB ( 500 iters)  avg     824.9us  p50     586.1us  p99     3457.3us      75.8 MB/s
+    GET   64KB ( 500 iters)  avg    4523.2us  p50     916.7us  p99    24243.3us      13.8 MB/s
+    PUT    1MB ( 200 iters)  avg    3947.0us  p50    3796.6us  p99     5900.0us     253.4 MB/s
+    GET    1MB ( 200 iters)  avg    2121.0us  p50    1882.2us  p99     7432.3us     471.5 MB/s
+    PUT   10MB (  50 iters)  avg   33979.4us  p50   33837.3us  p99    50264.1us     294.3 MB/s
+    GET   10MB (  50 iters)  avg   12762.7us  p50   10099.7us  p99    33389.5us     783.5 MB/s
+    PUT  100MB (  10 iters)  avg  207865.0us  p50  165671.4us  p99   396074.1us     481.1 MB/s
+    GET  100MB (  10 iters)  avg   99742.1us  p50   98954.7us  p99   116873.9us    1002.6 MB/s
+
+=== Three-tier PUT p50 comparison ===
+  size     |       file |        log |       pool | pool vs file |  pool vs log
+  4KB      |    935.1us |    265.2us |    454.0us |        2.1x |        0.6x
+  64KB     |   1329.6us |    384.8us |    586.1us |        2.3x |        0.7x
+  1MB      |   4360.4us |   4057.4us |   3796.6us |        1.1x |        1.1x
+  10MB     |  28973.9us |  31744.3us |  33837.3us |        0.9x |        0.9x
+  100MB    | 149228.0us | 164973.7us | 165671.4us |        0.9x |        1.0x
+
+=== Three-tier GET p50 comparison ===
+  size     |       file |        log |       pool | pool vs file |  pool vs log
+  4KB      |    688.5us |    173.4us |    708.3us |        1.0x |        0.2x
+  64KB     |    949.2us |    217.6us |    916.7us |        1.0x |        0.2x
+  1MB      |   1928.7us |   1775.5us |   1882.2us |        1.0x |        0.9x
+  10MB     |  16840.3us |  10031.4us |  10099.7us |        1.7x |        1.0x
+  100MB    | 100848.1us |  97709.2us |  98954.7us |        1.0x |        1.0x
+
+=== PUT avg throughput comparison (MB/s) ===
+  size     |       file |        log |       pool
+  4KB      |      3.5   |     14.2   |      2.2  
+  64KB     |     28.3   |    158.5   |     75.8  
+  1MB      |    221.4   |    229.2   |    253.4  
+  10MB     |    331.5   |    296.3   |    294.3  
+  100MB    |    662.1   |    589.3   |    481.1  
+
+test bench_pool_l4_tier_matrix ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 14 filtered out; finished in 40.50s
+
+[cargo-lock] 13:42:31 released lock
