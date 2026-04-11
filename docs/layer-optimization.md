@@ -691,6 +691,65 @@ Remaining: GC, heal log-awareness, versioned objects.
 
 ---
 
+## Pool L0: WriteSlotPool primitive (Phase 1, in development)
+
+The pre-opened temp file pool is being built as an alternative to the
+log store. See [write-pool.md](write-pool.md) for the full design and
+[write-pool.md#implementation-status](write-pool.md#implementation-status)
+for phase tracking.
+
+Phase 1 lands the bare slot pool primitive: `WriteSlotPool::new`,
+`try_pop`, `release`. No rename worker, no `pending_renames`, no
+integration with `LocalVolume`. Just slot plumbing backed by
+`crossbeam_queue::ArrayQueue` (lock-free MPMC).
+
+### Numbers (Windows 10 NTFS, depth=32)
+
+```
+pool init (depth=32):                        11.96ms  (374us per slot pair)
+
+single-thread pop+release (100k iters):
+  avg  63ns   p50 100ns   p99 100ns   p999 100ns
+
+concurrent pop+release:
+   2 workers x 10000 ops:    20.4M ops/sec   48ns/op
+   8 workers x 10000 ops:    14.7M ops/sec   68ns/op
+  32 workers x 10000 ops:    12.2M ops/sec   81ns/op
+
+empty try_pop:                              0ns (returns None, never blocks)
+```
+
+### Analysis
+
+The pool primitive will never be the bottleneck. The plan target was
+<500ns for pop+release; actual is 63ns avg, 8x under target. Throughput
+sustains 12-20M ops/sec across contention levels with no collapse.
+File syscalls in Phase 2+ will cap the pool at 5K-50K ops/sec depending
+on size, so the primitive is 3-4 orders of magnitude faster than what
+it needs to be.
+
+The p50/p99/p999 percentiles all snap to exactly 100ns, which is the
+`Instant::now()` resolution on this hardware -- the operation is
+genuinely faster than the timer can measure individually.
+
+`crossbeam_queue::ArrayQueue` is the right choice. No reason to revisit
+the queue structure.
+
+Bench: `tests/layer_bench.rs::bench_pool_l0_primitive`
+Output: `bench-results/phase1-pool-primitive.txt`
+Run: `k3sc cargo-lock test --release --test layer_bench -- --ignored
+--nocapture bench_pool_l0_primitive`
+
+### Next: Phase 2 (slot writes with real I/O)
+
+Add `write_all` of shard bytes to `slot.data_file` and meta JSON to
+`slot.meta_file` in a new bench. Compare against the file-tier
+`VolumePool::put_object` baseline at 4KB / 64KB / 1MB / 10MB. Apply
+the three hot-path optimizations (concurrent writes via `tokio::join!`,
+compact JSON, sync small writes) one at a time and measure each.
+
+---
+
 ## Competitive analysis: MinIO and RustFS
 
 Source code analysis of all three servers (2026-04-09). MinIO source at

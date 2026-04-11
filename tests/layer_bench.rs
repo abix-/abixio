@@ -416,6 +416,127 @@ async fn bench_layer_5_full_client() {
 }
 
 // ============================================================================
+// Pool L0: WriteSlotPool primitive in isolation (no I/O orchestration)
+// ============================================================================
+//
+// Phase 1 of the write-pool work (see docs/write-pool.md). Measures the
+// pool primitive WITHOUT any of the integration: no rename worker, no
+// pending_renames, no actual writes to slot files. Just pop+release
+// cycles, init time, and contention behavior.
+//
+// Run with:
+//   k3sc cargo-lock test --release --test layer_bench -- --ignored \
+//       --nocapture bench_pool_l0_primitive
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_pool_l0_primitive() {
+    use abixio::storage::write_slot_pool::WriteSlotPool;
+
+    let tmp = TempDir::new().unwrap();
+    let pool_dir = tmp.path().join("preopen");
+    let depth = 32u32;
+
+    eprintln!("\n=== Pool L0: WriteSlotPool primitive ===\n");
+
+    // 1. Pool init time
+    let t = Instant::now();
+    let pool = WriteSlotPool::new(&pool_dir, depth).await.unwrap();
+    let init_elapsed = t.elapsed();
+    eprintln!(
+        "  pool init (depth={}): {:.2}ms  ({:.2}us per slot pair)",
+        depth,
+        init_elapsed.as_secs_f64() * 1000.0,
+        init_elapsed.as_secs_f64() * 1_000_000.0 / depth as f64,
+    );
+    assert_eq!(pool.available(), depth as usize);
+
+    // 2. Single-thread pop+release latency (warmup, then measure)
+    let warmup = 10_000;
+    for _ in 0..warmup {
+        let s = pool.try_pop().unwrap();
+        pool.release(s).unwrap();
+    }
+    let iters = 100_000;
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let s = pool.try_pop().unwrap();
+        pool.release(s).unwrap();
+        samples.push(t.elapsed());
+    }
+    samples.sort();
+    let total_ns: u128 = samples.iter().map(|d| d.as_nanos()).sum();
+    let avg_ns = total_ns / iters as u128;
+    let p50_ns = samples[iters / 2].as_nanos();
+    let p99_ns = samples[(iters * 99) / 100].as_nanos();
+    let p999_ns = samples[(iters * 999) / 1000].as_nanos();
+    eprintln!(
+        "  single-thread pop+release ({} iters):  avg {}ns  p50 {}ns  p99 {}ns  p999 {}ns",
+        iters, avg_ns, p50_ns, p99_ns, p999_ns,
+    );
+
+    // 3. Concurrent pop+release throughput (bounded by pool depth)
+    for workers in [2usize, 8, 32] {
+        let per_worker = 10_000;
+        let pool_clone = Arc::clone(&pool);
+        let t = Instant::now();
+        let mut handles = Vec::with_capacity(workers);
+        for _ in 0..workers {
+            let p = Arc::clone(&pool_clone);
+            handles.push(tokio::spawn(async move {
+                for _ in 0..per_worker {
+                    // Spin if pool is momentarily empty -- the test is
+                    // measuring contention, not starvation handling.
+                    let slot = loop {
+                        if let Some(s) = p.try_pop() {
+                            break s;
+                        }
+                        std::hint::spin_loop();
+                    };
+                    p.release(slot).unwrap();
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        let elapsed = t.elapsed();
+        let total_ops = workers * per_worker;
+        let ops_per_sec = total_ops as f64 / elapsed.as_secs_f64();
+        eprintln!(
+            "  {:>2} workers x {} ops:  {:.2}ms total  {:>10.0} ops/sec  {}ns/op",
+            workers,
+            per_worker,
+            elapsed.as_secs_f64() * 1000.0,
+            ops_per_sec,
+            (elapsed.as_nanos() as u128) / total_ops as u128,
+        );
+    }
+
+    // 4. Starvation behavior: drain the pool, verify try_pop returns None
+    let mut held = Vec::with_capacity(depth as usize);
+    for _ in 0..depth {
+        held.push(pool.try_pop().unwrap());
+    }
+    assert_eq!(pool.available(), 0);
+    let t = Instant::now();
+    let drained = pool.try_pop();
+    let drained_elapsed = t.elapsed();
+    assert!(drained.is_none(), "try_pop on empty pool must return None");
+    eprintln!(
+        "  empty try_pop:  {}ns  (must return None without blocking)",
+        drained_elapsed.as_nanos()
+    );
+
+    // restore the pool so the test cleanup is graceful
+    for s in held {
+        pool.release(s).unwrap();
+    }
+    assert_eq!(pool.available(), depth as usize);
+}
+
+// ============================================================================
 // bench_perf: structured multi-size benchmark with JSON output and comparison
 // ============================================================================
 //

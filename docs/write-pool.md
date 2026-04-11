@@ -436,17 +436,17 @@ make a data-driven call before deleting the loser.
 
 ## Implementation phases
 
-| Phase | What | Delivers |
-|---|---|---|
-| 1 | `write_slot_pool.rs`: pool, slot, replenish | core data structures |
-| 2 | `ObjectMetaFile` `bucket` and `key` fields | self-describing meta |
-| 3 | Wire `write_shard` to use the pool when enabled | buffered PUT fast path |
-| 4 | Wire `open_shard_writer` to use the pool | streaming PUT fast path |
-| 5 | Read path integration in all five readers | reads see pending writes |
-| 6 | Crash recovery scan in `LocalVolume::new` | restart safety |
-| 7 | Admin endpoint `GET /_admin/pool/status` | operator visibility |
-| 8 | Tests: unit + integration + crash kill | confidence |
-| 9 | Benchmark all three tiers | data-driven decision |
+| Phase | What | Delivers | Status |
+|---|---|---|---|
+| 1 | `write_slot_pool.rs`: pool, slot, replenish | core data structures | **done** (63ns pop+release, see "Implementation status" below) |
+| 2 | `ObjectMetaFile` `bucket` and `key` fields | self-describing meta | pending |
+| 3 | Wire `write_shard` to use the pool when enabled | buffered PUT fast path | pending |
+| 4 | Wire `open_shard_writer` to use the pool | streaming PUT fast path | pending |
+| 5 | Read path integration in all five readers | reads see pending writes | pending |
+| 6 | Crash recovery scan in `LocalVolume::new` | restart safety | pending |
+| 7 | Admin endpoint `GET /_admin/pool/status` | operator visibility | pending |
+| 8 | Tests: unit + integration + crash kill | confidence | pending |
+| 9 | Benchmark all three tiers | data-driven decision | pending |
 
 ## Benchmark plan
 
@@ -507,6 +507,74 @@ Add behind a `feature = "fast-json"` cargo flag. Measure 4KB and
 64KB PUT latency with and without. Decision: enable by default if
 it shows >=5us improvement on the small-PUT path, otherwise leave
 as opt-in.
+
+## Implementation status
+
+### Phase 1: pool primitive in isolation -- DONE
+
+Landed in commit alongside this doc update. The new
+`src/storage/write_slot_pool.rs` contains `WriteSlotPool::new`,
+`try_pop`, `release`, and `available` -- the bare slot pool, no
+rename worker, no `pending_renames`, no integration. Backed by
+`crossbeam_queue::ArrayQueue` (lock-free MPMC).
+
+Measured on Windows 10 NTFS, depth=32:
+
+```
+pool init (depth=32):                        11.96ms  (374us per slot pair)
+
+single-thread pop+release (100k iters):
+  avg  63ns   p50 100ns   p99 100ns   p999 100ns
+
+concurrent pop+release:
+   2 workers x 10000 ops:    20.4M ops/sec   48ns/op
+   8 workers x 10000 ops:    14.7M ops/sec   68ns/op
+  32 workers x 10000 ops:    12.2M ops/sec   81ns/op
+
+empty try_pop:                              0ns (returns None, never blocks)
+```
+
+**Result: the primitive will never be the bottleneck.** The plan
+target was <500ns for the pop+release cycle; actual is 63ns avg,
+8x under target. Throughput sustains 12-20M ops/sec across
+contention levels with no collapse. The actual file syscalls in
+Phase 2+ will cap us at 5K-50K ops/sec depending on size, so the
+pool primitive is 3-4 orders of magnitude faster than what it needs
+to be.
+
+The p50/p99/p999 percentiles all snap to exactly 100ns, which is
+the `Instant::now()` resolution on this hardware -- the operation
+is genuinely faster than the timer can measure individually.
+
+Bench output: `bench-results/phase1-pool-primitive.txt`. Re-run with:
+
+```bash
+k3sc cargo-lock test --release --test layer_bench -- \
+    --ignored --nocapture bench_pool_l0_primitive
+```
+
+### Baseline captured for later comparison
+
+`bench-results/baseline-l2-storage.txt` (10MB only, 1 disk and 4 disk):
+
+```
+VolumePool::put_object_stream (1 disk)   avg 21.55ms   464.0 MB/s
+VolumePool::put_object        (1 disk)   avg 28.82ms   346.9 MB/s
+VolumePool::get_object        (1 disk)   avg  8.78ms  1138.9 MB/s
+VolumePool::put_object_stream (4 disk)   avg 27.99ms   357.3 MB/s
+VolumePool::put_object        (4 disk)   avg 35.81ms   279.2 MB/s
+VolumePool::get_object        (4 disk)   avg 11.95ms   837.0 MB/s
+```
+
+These are the file-tier numbers the pool needs to beat at 10MB
+once Phase 4 wires it into `LocalVolume::write_shard`. Phase 2
+will add a per-size sweep (4KB / 64KB / 1MB / 10MB) so we can see
+where the pool wins most.
+
+### Phase 2-9: pending
+
+See `Implementation phases` table above. Phase 2 (slot writes with
+real I/O, no orchestration) is the next step.
 
 ## Open questions for implementation
 

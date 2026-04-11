@@ -34,6 +34,7 @@ rmp-serde = "1"
 xxhash-rust = { version = "0.8", features = ["xxh64"] }
 hostname = "0.4.2"
 jsonwebtoken = { version = "10.3.0", features = ["rust_crypto"] }
+crossbeam-queue = "0.3"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

@@ -1,0 +1,291 @@
+[cargo-lock] 08:22:03 waiting for build lock...
+[cargo-lock] 08:22:03 acquired lock, running: cargo test --release --test layer_bench --manifest-path C:\code\abixio\Cargo.toml -- --ignored --nocapture bench_perf
+[cargo-lock] 08:22:03 running: cargo build --release --test layer_bench --manifest-path C:\code\abixio\Cargo.toml
+   Compiling abixio v0.1.0 (C:\code\abixio)
+warning: unused import: `DEFAULT_SEGMENT_SIZE`
+  --> src\storage\log_store.rs:11:52
+   |
+11 | use super::segment::{ActiveSegment, SealedSegment, DEFAULT_SEGMENT_SIZE};
+   |                                                    ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `self`
+  --> src\storage\segment.rs:10:21
+   |
+10 | use super::needle::{self, Needle, NeedleLocation, HEADER_SIZE};
+   |                     ^^^^
+
+warning: unused import: `tokio::io::AsyncReadExt`
+ --> src\storage\erasure_decode.rs:4:5
+  |
+4 | use tokio::io::AsyncReadExt;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:261:29
+    |
+261 |     fn bucket_exists(&self, bucket: &str) -> bool {
+    |                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:267:33
+    |
+267 |     fn bucket_created_at(&self, bucket: &str) -> u64 {
+    |                                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+
+warning: unused variable: `size`
+   --> src\storage\volume_pool.rs:502:21
+    |
+502 |                 let size = entry.original_size as usize;
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: struct `BufPool` is never constructed
+  --> src\storage\erasure_decode.rs:17:8
+   |
+17 | struct BufPool {
+   |        ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new`, `take`, and `return_buf` are never used
+  --> src\storage\erasure_decode.rs:23:8
+   |
+22 | impl BufPool {
+   | ------------ associated items in this implementation
+23 |     fn new(count: usize, capacity: usize) -> Arc<Self> {
+   |        ^^^
+...
+31 |     fn take(&self) -> Vec<u8> {
+   |        ^^^^
+...
+39 |     fn return_buf(&self, mut buf: Vec<u8>) {
+   |        ^^^^^^^^^^
+
+warning: struct `PooledBuf` is never constructed
+  --> src\storage\erasure_decode.rs:50:8
+   |
+50 | struct PooledBuf {
+   |        ^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> src\storage\write_cache.rs:93:16
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<CacheKey, CacheEntry>> {
+   |                ^^^^^ the lifetime is elided here         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<'_, CacheKey, CacheEntry>> {
+   |                                                                                    +++
+
+warning: `abixio` (lib) generated 10 warnings (run `cargo fix --lib -p abixio` to apply 6 suggestions)
+warning: unused variable: `iters`
+   --> tests\layer_bench.rs:218:9
+    |
+218 |     let iters = 10;
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_iters`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `label`
+   --> tests\layer_bench.rs:770:17
+    |
+770 |             let label = human(size);
+    |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_label`
+
+warning: `abixio` (test "layer_bench") generated 2 warnings (run `cargo fix --test "layer_bench" -p abixio` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 49.31s
+[cargo-lock] 08:22:53 build ok, running: cargo test --release --test layer_bench --manifest-path C:\code\abixio\Cargo.toml -- --ignored --nocapture bench_perf
+    Blocking waiting for file lock on package cache
+   Compiling crossbeam-queue v0.3.12
+   Compiling abixio v0.1.0 (C:\code\abixio)
+warning: unused import: `DEFAULT_SEGMENT_SIZE`
+  --> src\storage\log_store.rs:11:52
+   |
+11 | use super::segment::{ActiveSegment, SealedSegment, DEFAULT_SEGMENT_SIZE};
+   |                                                    ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `self`
+  --> src\storage\segment.rs:10:21
+   |
+10 | use super::needle::{self, Needle, NeedleLocation, HEADER_SIZE};
+   |                     ^^^^
+
+warning: unused import: `tokio::io::AsyncReadExt`
+ --> src\storage\erasure_decode.rs:4:5
+  |
+4 | use tokio::io::AsyncReadExt;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:261:29
+    |
+261 |     fn bucket_exists(&self, bucket: &str) -> bool {
+    |                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:267:33
+    |
+267 |     fn bucket_created_at(&self, bucket: &str) -> u64 {
+    |                                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+
+warning: unused variable: `size`
+   --> src\storage\volume_pool.rs:502:21
+    |
+502 |                 let size = entry.original_size as usize;
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: struct `BufPool` is never constructed
+  --> src\storage\erasure_decode.rs:17:8
+   |
+17 | struct BufPool {
+   |        ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new`, `take`, and `return_buf` are never used
+  --> src\storage\erasure_decode.rs:23:8
+   |
+22 | impl BufPool {
+   | ------------ associated items in this implementation
+23 |     fn new(count: usize, capacity: usize) -> Arc<Self> {
+   |        ^^^
+...
+31 |     fn take(&self) -> Vec<u8> {
+   |        ^^^^
+...
+39 |     fn return_buf(&self, mut buf: Vec<u8>) {
+   |        ^^^^^^^^^^
+
+warning: struct `PooledBuf` is never constructed
+  --> src\storage\erasure_decode.rs:50:8
+   |
+50 | struct PooledBuf {
+   |        ^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> src\storage\write_cache.rs:93:16
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<CacheKey, CacheEntry>> {
+   |                ^^^^^ the lifetime is elided here         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<'_, CacheKey, CacheEntry>> {
+   |                                                                                    +++
+
+warning: `abixio` (lib) generated 10 warnings (run `cargo fix --lib -p abixio` to apply 6 suggestions)
+warning: unused variable: `iters`
+   --> tests\layer_bench.rs:218:9
+    |
+218 |     let iters = 10;
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_iters`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `label`
+   --> tests\layer_bench.rs:770:17
+    |
+770 |             let label = human(size);
+    |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_label`
+
+warning: `abixio` (test "layer_bench") generated 2 warnings (run `cargo fix --test "layer_bench" -p abixio` to apply 2 suggestions)
+    Finished `release` profile [optimized] target(s) in 35.30s
+     Running tests\layer_bench.rs (C:\code\endless\rust\target\release\deps\layer_bench-f222f1fbabbeec2b.exe)
+
+running 1 test
+
+=== bench_perf: layers ["L1", "L2", "L3", "L4", "L5", "L5X", "L6", "EXP", "L6A", "L7"], sizes ["4KB", "10MB", "1GB"] ===
+
+--- L1: Hashing ---
+  L1  blake3        0 disk    4KB    1626.2 MB/s  avg     0.00ms  p50     0.00ms
+  L1  md5           0 disk    4KB     642.5 MB/s  avg     0.01ms  p50     0.01ms
+  L1  blake3        0 disk   10MB    4183.5 MB/s  avg     2.39ms  p50     2.33ms
+  L1  md5           0 disk   10MB     695.6 MB/s  avg    14.38ms  p50    14.31ms
+  L1  blake3        0 disk    1GB    4203.4 MB/s  avg   243.61ms  p50   243.81ms
+  L1  md5           0 disk    1GB     685.2 MB/s  avg  1494.41ms  p50  1479.20ms
+
+--- L2: RS encode ---
+  L2  rs_encode_3+1  4 disk    4KB    2727.8 MB/s  avg     0.00ms  p50     0.00ms
+  L2  rs_encode_3+1  4 disk   10MB    2615.2 MB/s  avg     3.82ms  p50     3.69ms
+  L2  rs_encode_3+1  4 disk    1GB    2610.4 MB/s  avg   392.28ms  p50   389.29ms
+
+--- L3: Disk I/O ---
+  L3  disk_write    1 disk    4KB      12.9 MB/s  avg     0.30ms  p50     0.27ms
+  L3  disk_read     1 disk    4KB      43.7 MB/s  avg     0.09ms  p50     0.08ms
+  L3  disk_write    1 disk   10MB    1920.6 MB/s  avg     5.21ms  p50     5.26ms
+  L3  disk_read     1 disk   10MB    2726.1 MB/s  avg     3.67ms  p50     3.76ms
+  L3  disk_write    1 disk    1GB     996.4 MB/s  avg  1027.72ms  p50  1022.94ms
+  L3  disk_read     1 disk    1GB    2570.9 MB/s  avg   398.31ms  p50   393.01ms
+
+--- L4: Storage pipeline ---
+  L4  put_stream    1 disk    4KB       4.1 MB/s  avg     0.96ms  p50     0.90ms
+  L4  get           1 disk    4KB       8.5 MB/s  avg     0.46ms  p50     0.45ms
+  L4  get_stream    1 disk    4KB       9.2 MB/s  avg     0.43ms  p50     0.42ms
+  L4  put_stream    1 disk   10MB     444.7 MB/s  avg    22.49ms  p50    21.97ms
+  L4  get           1 disk   10MB     931.6 MB/s  avg    10.73ms  p50    10.79ms
+  L4  get_stream    1 disk   10MB   21937.5 MB/s  avg     0.46ms  p50     0.43ms
+test bench_perf has been running for over 60 seconds
+  L4  put_stream    1 disk    1GB     514.8 MB/s  avg  1989.02ms  p50  1982.14ms
+  L4  get           1 disk    1GB    1146.4 MB/s  avg   893.20ms  p50   881.41ms
+  L4  get_stream    1 disk    1GB  1586957.2 MB/s  avg     0.65ms  p50     0.62ms
+  L4  put_stream    4 disk    4KB       1.0 MB/s  avg     3.86ms  p50     2.64ms
+  L4  get           4 disk    4KB       5.6 MB/s  avg     0.70ms  p50     0.70ms
+  L4  get_stream    4 disk    4KB       5.2 MB/s  avg     0.76ms  p50     0.73ms
+  L4  put_stream    4 disk   10MB     344.7 MB/s  avg    29.01ms  p50    28.58ms
+  L4  get           4 disk   10MB     726.8 MB/s  avg    13.76ms  p50    13.62ms
+  L4  get_stream    4 disk   10MB    8866.5 MB/s  avg     1.13ms  p50     0.96ms
+  L4  put_stream    4 disk    1GB     400.4 MB/s  avg  2557.60ms  p50  2549.12ms
+  L4  get           4 disk    1GB     870.6 MB/s  avg  1176.26ms  p50  1147.78ms
+  L4  get_stream    4 disk    1GB  492364.5 MB/s  avg     2.08ms  p50     1.98ms
+
+--- L5: HTTP transport ---
+  L5  http_put      0 disk    4KB      33.6 MB/s  avg     0.12ms  p50     0.10ms
+  L5  http_get      0 disk    4KB      34.7 MB/s  avg     0.11ms  p50     0.10ms
+  L5  http_put      0 disk   10MB     796.8 MB/s  avg    12.55ms  p50    10.14ms
+  L5  http_get      0 disk   10MB     814.1 MB/s  avg    12.28ms  p50    11.36ms
+  L5  http_put      0 disk    1GB     745.6 MB/s  avg  1373.46ms  p50  1278.16ms
+  L5  http_get      0 disk    1GB     888.7 MB/s  avg  1152.22ms  p50  1147.94ms
+
+--- L5X: HTTP transport experiments ---
+  L5X raw_tcp_get   0 disk   10MB     436.8 MB/s  avg    22.90ms  p50    13.45ms
+  L5X writev_get    0 disk   10MB     372.8 MB/s  avg    26.82ms  p50    30.75ms
+  L5X bigbuf_get    0 disk   10MB     570.3 MB/s  avg    17.53ms  p50    11.41ms
+  L5X stream_get    0 disk   10MB     810.1 MB/s  avg    12.34ms  p50     9.86ms
+  L5X all_opts_get  0 disk   10MB     693.3 MB/s  avg    14.42ms  p50    10.88ms
+  L5X raw_tcp_get   0 disk    1GB     846.2 MB/s  avg  1210.13ms  p50  1177.15ms
+  L5X writev_get    0 disk    1GB     932.7 MB/s  avg  1097.93ms  p50  1094.00ms
+  L5X bigbuf_get    0 disk    1GB     915.8 MB/s  avg  1118.20ms  p50  1101.27ms
+  L5X stream_get    0 disk    1GB     883.2 MB/s  avg  1159.41ms  p50  1099.24ms
+  L5X all_opts_get  0 disk    1GB     958.4 MB/s  avg  1068.49ms  p50  1092.22ms
+
+--- L6: S3 protocol ---
+  L6  s3s_put       1 disk    4KB       4.9 MB/s  avg     0.79ms  p50     0.79ms
+  L6  s3s_get       1 disk    4KB       6.9 MB/s  avg     0.57ms  p50     0.52ms
+  L6  s3s_put       1 disk   10MB     405.6 MB/s  avg    24.65ms  p50    15.44ms
+  L6  s3s_get       1 disk   10MB     939.3 MB/s  avg    10.65ms  p50     9.65ms
+  L6  s3s_put       1 disk    1GB     578.4 MB/s  avg  1770.52ms  p50  1710.02ms
+  L6  s3s_get       1 disk    1GB     684.6 MB/s  avg  1495.75ms  p50  1497.87ms
+
+--- EXP: pipeline experiments ---
+  EXP get_single    1 disk   10MB   18560.5 MB/s  avg     0.54ms  p50     0.54ms
+  EXP get_4mb_chunk  1 disk   10MB    1053.5 MB/s  avg     9.49ms  p50     9.44ms
+  EXP get_single    1 disk    1GB  1304591.6 MB/s  avg     0.78ms  p50     0.81ms
+  EXP get_4mb_chunk  1 disk    1GB     308.8 MB/s  avg  3316.30ms  p50  3317.10ms
+  EXP put_1mb_seq   1 disk   10MB     377.7 MB/s  avg    26.47ms  p50    21.02ms
+  EXP put_4mb_chunk  1 disk   10MB     401.2 MB/s  avg    24.92ms  p50    25.05ms
+  EXP put_chan_pipe  1 disk   10MB     249.7 MB/s  avg    40.06ms  p50    39.68ms
+  EXP put_dbl_buf   1 disk   10MB     213.4 MB/s  avg    46.85ms  p50    46.37ms
+  EXP put_1mb_seq   1 disk    1GB     453.2 MB/s  avg  2259.39ms  p50  2212.91ms
+  EXP put_4mb_chunk  1 disk    1GB     472.9 MB/s  avg  2165.18ms  p50  2149.34ms
