@@ -116,7 +116,7 @@ async fn main() {
         }
     };
 
-    // enable RAM write cache (256MB, PernixData FVP style)
+    // enable RAM write cache (256MB)
     set.enable_write_cache(256 * 1024 * 1024);
 
     // set up healing infrastructure

@@ -1,9 +1,14 @@
 # Write cache
 
-PernixData FVP-style RAM write cache with peer replication. Writes go to
-RAM on two nodes simultaneously, ack after both confirm. Background flush
-destages to disk asynchronously. Both nodes must fail simultaneously to
-lose data.
+RAM write cache with peer replication. Writes go to RAM on two nodes
+simultaneously, ack after both confirm. Background flush destages to
+disk asynchronously. Both nodes must fail simultaneously to lose data.
+
+The design comes from our own latency measurements (see request trace
+below): the disk write itself is microseconds, but every write through
+the file tier still touches the filesystem. Acking from RAM with peer
+replication for durability removes the filesystem from the hot path
+entirely.
 
 ## Why
 
@@ -12,10 +17,12 @@ possible disk write (append to pre-allocated file, no fsync) takes 0.002ms.
 But the full server path through HTTP/s3s adds 0.9ms. The disk write itself
 is cheap -- but every write still touches the filesystem.
 
-PernixData proved in production VMware environments: skip the disk entirely
-on the write path. Write to RAM, replicate to a peer's RAM, ack. The disk
-write happens in the background, 100ms later. Write latency drops from
-milliseconds to microseconds.
+The fix is to skip the disk entirely on the write path: write to RAM,
+replicate to a peer's RAM, ack. The disk write happens in the background,
+100ms later. Write latency drops from milliseconds to microseconds.
+Older write-back caching products from the enterprise virtualization era
+shipped this model in production for years; the safety analysis below is
+the same one they relied on.
 
 ## Architecture
 
@@ -68,8 +75,8 @@ write cache. They fall through to the existing disk write path.
 | Slow flush (>100ms) | YES | Both nodes have data in RAM during flush window |
 
 The probability of two independent node failures within the flush
-interval (~100ms) is negligible. PernixData ran this model in enterprise
-production for years.
+interval (~100ms) is negligible. This safety model is the same one
+older write-back caching products relied on in enterprise production.
 
 ## Peer replication protocol
 
@@ -280,11 +287,12 @@ No blocking. No backpressure to clients. Graceful degradation.
 | 4 | Background flush task | data reaches disk |
 | 5 | Peer replication (HTTP POST to peer) | durability |
 | 6 | `/_cache/v1/replicate` endpoint | peer receives |
-| 7 | PUT: require peer ack before client ack | full PernixData |
+| 7 | PUT: require peer ack before client ack | full peer-replicated mode |
 | 8 | Recovery: peer re-flush on node restart | crash safety |
 
 MVP = phases 1-4 (local RAM, single node, proves speed).
-Full PernixData = phases 5-8 (peer replication, 2+ nodes, crash safe).
+Full peer-replicated mode = phases 5-8 (peer replication, 2+ nodes,
+crash safe).
 
 ## Relationship to other storage tiers
 

@@ -1,8 +1,8 @@
 # Log-structured storage
 
-Datrium DiESL-inspired log-structured storage for small objects. Objects are
-written exactly once to an append-only log, never overwritten. GC reclaims
-dead space. The log IS the permanent storage -- no flush, no second format.
+Log-structured storage for small objects. Objects are written exactly
+once to an append-only log, never overwritten. GC reclaims dead space.
+The log IS the permanent storage -- no flush, no second format.
 
 Large objects (>64KB) keep the existing file-per-object layout.
 

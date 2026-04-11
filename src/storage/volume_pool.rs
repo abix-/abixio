@@ -51,7 +51,7 @@ pub struct VolumePool {
     disks: Vec<Box<dyn Backend>>,
     mrf: Option<Arc<MrfQueue>>,
     placement: RwLock<PlacementTopology>,
-    /// RAM write cache (PernixData FVP style). None = disabled.
+    /// RAM write cache. None = disabled.
     write_cache: Option<Arc<super::write_cache::WriteCache>>,
 }
 

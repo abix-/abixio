@@ -1,7 +1,10 @@
-//! RAM write cache (PernixData FVP style).
+//! RAM write cache with peer replication for low-latency PUT.
 //!
 //! Writes go to a DashMap in RAM, ack immediately. Background flush
 //! destages to disk asynchronously. No disk I/O on the write hot path.
+//! Design derived from our own latency measurements -- the disk write
+//! is microseconds, but the filesystem call path is hundreds of
+//! microseconds. See docs/write-cache.md for the request trace.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

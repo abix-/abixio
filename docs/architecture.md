@@ -57,9 +57,9 @@ cluster-control direction.
     serving instead of risking stale writes or split-brain.
 
 13. **Log-structured storage for small objects.** Objects <= 64KB are written
-    as needles to append-only log segments (Datrium DiESL-inspired). One
-    sequential append per disk instead of mkdir + shard.dat + meta.json (3 fs
-    ops). The log IS the permanent storage -- no flush, no second format.
+    as needles to append-only log segments. One sequential append per disk
+    instead of mkdir + shard.dat + meta.json (3 fs ops). The log IS the
+    permanent storage -- no flush, no second format.
     In-memory index maps bucket+key to segment:offset. GC reclaims dead space.
     Large objects keep the file-per-object layout. 4KB PUT: 1.5ms (40% faster
     than file tier). 4KB GET: 1.2ms (37% faster). No fsync -- page cache
