@@ -3411,3 +3411,546 @@ fn print_l4_comparison(rows: &[L4Row], workload: &[(usize, usize)]) {
     }
     eprintln!();
 }
+
+// ============================================================================
+// Pool L4.5: Stack breakdown. Hunt the missing 900us at 4KB PUT.
+// ============================================================================
+//
+// Phase 8's bench_pool_l4_tier_matrix showed 4KB PUT end-to-end is 942us
+// (pool) / 1406us (file) while Phase 5.6's storage-layer benchmark
+// measured write_shard at 11.9us. The ~930us gap was attributed to
+// "hyper/s3s/axum overhead" but never measured directly. This bench
+// attributes the gap to specific layers via five progressive stages:
+//
+//   Stage A: hyper_bare            -- reqwest + hyper + TCP floor
+//   Stage B: hyper_manual_handler  -- Stage A + body read + direct
+//                                     LocalVolume::write_shard (no s3s,
+//                                     no AbixioS3, no VolumePool)
+//   Stage C: abixio_null_backend   -- full hyper + s3s + AbixioS3 +
+//                                     VolumePool stack, but the disk
+//                                     is a NullBackend that returns
+//                                     Ok() immediately from write_shard
+//                                     so zero real storage work happens
+//   Stage D: file_tier             -- Phase 8 file tier (= full stack
+//                                     with real file-tier LocalVolume)
+//   Stage E: pool_tier             -- Phase 8 pool tier (= full stack
+//                                     with enable_write_pool(32))
+//
+// Subtracting consecutive stages attributes latency to each layer:
+//
+//   A                     = HTTP floor
+//   B - A                 = body read + minimal write_shard
+//   C - A                 = s3s + AbixioS3 + VolumePool dispatch
+//                           (including body collect, hash, RS encode,
+//                           placement, metadata build)
+//   D - C                 = real file tier storage work
+//   D - E                 = pool savings over file tier
+//
+// The critical unknown before this bench: how much of the 930us gap is
+// "HTTP stack" (which nothing abixio controls) vs "abixio bookkeeping"
+// (which we could optimize). C - A answers that directly.
+//
+// Run with:
+//   k3sc cargo-lock test --release --test layer_bench -- --ignored \
+//       --nocapture bench_pool_l4_5_stack_breakdown
+
+use std::convert::Infallible;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_pool_l4_5_stack_breakdown() {
+    eprintln!("\n=== Pool L4.5: Stack breakdown at 4KB PUT (1000 iters, sequential) ===\n");
+    eprintln!("  client -> reqwest -> hyper -> [increasing stack layers]");
+    eprintln!("  1 disk, ftt=0, 127.0.0.1 TCP loopback");
+    eprintln!();
+
+    let iters = 1000usize;
+    let size = 4 * 1024;
+
+    let stage_a = run_l45_stage_a(size, iters).await;
+    eprintln!(
+        "  Stage A  hyper_bare              avg {:>8.1}us  p50 {:>8.1}us  p99 {:>9.1}us",
+        stage_a.avg_us, stage_a.p50_us, stage_a.p99_us,
+    );
+
+    let stage_b = run_l45_stage_b(size, iters).await;
+    eprintln!(
+        "  Stage B  hyper_manual_handler    avg {:>8.1}us  p50 {:>8.1}us  p99 {:>9.1}us",
+        stage_b.avg_us, stage_b.p50_us, stage_b.p99_us,
+    );
+
+    let stage_c = run_l45_stage_c(size, iters).await;
+    eprintln!(
+        "  Stage C  abixio_null_backend     avg {:>8.1}us  p50 {:>8.1}us  p99 {:>9.1}us",
+        stage_c.avg_us, stage_c.p50_us, stage_c.p99_us,
+    );
+
+    let stage_d = run_l45_stage_d(size, iters).await;
+    eprintln!(
+        "  Stage D  file_tier               avg {:>8.1}us  p50 {:>8.1}us  p99 {:>9.1}us",
+        stage_d.avg_us, stage_d.p50_us, stage_d.p99_us,
+    );
+
+    let stage_e = run_l45_stage_e(size, iters).await;
+    eprintln!(
+        "  Stage E  pool_tier               avg {:>8.1}us  p50 {:>8.1}us  p99 {:>9.1}us",
+        stage_e.avg_us, stage_e.p50_us, stage_e.p99_us,
+    );
+
+    eprintln!();
+    eprintln!("=== Layer attribution (p50 subtraction) ===");
+    eprintln!();
+    eprintln!(
+        "  hyper + TCP + reqwest floor                (A)         {:>8.1}us",
+        stage_a.p50_us,
+    );
+    eprintln!(
+        "  + body read + minimal write_shard          (B - A)     {:>8.1}us",
+        stage_b.p50_us - stage_a.p50_us,
+    );
+    eprintln!(
+        "  + s3s + AbixioS3 + VolumePool dispatch     (C - A)     {:>8.1}us  <-- the 'missing 900us'",
+        stage_c.p50_us - stage_a.p50_us,
+    );
+    eprintln!(
+        "  + real file-tier storage work              (D - C)     {:>8.1}us",
+        stage_d.p50_us - stage_c.p50_us,
+    );
+    eprintln!(
+        "  pool savings vs file                       (D - E)     {:>8.1}us",
+        stage_d.p50_us - stage_e.p50_us,
+    );
+    eprintln!();
+    eprintln!("=== Cross-check ===");
+    eprintln!("  Phase 8 file tier 4KB p50:  ~1406us   (this run stage D p50: {:.1}us)", stage_d.p50_us);
+    eprintln!("  Phase 8 pool tier 4KB p50:  ~942us    (this run stage E p50: {:.1}us)", stage_e.p50_us);
+    eprintln!();
+}
+
+// ---------- Stage A: hyper_bare -----------------------------------------
+
+async fn run_l45_stage_a(size: usize, iters: usize) -> L4Stats {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            stream.set_nodelay(true).ok();
+            let io = hyper_util::rt::TokioIo::new(stream);
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(|req: hyper::Request<hyper::body::Incoming>| async move {
+                    use http_body_util::BodyExt;
+                    // drain body
+                    let _ = req.into_body().collect().await;
+                    Ok::<_, Infallible>(
+                        hyper::Response::builder()
+                            .status(200)
+                            .body(http_body_util::Full::new(bytes::Bytes::new()))
+                            .unwrap(),
+                    )
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    let samples = run_l45_client_loop(addr, size, iters).await;
+    server.abort();
+    let mut s = samples;
+    L4Stats::from(&mut s, size)
+}
+
+// ---------- Stage B: hyper_manual_handler -------------------------------
+
+async fn run_l45_stage_b(size: usize, iters: usize) -> L4Stats {
+    use abixio::storage::metadata::{ErasureMeta, ObjectMeta};
+    use http_body_util::BodyExt;
+
+    let (_base, paths) = setup(1);
+    let volume = Arc::new(LocalVolume::new(&paths[0]).unwrap());
+    // make_bucket via the underlying LocalVolume (no VolumePool).
+    volume.make_bucket("bench").await.unwrap();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let volume_clone = Arc::clone(&volume);
+    let server = tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            stream.set_nodelay(true).ok();
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let v = Arc::clone(&volume_clone);
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                    let v = Arc::clone(&v);
+                    async move {
+                        let (parts, body) = req.into_parts();
+                        let path = parts.uri.path().trim_start_matches('/').to_string();
+                        let bytes = body.collect().await.unwrap().to_bytes();
+                        let (bucket, key) = path.split_once('/').unwrap_or(("bench", "default"));
+                        let meta = ObjectMeta {
+                            size: bytes.len() as u64,
+                            etag: "deadbeef".to_string(),
+                            content_type: "application/octet-stream".to_string(),
+                            created_at: 0,
+                            erasure: ErasureMeta::default(),
+                            checksum: String::new(),
+                            ..Default::default()
+                        };
+                        v.write_shard(bucket, key, &bytes, &meta).await.unwrap();
+                        Ok::<_, Infallible>(
+                            hyper::Response::builder()
+                                .status(200)
+                                .body(http_body_util::Full::new(bytes::Bytes::new()))
+                                .unwrap(),
+                        )
+                    }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, svc)
+                    .await;
+            });
+        }
+    });
+
+    let samples = run_l45_client_loop(addr, size, iters).await;
+    server.abort();
+    let mut s = samples;
+    L4Stats::from(&mut s, size)
+}
+
+// ---------- Stage C: abixio_null_backend --------------------------------
+
+async fn run_l45_stage_c(size: usize, iters: usize) -> L4Stats {
+    let backends: Vec<Box<dyn Backend>> = vec![Box::new(NullBackend::new()) as Box<dyn Backend>];
+    let pool = Arc::new(VolumePool::new(backends).unwrap());
+    pool.make_bucket("bench").await.unwrap();
+    let (addr, handle) = spawn_abixio_stack(Arc::clone(&pool)).await;
+    let samples = run_l45_client_loop(addr, size, iters).await;
+    handle.abort();
+    let mut s = samples;
+    L4Stats::from(&mut s, size)
+}
+
+// ---------- Stage D: file_tier ------------------------------------------
+
+async fn run_l45_stage_d(size: usize, iters: usize) -> L4Stats {
+    let (_base, paths) = setup(1);
+    let volume = LocalVolume::new(&paths[0]).unwrap();
+    let backends: Vec<Box<dyn Backend>> = vec![Box::new(volume) as Box<dyn Backend>];
+    let pool = Arc::new(VolumePool::new(backends).unwrap());
+    pool.make_bucket("bench").await.unwrap();
+    let (addr, handle) = spawn_abixio_stack(Arc::clone(&pool)).await;
+    let samples = run_l45_client_loop(addr, size, iters).await;
+    handle.abort();
+    let mut s = samples;
+    L4Stats::from(&mut s, size)
+}
+
+// ---------- Stage E: pool_tier ------------------------------------------
+
+async fn run_l45_stage_e(size: usize, iters: usize) -> L4Stats {
+    let (_base, paths) = setup(1);
+    let mut volume = LocalVolume::new(&paths[0]).unwrap();
+    volume.enable_write_pool(32).await.unwrap();
+    let backends: Vec<Box<dyn Backend>> = vec![Box::new(volume) as Box<dyn Backend>];
+    let pool = Arc::new(VolumePool::new(backends).unwrap());
+    pool.make_bucket("bench").await.unwrap();
+    let (addr, handle) = spawn_abixio_stack(Arc::clone(&pool)).await;
+    let samples = run_l45_client_loop(addr, size, iters).await;
+    // Drain the pool so the test finishes cleanly.
+    for backend in pool.disks() {
+        backend.drain_pending_writes().await;
+    }
+    handle.abort();
+    let mut s = samples;
+    L4Stats::from(&mut s, size)
+}
+
+// ---------- Shared: full abixio stack (s3s + AbixioS3 + dispatch) -------
+
+async fn spawn_abixio_stack(
+    pool: Arc<VolumePool>,
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    let cluster = Arc::new(
+        ClusterManager::new(ClusterConfig {
+            node_id: "bench".to_string(),
+            advertise_s3: "http://127.0.0.1:0".to_string(),
+            advertise_cluster: "http://127.0.0.1:0".to_string(),
+            nodes: Vec::new(),
+            access_key: String::new(),
+            secret_key: String::new(),
+            no_auth: true,
+            disk_paths: Vec::new(),
+        })
+        .unwrap(),
+    );
+
+    let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&pool), Arc::clone(&cluster));
+    let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+    builder.set_validation(abixio::s3_service::RelaxedNameValidation);
+    let s3_service = builder.build();
+    let dispatch = Arc::new(AbixioDispatch::new(s3_service, None, None));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let dispatch_clone = dispatch.clone();
+    let handle = tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            stream.set_nodelay(true).ok();
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let d = dispatch_clone.clone();
+            tokio::spawn(async move {
+                let service = hyper::service::service_fn(move |req| {
+                    let d = d.clone();
+                    async move { Ok::<_, hyper::Error>(d.dispatch(req).await) }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    (addr, handle)
+}
+
+// ---------- Shared: client loop (sequential PUTs) -----------------------
+
+async fn run_l45_client_loop(
+    addr: std::net::SocketAddr,
+    size: usize,
+    iters: usize,
+) -> Vec<Duration> {
+    let client = reqwest::Client::builder()
+        .pool_idle_timeout(Duration::from_secs(60))
+        .pool_max_idle_per_host(4)
+        .build()
+        .unwrap();
+
+    // Warmup: 5 PUTs to prime connection pool and JIT the request path.
+    let warmup = vec![0x42u8; size];
+    for i in 0..5 {
+        let url = format!("http://{}/bench/warmup_{}", addr, i);
+        let _ = client.put(&url).body(warmup.clone()).send().await;
+    }
+
+    let data = vec![0xA5u8; size];
+    let mut samples = Vec::with_capacity(iters);
+    for i in 0..iters {
+        let url = format!("http://{}/bench/put_{}", addr, i);
+        let t = Instant::now();
+        let resp = client.put(&url).body(data.clone()).send().await.unwrap();
+        // Drain the response so reqwest reports "done" after the server
+        // actually returned 200, not just after headers.
+        let _ = resp.bytes().await.unwrap();
+        samples.push(t.elapsed());
+    }
+    samples
+}
+
+// ---------- NullBackend: zero-cost Backend for Stage C ------------------
+
+struct NullBackend {
+    volume_id: std::sync::Mutex<String>,
+    bucket_created: AtomicBool,
+    created_at: u64,
+}
+
+impl NullBackend {
+    fn new() -> Self {
+        Self {
+            volume_id: std::sync::Mutex::new(String::new()),
+            bucket_created: AtomicBool::new(false),
+            created_at: 1700000000,
+        }
+    }
+}
+
+struct NullShardWriter;
+
+#[async_trait::async_trait]
+impl abixio::storage::ShardWriter for NullShardWriter {
+    async fn write_chunk(&mut self, _chunk: &[u8]) -> Result<(), abixio::storage::StorageError> {
+        Ok(())
+    }
+    async fn finalize(
+        self: Box<Self>,
+        _meta: &abixio::storage::metadata::ObjectMeta,
+    ) -> Result<(), abixio::storage::StorageError> {
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl Backend for NullBackend {
+    async fn open_shard_writer(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _version_id: Option<&str>,
+    ) -> Result<Box<dyn abixio::storage::ShardWriter>, abixio::storage::StorageError> {
+        Ok(Box::new(NullShardWriter))
+    }
+
+    async fn write_shard(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _data: &[u8],
+        _meta: &abixio::storage::metadata::ObjectMeta,
+    ) -> Result<(), abixio::storage::StorageError> {
+        Ok(())
+    }
+
+    async fn read_shard(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<(Vec<u8>, abixio::storage::metadata::ObjectMeta), abixio::storage::StorageError> {
+        Ok((Vec::new(), abixio::storage::metadata::ObjectMeta::default()))
+    }
+
+    async fn delete_object(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<(), abixio::storage::StorageError> {
+        Ok(())
+    }
+
+    async fn list_objects(
+        &self,
+        _bucket: &str,
+        _prefix: &str,
+    ) -> Result<Vec<String>, abixio::storage::StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn list_buckets(&self) -> Result<Vec<String>, abixio::storage::StorageError> {
+        Ok(vec!["bench".to_string()])
+    }
+
+    async fn make_bucket(&self, _bucket: &str) -> Result<(), abixio::storage::StorageError> {
+        self.bucket_created.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn delete_bucket(&self, _bucket: &str) -> Result<(), abixio::storage::StorageError> {
+        Ok(())
+    }
+
+    fn bucket_exists(&self, _bucket: &str) -> bool {
+        self.bucket_created.load(Ordering::SeqCst)
+    }
+
+    fn bucket_created_at(&self, _bucket: &str) -> u64 {
+        self.created_at
+    }
+
+    async fn stat_object(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<abixio::storage::metadata::ObjectMeta, abixio::storage::StorageError> {
+        Ok(abixio::storage::metadata::ObjectMeta::default())
+    }
+
+    async fn update_meta(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _meta: &abixio::storage::metadata::ObjectMeta,
+    ) -> Result<(), abixio::storage::StorageError> {
+        Ok(())
+    }
+
+    async fn read_meta_versions(
+        &self,
+        _bucket: &str,
+        _key: &str,
+    ) -> Result<Vec<abixio::storage::metadata::ObjectMeta>, abixio::storage::StorageError> {
+        Ok(Vec::new())
+    }
+
+    async fn write_meta_versions(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _versions: &[abixio::storage::metadata::ObjectMeta],
+    ) -> Result<(), abixio::storage::StorageError> {
+        Ok(())
+    }
+
+    async fn write_versioned_shard(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _version_id: &str,
+        _data: &[u8],
+        _meta: &abixio::storage::metadata::ObjectMeta,
+    ) -> Result<(), abixio::storage::StorageError> {
+        Ok(())
+    }
+
+    async fn read_versioned_shard(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _version_id: &str,
+    ) -> Result<(Vec<u8>, abixio::storage::metadata::ObjectMeta), abixio::storage::StorageError> {
+        Ok((Vec::new(), abixio::storage::metadata::ObjectMeta::default()))
+    }
+
+    async fn delete_version_data(
+        &self,
+        _bucket: &str,
+        _key: &str,
+        _version_id: &str,
+    ) -> Result<(), abixio::storage::StorageError> {
+        Ok(())
+    }
+
+    async fn read_bucket_settings(
+        &self,
+        _bucket: &str,
+    ) -> abixio::storage::metadata::BucketSettings {
+        abixio::storage::metadata::BucketSettings::default()
+    }
+
+    async fn write_bucket_settings(
+        &self,
+        _bucket: &str,
+        _settings: &abixio::storage::metadata::BucketSettings,
+    ) -> Result<(), abixio::storage::StorageError> {
+        Ok(())
+    }
+
+    fn info(&self) -> abixio::storage::BackendInfo {
+        abixio::storage::BackendInfo {
+            label: "null".to_string(),
+            volume_id: self.volume_id.lock().unwrap().clone(),
+            backend_type: "null".to_string(),
+            total_bytes: None,
+            used_bytes: None,
+            free_bytes: None,
+        }
+    }
+
+    fn set_volume_id(&mut self, id: String) {
+        *self.volume_id.lock().unwrap() = id;
+    }
+}

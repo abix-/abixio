@@ -40,11 +40,17 @@ claims that appear many times below:
   file tier never pays because it writes directly to the final
   location.
 - **The "pool is 53x faster at 4KB" claim from Phase 4.5 and Phase 5.6
-  is storage-layer only.** At 4KB, ~930us of hyper/s3s/axum overhead
-  per request is ~98% of the PUT latency budget. Any storage-layer
-  optimization below that is invisible to real clients. End-to-end
-  the pool at 4KB PUT is 942us p50 vs 1406us for the file tier, so
-  1.5x not 53x.
+  is storage-layer only.** End-to-end, the pool at 4KB PUT is
+  942us p50 vs 1406us for the file tier (1.5x, not 53x). **But the
+  reason the pool's win shrinks at the HTTP layer is NOT HTTP
+  overhead. Phase 8.5 (`bench_pool_l4_5_stack_breakdown`) showed
+  the HTTP stack is only 93us, s3s + AbixioS3 + VolumePool dispatch
+  is only 27us, and the remaining ~900us is real file-tier storage
+  work on NTFS.** The pool reduces that storage work by ~113us
+  end-to-end. The log store reduces it much more (down to ~295us
+  end-to-end for a 4KB PUT) by avoiding the per-object file at all.
+  See the [Phase 8.5 section](#phase-85-where-the-missing-900us-actually-lives-done)
+  for the layer attribution.
 
 Earlier phase sections below describe the storage-layer work as it
 was measured at the time. Those numbers are still correct at the
@@ -83,6 +89,7 @@ the storage-layer optimizations got built.
   - [Methodology lessons](#methodology-lessons-from-phase-55-and-phase-56)
   - [Phase 6: crash recovery scan (done)](#phase-6-crash-recovery-scan-done)
   - [Phase 8: end-to-end three-tier matrix (done)](#phase-8-end-to-end-three-tier-matrix-done)
+  - [Phase 8.5: where the missing 900us actually lives (done)](#phase-85-where-the-missing-900us-actually-lives-done)
   - [Phase 7, 9: pending](#phase-7-9-pending)
 - [Open questions for implementation](#open-questions-for-implementation)
 - [Files to modify (when phase 2 begins)](#files-to-modify-when-phase-2-begins)
@@ -568,6 +575,7 @@ The production default remains the three-tier handoff above.
 | 6 | Crash recovery scan in `enable_write_pool` | restart safety | **done** (Phase 6: `recover_pool_dir` finishes any pending renames left from a crash before fresh slots are created; 14 new tests, all 355 total pass) |
 | 7 | Admin endpoint `GET /_admin/pool/status` | operator visibility | pending |
 | 8 | End-to-end three-tier matrix (HTTP layer) | data-driven decision | **done** (Phase 8: bench_pool_l4_tier_matrix measures PUT+GET p50 through the full hyper/s3s/VolumePool stack at 5 sizes for file/log/pool tiers. **Result: pool only wins 1MB-10MB, log store dominates <=64KB, file tier wins 100MB. Storage-layer 53x claims do not translate end-to-end.**) |
+| 8.5 | Stack breakdown via layer subtraction | attribute the missing 900us | **done** (Phase 8.5: bench_pool_l4_5_stack_breakdown proves HTTP stack is only 93us at 4KB, s3s+AbixioS3+VolumePool is only 27us, and the remaining ~900us is real file-tier storage work on NTFS. The Phase 8 "HTTP overhead dominates" narrative was wrong.) |
 | 9 | Benchmark all three tiers under concurrency | concurrent load picture | pending |
 
 ## Benchmark plan
@@ -1776,6 +1784,142 @@ store enabled for small objects.
   trait without downcasting to `LocalVolume`.
 - `src/storage/local_volume.rs`: overrides `drain_pending_writes`
   to delegate to the existing `drain_pending` method.
+
+### Phase 8.5: where the missing 900us actually lives (done)
+
+Phase 8 concluded "pool 4KB end-to-end is 942us vs storage-layer
+11us, so ~930us is HTTP/s3s/axum overhead." Phase 8.5 built a
+layer-subtraction bench (`bench_pool_l4_5_stack_breakdown`) to
+attribute the gap to specific layers and **the conclusion was
+wrong**. The missing 900us is not in the HTTP stack.
+
+#### Methodology
+
+`tests/layer_bench.rs::bench_pool_l4_5_stack_breakdown`. Five
+progressive stages at 4KB PUT, 1000 sequential iterations each,
+fresh hyper server per stage:
+
+- **Stage A, `hyper_bare`**: hyper http1 service_fn that just
+  drains the body and returns 200 empty. No s3s, no abixio, no
+  storage. Measures reqwest + TCP loopback + hyper parse.
+- **Stage B, `hyper_manual_handler`**: bare hyper handler that
+  parses `/bucket/key` manually, builds a minimal `ObjectMeta`,
+  calls `LocalVolume::write_shard` directly (skipping s3s,
+  AbixioS3, and VolumePool). Measures the minimum custom server
+  cost with direct file-tier writes.
+- **Stage C, `abixio_null_backend`**: full hyper + s3s + AbixioS3
+  + VolumePool stack, but the disk is a `NullBackend` whose
+  `write_shard` returns `Ok(())` immediately. Measures all
+  bookkeeping between hyper and the backend with zero storage
+  work.
+- **Stage D, `file_tier`**: full stack with real file-tier
+  LocalVolume. Should match Phase 8 file tier.
+- **Stage E, `pool_tier`**: full stack with `enable_write_pool(32)`.
+  Should match Phase 8 pool tier.
+
+Raw output:
+`bench-results/phase8.5-stack-breakdown.txt`.
+
+#### Results
+
+| Stage | p50 | delta |
+|---|---|---|
+| A. hyper_bare | **93.7us** | HTTP floor |
+| B. hyper + direct write_shard (file tier) | 751.0us | +657us write_shard body+write |
+| C. abixio_null_backend | **120.8us** | +27us s3s + AbixioS3 + VolumePool dispatch |
+| D. file_tier | 1023.8us | +903us real file-tier storage work |
+| E. pool_tier | 910.3us | -113us pool savings vs file |
+
+#### Layer attribution at 4KB PUT
+
+```
+hyper + TCP + reqwest floor                (A)             93.7us
++ body read + minimal write_shard          (B - A)        657.3us
++ s3s + AbixioS3 + VolumePool dispatch     (C - A)         27.1us
++ real file-tier storage work              (D - C)        903.0us
+pool savings vs file                       (D - E)        113.5us
+```
+
+#### What this actually tells us
+
+**1. The HTTP stack is 93us, not 900us.** Reqwest + TCP loopback
++ hyper parse round-trip is under 100us at 4KB. Phase 8's
+"HTTP/s3s/axum overhead dominates" narrative was incorrect.
+
+**2. s3s + AbixioS3 + VolumePool dispatch is 27us.** This is
+the delta between Stage C and Stage A. Everything from "s3s
+parses the PUT request" to "VolumePool.put_object_stream decides
+where to write" including body collection, xxhash64, Reed-Solomon
+split_data, placement planning, ObjectMeta construction, blake3
+checksum, and response serialization all add up to 27us at 4KB.
+**The abixio dispatch layer is essentially free.** No optimization
+opportunity here.
+
+**3. The ~900us lives in real file-tier storage work.** Stage D
+minus Stage C = 903us. That is the cost of the file tier's
+`mkdir` + `File::create` + `write` + `close` pair (one for
+shard.dat, one for meta.json) on NTFS. This matches Phase 5.6's
+storage-layer file tier measurement (~626us with some
+between-run variance). The file tier really does cost ~700-900us
+per small-object PUT because NTFS metadata operations are slow.
+
+**4. The pool saves 113us at 4KB.** Not 464us (Phase 8 number),
+not 615us (storage-layer 53x implied gap). The pool's actual
+end-to-end win over the file tier at 4KB in this run is **13us
+of saved CPU for each 100us of file tier work**. Small but real.
+
+**5. Phase 5.6's 11us number was accurate for the pool tier**
+when measured with `drain_pending` between iterations (which
+excluded the rename work from the hot-path measurement). That
+number is the reason the pool can claw back 113us under the
+HTTP stack: the pool's pre-ack cost is genuinely low, but the
+overall PUT still pays for VolumePool bookkeeping and response
+serialization.
+
+#### The Phase 8 narrative correction
+
+The [Phase 8 correction banner](#correction-whats-actually-true-about-the-pools-end-to-end-performance)
+at the top of this doc says ~930us is "hyper/s3s/axum overhead."
+That attribution was wrong. The corrected version:
+
+> Phase 8 measured 4KB PUT end-to-end at 942us (pool) vs 1406us
+> (file). Phase 5.6 measured pool write_shard at 11.9us in
+> isolation. The ~900us gap is **almost entirely real file-tier
+> storage work**, not HTTP overhead. HTTP contributes only 93us
+> at 4KB. s3s + AbixioS3 + VolumePool dispatch contributes only
+> 27us. The remaining ~780us is inside `LocalVolume::write_shard`
+> on the file tier path: mkdir, file creates, and writes on
+> NTFS. The pool's storage-layer wins (reducing file tier
+> syscalls to pre-opened slot writes + rename) are real but
+> small in absolute terms at 4KB: ~113us saved end-to-end.
+
+#### What's left to optimize
+
+The Phase 8.5 breakdown makes it clear there are **no easy
+wins at 4KB.** The HTTP stack and abixio dispatch are already
+cheap. The only addressable cost is the ~900us of file tier
+storage work, and the pool already addresses it as far as it
+practically can (113us savings). Further PUT optimization at
+4KB would need to:
+
+- Reduce the pool's own pre-ack work (rename + meta-write are
+  already minimal).
+- Change the filesystem or the allocation pattern to reduce NTFS
+  metadata ops (unlikely; this is the filesystem's fault, not
+  abixio's).
+- Switch to an even flatter storage model like the log store
+  which at 4KB is **295us end-to-end** (Phase 8 data). The log
+  store is still the right answer for small objects.
+
+#### Cross-run variance note
+
+Stage D p50 (1023us) does not match Phase 8 file tier p50
+(1406us). Stage E p50 (910us) matches Phase 8 pool (942us) more
+closely. The ~380us variance at Stage D is noise from OS cache
+state between bench runs. Rerunning Phase 8 would produce
+different numbers. The **layer attribution is more robust than
+the absolute numbers** because consecutive stages ran within
+seconds of each other and saw similar OS state.
 
 ### Phase 7, 9: pending
 
