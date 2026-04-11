@@ -4,9 +4,18 @@
 
 ### Fairness principles
 
-Every client must run the same test under the same conditions. If one
-client gets an advantage (keep-alive, memory I/O, more warmup), the
-comparison is not valid. These rules ensure parity:
+**Authoritative normalized client mode:** `HTTPS + SigV4 +
+UNSIGNED-PAYLOAD`.
+
+That is the benchmark target this document treats as the proper
+cross-client baseline. It keeps real S3 authentication enabled while
+avoiding extra full-body payload hashing work that many HTTPS clients do
+not use in normal practice.
+
+Cross-client numbers are only directly comparable when the harness holds
+the major variables constant. The current matrix gets part of the way
+there, but not all the way. These rules describe what is normalized now
+versus what still differs by client implementation:
 
 1. **Same warmup**: 3 PUT + 3 GET warmup operations before timing, for
    every client. This ensures TCP connections are established, caches are
@@ -16,11 +25,11 @@ comparison is not valid. These rules ensure parity:
    disk. All clients write GET output to a temp file on disk. No client
    gets the advantage of in-memory I/O while others do disk I/O.
 
-3. **Same connection model**: each client uses a single connection with
-   keep-alive across all iterations. For per-process CLI tools (mc,
-   rclone), process spawn overhead is measured and reported. Published
-   matrix numbers below are end-to-end and include process spawn unless
-   a section explicitly says otherwise.
+3. **Same connection warming**: every client gets the same warmup count
+   before timing. Connection reuse is **not** fully normalized today:
+   `aws-sdk-s3` runs in-process and reuses connections, while `mc` and
+   `rclone` are invoked as a new process per operation. Published matrix
+   numbers below are end-to-end and include that difference.
 
 4. **Same iterations**: all clients run the same number of iterations
    per (server, size) combination.
@@ -28,8 +37,11 @@ comparison is not valid. These rules ensure parity:
 5. **Same payload**: identical byte pattern, identical size, identical
    content-type for all clients.
 
-6. **Same auth**: all clients use SigV4 with the same credentials.
-   UNSIGNED-PAYLOAD for PUT body (standard for HTTPS clients).
+6. **Same auth mode**: the authoritative benchmark target is `HTTPS +
+   SigV4 + UNSIGNED-PAYLOAD` for every comparable client. The current
+   harness does **not** fully meet that yet: `aws-sdk-s3` already does,
+   `rclone` under provider `Other` also does for single-part `PutObject`,
+   but `mc` does not in the current localhost HTTP path.
 
 7. **Same server config**: each server runs single-node, 1 disk, NTFS
    tmpdir, same machine, release build. Servers are started fresh for
@@ -46,14 +58,46 @@ clients, real data.
 
 | Client | Type | Auth | Connection | Overhead |
 |--------|------|------|-----------|----------|
-| **aws-sdk-s3** (Rust) | In-process SDK | SigV4, UNSIGNED-PAYLOAD | Keep-alive | None |
-| **mc** (MinIO client) | Per-process CLI | SigV4 | New process per op | ~41ms |
-| **rclone** | Per-process CLI | SigV4 | New process per op | ~111ms |
+| **aws-sdk-s3** (Rust) | In-process SDK | SigV4, `UNSIGNED-PAYLOAD` in matrix PUTs | Keep-alive | None |
+| **mc** (MinIO client) | Per-process CLI | SigV4 with streamed payload hash on our HTTP harness | New process per op | ~41ms |
+| **rclone** | Per-process CLI | SigV4 with `UNSIGNED-PAYLOAD` for single-part PUT under provider `Other` | New process per op | ~111ms |
 
 For CLI tools, process spawn overhead is measured before each benchmark
 run (`mc ls` / `rclone lsd`) and printed in the output for transparency.
 The comprehensive matrix below reports real end-to-end timing including
-that overhead.
+that overhead. Until every client is moved to the normalized `HTTPS +
+SigV4 + UNSIGNED-PAYLOAD` mode, treat the current matrix as a mixed
+real-client comparison, not the final canonical apples-to-apples result.
+
+### Consistency status
+
+The current harness already normalizes:
+
+- warmup count
+- payload bytes and object sizes
+- disk-backed PUT source / GET sink I/O model in the matrix
+- server config and localhost test machine
+
+The current harness does **not** yet normalize to the authoritative
+baseline:
+
+- connection reuse (`aws-sdk-s3` keep-alive vs CLI respawn-per-op)
+- PUT payload-signing mode across clients (`aws-sdk-s3` and `rclone`
+  unsigned in the current matrix path, `mc` not unsigned)
+- transport security (`HTTP` localhost today vs desired `HTTPS`)
+- the standalone `bench_clients` test, which still uses in-memory SDK
+  PUTs and signed SDK uploads while comparing against per-process CLIs
+
+So the matrix is useful, but it is not yet a strict apples-to-apples
+"same settings" client benchmark. The benchmark we actually want is:
+
+- `HTTPS`
+- `SigV4`
+- `UNSIGNED-PAYLOAD`
+- same payload bytes
+- same disk-backed I/O model
+- same warmup and iteration counts
+- same connection behavior where the client supports it
 
 ### Servers
 
@@ -100,10 +144,13 @@ All binaries must be release builds. Debug builds are 5-7x slower.
 3 servers x 3 clients x 3 sizes x 2 operations.
 Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --nocapture bench_matrix`
 
-All clients now use the same I/O model: read PUT payload from disk, write
-GET output to disk, 3 PUT + 3 GET warmup before timing. CLI process
-overhead (~41ms mc, ~111ms rclone) is reported but NOT subtracted;
-numbers show real end-to-end time including process spawn.
+All clients in the matrix use the same disk I/O model and the same
+3 PUT + 3 GET warmup before timing. CLI process overhead (~41ms mc,
+~111ms rclone) is reported but NOT subtracted; numbers show real
+end-to-end time including process spawn. Connection reuse, transport,
+and PUT payload-signing mode remain mixed across clients, so this
+section measures "real client on the same host" performance, not the
+authoritative normalized request-path comparison defined above.
 
 ### 4KB: small object performance (obj/sec)
 
@@ -196,6 +243,11 @@ Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --noca
 aws-sdk-s3 is 74x faster than mc for 4KB. mc process spawn (~40ms)
 dominates small-object latency. For large objects, mc's overhead is
 amortized and it's competitive.
+
+This table is intentionally weaker methodologically than the matrix:
+the SDK path here still does in-memory PUTs with the normal signed
+helper, while `mc` and `rclone` are spawned as separate processes. Use
+the matrix above for the more controlled client comparison.
 
 ---
 
@@ -400,6 +452,13 @@ Audited against the codebase on 2026-04-11.
 | Phase 8 / 8.5 benchmark section names and commands | Verified | `tests/layer_bench.rs:3111-3164`, `3455-3499` |
 | Specific published numeric results in matrix tables | Not independently re-run in this pass | Numbers match this document and related docs/artifacts, but I did not execute the external benchmark harness here |
 | `1220 MB/s` curl GET and other historical perf numbers | Not independently re-run in this pass | Repeated consistently across docs, but not re-measured during this audit |
-| `abixio-ui/tests/bench.rs` harness description | Not audited in this pass | This repo references that harness, but the `abixio-ui` repo was not opened here |
+| Matrix harness normalizes disk I/O and warmup across clients | Verified | `../abixio-ui/tests/bench.rs:882-904`, `951-962`, `1030-1040` |
+| `HTTPS + SigV4 + UNSIGNED-PAYLOAD` is now the documented authoritative normalized client mode | Verified as documentation intent | This document now defines that methodology explicitly; current harness still falls short of it |
+| Matrix harness fully normalizes connection reuse across clients | Incorrect | `../abixio-ui/tests/bench.rs:892-902` uses in-process SDK reuse, while `927-991` and `999-1061` spawn a fresh CLI process per iteration |
+| Matrix harness fully normalizes PUT payload-signing mode across clients | Incorrect | `../abixio-ui/src/s3/client.rs:225-245` and `../abixio-ui/tests/bench.rs:892`, `902` explicitly use `put_object_unsigned()` for the SDK path; `mc` and `rclone` do not share one forced signing mode |
+| Current matrix runs under the documented authoritative HTTPS transport mode | Incorrect | The current harness targets `http://127.0.0.1:...` endpoints in `../abixio-ui/tests/bench.rs` |
+| `rclone` current matrix path uses unsigned payloads for single-part PUT | Verified | `C:/code/rclone/backend/s3/s3.go:581`, `1122`, `1682-1688`, `1740`, `4659-4664`; provider `Other` leaves the quirk unset in `C:/code/rclone/backend/s3/provider/Other.yaml:1` so it resolves to the default `true` |
+| `mc` current matrix path uses unsigned payloads for normal `cp` PUT | Incorrect | `C:/code/mc/cmd/client-s3.go:1086-1103` only sets `DisableContentSha256` when a checksum option is set; normal `PutObject` then keeps `streamSha256 = true`, and on insecure HTTP minio-go takes the streaming-signature path in `C:/Users/Abix/go/pkg/mod/github.com/minio/minio-go/v7@v7.0.90/api.go:918-939` |
+| `bench_clients` is a strict apples-to-apples client comparison | Incorrect | `../abixio-ui/tests/bench.rs:697-714` uses signed in-memory SDK PUTs, while `724-848` compares against per-process `mc`, `rclone`, and unsigned `curl` |
 
 Verdict: this document’s benchmark narrative is mostly internally consistent after fixing the overhead/client-count contradictions. The bench names, commands, raw artifact references, and profiling hook are backed by this repo. The many published performance numbers still need runtime re-benchmarking if you want strict empirical re-validation.
