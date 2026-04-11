@@ -63,7 +63,7 @@ at request time.
 
 ## Interoperability
 
-- `mc anonymous set-json /path/to/policy.json ALIAS/BUCKET` -- stores raw policy
-- `mc anonymous get-json ALIAS/BUCKET` -- retrieves stored policy
-- `mc anonymous set download/public/upload/private ALIAS/BUCKET` -- canned policies
+- `mc anonymous set-json /path/to/policy.json ALIAS/BUCKET`: stores raw policy
+- `mc anonymous get-json ALIAS/BUCKET`: retrieves stored policy
+- `mc anonymous set download/public/upload/private ALIAS/BUCKET`: canned policies
 - `aws-sdk-s3`: `get_bucket_policy()`, `put_bucket_policy()`, `delete_bucket_policy()`

@@ -15,7 +15,7 @@ entirely.
 Even the log-structured storage path writes to disk. On NTFS, the fastest
 possible disk write (append to pre-allocated file, no fsync) takes 0.002ms.
 But the full server path through HTTP/s3s adds 0.9ms. The disk write itself
-is cheap -- but every write still touches the filesystem.
+is cheap, but every write still touches the filesystem.
 
 The fix is to skip the disk entirely on the write path: write to RAM,
 replicate to a peer's RAM, ack. The disk write happens in the background,

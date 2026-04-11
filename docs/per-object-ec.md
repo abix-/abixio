@@ -80,11 +80,11 @@ Every bucket gets FTT=1 at creation. Change it via the admin API. See [admin-api
 
 | Pool | Bucket FTT | Object FTT | EC layout | Fault tolerance |
 |---|---|---|---|---|
-| 4 disks | 1 (default) | -- | 3+1 | 1 failure |
-| 6 disks | 1 (default) | -- | 5+1 | 1 failure |
+| 4 disks | 1 (default) | none | 3+1 | 1 failure |
+| 6 disks | 1 (default) | none | 5+1 | 1 failure |
 | 6 disks | 1 | FTT=5 | 1+5 | 5 failures |
-| 6 disks | 2 | -- | 4+2 | 2 failures |
-| 8 disks | 1 (default) | -- | 7+1 | 1 failure |
+| 6 disks | 2 | none | 4+2 | 2 failures |
+| 8 disks | 1 (default) | none | 7+1 | 1 failure |
 
 ## How reads work
 

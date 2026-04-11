@@ -17,10 +17,10 @@ How abixio handles S3 conditional request headers on GET and HEAD operations.
 
 ## Evaluation order (per AWS spec)
 
-1. **If-Match** -- if present and ETag does NOT match, return 412.
-2. **If-Unmodified-Since** -- if present and object modified after date, return 412.
-3. **If-None-Match** -- if present and ETag matches, return 304.
-4. **If-Modified-Since** -- if present and object not modified after date, return 304.
+1. **If-Match**: if present and ETag does NOT match, return 412.
+2. **If-Unmodified-Since**: if present and object modified after date, return 412.
+3. **If-None-Match**: if present and ETag matches, return 304.
+4. **If-Modified-Since**: if present and object not modified after date, return 304.
 
 ## Implementation plan
 
@@ -35,7 +35,7 @@ these fields after reading object metadata and before returning the body.
 
 ## Applies to
 
-- `GET /{bucket}/{key}` -- conditional GET
-- `HEAD /{bucket}/{key}` -- conditional HEAD
+- `GET /{bucket}/{key}`: conditional GET
+- `HEAD /{bucket}/{key}`: conditional HEAD
 
 Does NOT apply to PUT, DELETE, or other operations.

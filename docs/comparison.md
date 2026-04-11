@@ -128,7 +128,7 @@ instead of individual files. Inspired by older log-structured storage
 ideas: objects are written exactly once to the log, never overwritten, GC
 reclaims dead space. The specific design choices (64KB threshold, one
 segment per disk, hash index in RAM, no fsync) come from our own benchmark
-measurements -- see [write-log.md](write-log.md) for the latency breakdown
+measurements. See [write-log.md](write-log.md) for the latency breakdown
 that drove each one. This eliminates the filesystem metadata overhead
 (mkdir + file create) that makes 4KB operations slow on every
 file-per-object storage system.

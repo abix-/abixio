@@ -51,7 +51,7 @@ What changed:
 Regression tests now cover hostile:
 
 - `../` (direct traversal in keys and prefixes)
-- `%2e%2e` (percent-encoded traversal via query parameters -- list prefix, multipart uploadId, admin key)
+- `%2e%2e` (percent-encoded traversal via query parameters, e.g. list prefix, multipart uploadId, admin key)
 - invalid bucket names
 - invalid `versionId`
 - invalid `uploadId`

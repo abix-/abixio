@@ -51,7 +51,7 @@ lookup via `impl S3Auth for AbixioAuth` in `src/s3_auth.rs`.
 ## Client-side generation
 
 Presigned URLs are generated entirely on the client side using `aws-sdk-s3`
-presigning config. The server only validates -- it doesn't generate presigned
+presigning config. The server only validates; it does not generate presigned
 URLs.
 
 ## Limits

@@ -65,7 +65,7 @@ The current implementation does **not** provide:
 
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
-| `--volumes` | yes | -- | Volume paths (comma-separated, supports `{N...M}`) |
+| `--volumes` | yes | none | Volume paths (comma-separated, supports `{N...M}`) |
 | `--listen` | no | `:10000` | Bind address |
 | `--nodes` | no | empty | All node endpoints (supports `{N...M}`) |
 | `--no-auth` | no | false | Disable all authentication |
@@ -87,7 +87,7 @@ For a standalone node, omit `--nodes`. The node immediately transitions to
 1. Read `.abixio.sys/volume.json` from each `-v` path
 2. If no volume.json exists (first boot): generate node_id and volume_id UUIDs,
    write partial volume.json
-3. If `--nodes` is empty: standalone mode -- finalize volume.json immediately
+3. If `--nodes` is empty: standalone mode, finalize volume.json immediately
 4. If `--nodes` is set: exchange identity with nodes via `/_admin/cluster/join`,
    block until all nodes respond, then finalize volume.json with full membership
 5. On subsequent boots: read identity from volume.json, probe nodes for quorum
@@ -195,8 +195,8 @@ All internode communication uses JWT signed with the S3 credentials
 probes and storage RPC.
 
 Each request carries:
-- `Authorization: Bearer <jwt>` -- signed with `ABIXIO_SECRET_KEY`, 15min expiry
-- `x-abixio-time: <unix_nanos>` -- clock skew detection (rejects >15min drift)
+- `Authorization: Bearer <jwt>`: signed with `ABIXIO_SECRET_KEY`, 15min expiry
+- `x-abixio-time: <unix_nanos>`: clock skew detection (rejects >15min drift)
 
 When `--no-auth` is set, JWT validation is skipped (development/trusted network).
 

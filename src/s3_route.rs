@@ -60,7 +60,9 @@ impl AbixioDispatch {
         }
 
         // S3: pass s3s::Body through directly (streaming, no collection)
+        let t0 = std::time::Instant::now();
         let resp = hyper::service::Service::call(&self.s3_service, req).await;
+        let s3s_time = t0.elapsed();
         let mut resp = match resp {
             Ok(resp) => wrap_s3s(resp),
             Err(e) => {
@@ -74,6 +76,10 @@ impl AbixioDispatch {
 
         if let Ok(val) = request_id.parse() {
             resp.headers_mut().insert("x-amz-request-id", val);
+        }
+        // timing header for profiling (remove in production)
+        if let Ok(val) = format!("{:.3}ms", s3s_time.as_secs_f64() * 1000.0).parse() {
+            resp.headers_mut().insert("x-debug-s3s-ms", val);
         }
         resp
     }

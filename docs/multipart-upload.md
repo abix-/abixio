@@ -165,7 +165,7 @@ Note: abixio does not currently enforce these limits. Any part size works.
 
 ## Implementation
 
-- `src/multipart/mod.rs` -- all multipart state management and erasure encode/decode
-- `src/s3_service.rs` -- 6 S3 trait methods (create, upload_part, complete, abort, list_parts, list_uploads)
+- `src/multipart/mod.rs`: all multipart state management and erasure encode/decode
+- `src/s3_service.rs`: 6 S3 trait methods (create, upload_part, complete, abort, list_parts, list_uploads)
 - s3s handles XML serialization of multipart responses via smithy-generated DTOs
-- `tests/s3_integration.rs` -- multipart integration coverage; use current `cargo test` output for exact counts
+- `tests/s3_integration.rs`: multipart integration coverage; use current `cargo test` output for exact counts

@@ -2,13 +2,13 @@
 
 Log-structured storage for small objects. Objects are written exactly
 once to an append-only log, never overwritten. GC reclaims dead space.
-The log IS the permanent storage -- no flush, no second format.
+The log IS the permanent storage. No flush, no second format.
 
 Large objects (>64KB) keep the existing file-per-object layout.
 
 ## Measured performance
 
-Measured with `tests/bench_4kb.py` -- Python `requests.Session` with HTTP
+Measured with `tests/bench_4kb.py`, a Python `requests.Session` with HTTP
 keep-alive (persistent connection, 1000 ops). This is how real S3 clients
 work. All via `127.0.0.1` (never `localhost` on Windows).
 
@@ -30,7 +30,7 @@ work. All via `127.0.0.1` (never `localhost` on Windows).
 | Filesystem ops per 4KB (4 disks) | 12 | **4** | 3x fewer |
 | Files per 1M small objects | 3M+ | ~3 segments | ~1000x fewer |
 
-No fsync on writes -- trust OS page cache, same as MinIO and RustFS.
+No fsync on writes. Trust OS page cache, same as MinIO and RustFS.
 Writes go to page cache (RAM), reads from the same pages via mmap.
 Both sides hit RAM. Disk flush happens when the OS decides.
 
@@ -82,7 +82,7 @@ per connection. On Linux (0.03ms connect), total drops to ~0.34ms.
 
 One active segment per disk. Pre-allocated 64MB. Receives all appends.
 **Also serves reads** via mmap of the same file (page-cache coherent with
-writes). No sealing needed for reads -- the mmap sees writes immediately.
+writes). No sealing needed for reads; the mmap sees writes immediately.
 
 ### Sealed segments
 
@@ -140,7 +140,7 @@ The OS flushes dirty pages to disk on its own schedule (~30 seconds on
 Linux, similar on Windows). Process crashes don't lose data (page cache
 is in kernel memory). Power loss loses unflushed writes (UPS mitigates).
 
-This matches MinIO and RustFS behavior -- neither fsyncs individual writes.
+This matches MinIO and RustFS behavior. Neither fsyncs individual writes.
 Confirmed in RustFS source: sync flag is a TODO that does nothing.
 
 ## How to enable
@@ -181,7 +181,7 @@ Remaining:
 
 ## See also
 
-- [Pre-opened temp file pool](write-pool.md) -- a replacement for the
+- [Pre-opened temp file pool](write-pool.md): a replacement for the
   log store currently being benchmarked. Same
   eliminate-syscalls-from-the-hot-path goal, different mechanism (one
   pre-opened file per object instead of many objects per segment).
@@ -189,6 +189,6 @@ Remaining:
   means `unlink()` reclaims space natively, no compactor needed. The
   two are gated by `--write-tier` until benchmarks decide which ships
   as the default.
-- [RAM write cache](write-cache.md) -- orthogonal: writes to a DashMap
+- [RAM write cache](write-cache.md): orthogonal, writes to a DashMap
   in RAM with peer replication, flushes to whichever lower tier is
   active.

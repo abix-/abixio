@@ -140,7 +140,7 @@ elements for each version of each object matching the prefix.
 ## Interoperability
 
 Tested with:
-- `mc version enable/suspend/info` -- MinIO client versioning commands
-- `mc ls --versions` -- list object versions
-- `mc rm --version-id=X` -- delete specific version
-- `aws-sdk-s3` (Rust) -- used by abixio-ui
+- `mc version enable/suspend/info`: MinIO client versioning commands
+- `mc ls --versions`: list object versions
+- `mc rm --version-id=X`: delete specific version
+- `aws-sdk-s3` (Rust): used by abixio-ui

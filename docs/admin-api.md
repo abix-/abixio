@@ -1,7 +1,7 @@
 # Admin API
 
 AbixIO exposes a JSON admin API under the `/_admin/` path prefix. These
-endpoints are not part of the S3 spec -- they provide server health,
+endpoints are not part of the S3 spec. They provide server health,
 disk status, object inspection, heal controls, and cluster control visibility.
 
 All responses are `Content-Type: application/json`. Errors return a JSON
@@ -394,13 +394,13 @@ unsafe cluster state.
 ## Internode Storage RPC
 
 AbixIO exposes internal storage operations under `/_storage/v1/` for internode
-shard reads and writes. These are not user-facing -- they are called by
+shard reads and writes. These are not user-facing; they are called by
 `RemoteVolume` on other nodes.
 
 All requests require:
-- `Authorization: Bearer <jwt>` -- JWT signed with `ABIXIO_SECRET_KEY`
-- `x-abixio-time: <unix_nanos>` -- clock skew detection (rejects >15min drift)
-- `x-abixio-volume-path: <path>` -- target local volume path
+- `Authorization: Bearer <jwt>`: JWT signed with `ABIXIO_SECRET_KEY`
+- `x-abixio-time: <unix_nanos>`: clock skew detection (rejects >15min drift)
+- `x-abixio-volume-path: <path>`: target local volume path
 
 | Endpoint | Method | Purpose |
 |---|---|---|
@@ -430,11 +430,11 @@ See [per-object-ec.md](per-object-ec.md) for the full EC precedence chain
 
 ## Implementation
 
-- `src/admin/handlers.rs` -- `AdminHandler` with dispatch and all endpoint methods
-- `src/admin/types.rs` -- JSON response structs (serde `Serialize`)
-- `src/admin/mod.rs` -- `HealStats` shared state (atomic counters + uptime)
-- `src/storage/storage_server.rs` -- internode storage RPC server
-- `src/storage/remote_volume.rs` -- `RemoteVolume` HTTP client
-- `src/storage/internode_auth.rs` -- JWT sign/validate for internode RPC
-- `tests/admin_integration.rs` -- admin integration tests
-- `tests/e2e.py` -- end-to-end Python test covering admin endpoints
+- `src/admin/handlers.rs`: `AdminHandler` with dispatch and all endpoint methods
+- `src/admin/types.rs`: JSON response structs (serde `Serialize`)
+- `src/admin/mod.rs`: `HealStats` shared state (atomic counters + uptime)
+- `src/storage/storage_server.rs`: internode storage RPC server
+- `src/storage/remote_volume.rs`: `RemoteVolume` HTTP client
+- `src/storage/internode_auth.rs`: JWT sign/validate for internode RPC
+- `tests/admin_integration.rs`: admin integration tests
+- `tests/e2e.py`: end-to-end Python test covering admin endpoints

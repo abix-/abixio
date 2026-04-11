@@ -20,14 +20,14 @@ aligns with s3s's async S3 trait.
 
 everything that makes abixio abixio:
 
-- `src/storage/` -- Backend trait, VolumePool, LocalVolume, RemoteVolume,
+- `src/storage/`: Backend trait, VolumePool, LocalVolume, RemoteVolume,
   erasure encode/decode, metadata, pathing, volume format, bitrot
-- `src/cluster/` -- ClusterManager, identity, placement, topology
-- `src/heal/` -- MRF queue, scanner, worker
-- `src/multipart/` -- multipart upload state and assembly
+- `src/cluster/`: ClusterManager, identity, placement, topology
+- `src/heal/`: MRF queue, scanner, worker
+- `src/multipart/`: multipart upload state and assembly
 - `src/config.rs`, `src/query.rs`
-- `src/admin/` -- admin handlers and types (wired through s3s S3Route)
-- `src/storage/storage_server.rs` -- internode RPC (wired through s3s S3Route)
+- `src/admin/`: admin handlers and types (wired through s3s S3Route)
+- `src/storage/storage_server.rs`: internode RPC (wired through s3s S3Route)
 
 ## what gets replaced
 
@@ -62,27 +62,27 @@ HTTP request (hyper)
     |
     v
 s3s::S3Service
-    |-- S3Route: StorageRoute   (_storage/v1/* -> internode RPC, JWT auth)
-    |-- S3Route: AdminRoute     (_admin/* -> admin handlers)
-    |-- S3Auth: AbixioAuth      (delegates to s3s SimpleAuth)
-    |-- S3Access: AbixioAccess  (cluster fencing check)
+    |- S3Route: StorageRoute   (_storage/v1/* -> internode RPC, JWT auth)
+    |- S3Route: AdminRoute     (_admin/* -> admin handlers)
+    |- S3Auth: AbixioAuth      (delegates to s3s SimpleAuth)
+    |- S3Access: AbixioAccess  (cluster fencing check)
     |
     v
 s3s::S3 trait  (typed DTOs in, typed DTOs out)
     |
     v
 impl S3 for AbixioStore  (glue layer, ~800-1000 lines)
-    |-- put_object: extract body + metadata from PutObjectInput, call VolumePool
-    |-- get_object: call VolumePool, build GetObjectOutput with body
-    |-- ... (41 operations, each a thin async adapter)
+    |- put_object: extract body + metadata from PutObjectInput, call VolumePool
+    |- get_object: call VolumePool, build GetObjectOutput with body
+    |- ... (41 operations, each a thin async adapter)
     |
     v
 VolumePool (async Store trait)
     |
     v
 Backend trait (async)
-    |-- LocalVolume (tokio::fs)
-    |-- RemoteVolume (reqwest async)
+    |- LocalVolume (tokio::fs)
+    |- RemoteVolume (reqwest async)
 ```
 
 ## per-object EC through s3s
@@ -93,7 +93,7 @@ arrives with the `x-amz-meta-` prefix stripped per AWS spec. no conflict.
 
 ## cluster fencing through s3s
 
-`impl S3Access for AbixioAccess` -- the `check()` method is called before
+`impl S3Access for AbixioAccess`: the `check()` method is called before
 every operation. return `Err(s3_error!(ServiceUnavailable))` when the cluster
 is fenced. clean.
 
@@ -118,7 +118,7 @@ both keep their own auth (admin uses S3 auth, internode uses JWT).
 
 ## implementation phases
 
-### phase 1: async storage layer -- DONE
+### phase 1: async storage layer (done)
 
 make Backend and Store async. this is the foundation everything else builds on.
 
@@ -131,15 +131,15 @@ completed 2026-04-06. all 125 tests passing. key changes:
 - heal worker: async heal_object, removed spawn_blocking
 - all tests: `#[test]` -> `#[tokio::test]`
 
-### phase 2: s3s protocol layer -- DONE
+### phase 2: s3s protocol layer (done)
 
 replaced hand-rolled S3 protocol code with s3s v0.13.
 
 completed 2026-04-06. deleted 3,137 lines, added 1,243 lines. key files:
-- `src/s3_service.rs` -- `impl S3 for AbixioS3` (31 operations, 1086 lines)
-- `src/s3_auth.rs` -- `impl S3Auth for AbixioAuth` (single credential pair)
-- `src/s3_access.rs` -- `impl S3Access for AbixioAccess` (cluster fencing)
-- `src/s3_route.rs` -- `AbixioDispatch` (admin + storage RPC bypass, s3s passthrough)
+- `src/s3_service.rs`: `impl S3 for AbixioS3` (31 operations, 1086 lines)
+- `src/s3_auth.rs`: `impl S3Auth for AbixioAuth` (single credential pair)
+- `src/s3_access.rs`: `impl S3Access for AbixioAccess` (cluster fencing)
+- `src/s3_route.rs`: `AbixioDispatch` (admin + storage RPC bypass, s3s passthrough)
 - deleted: `src/s3/` (handlers.rs, auth.rs, errors.rs, response.rs, router.rs, mod.rs)
 
 design decisions:
@@ -157,7 +157,7 @@ design decisions:
 - FTT validation (2): metadata passthrough not propagating errors
 - cluster fencing in tests (2): test harness wiring
 
-### phase 3: cleanup -- DONE
+### phase 3: cleanup (done)
 
 completed 2026-04-06:
 - removed `pub mod s3` from lib.rs

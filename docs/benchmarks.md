@@ -36,7 +36,7 @@ comparison is not valid. These rules ensure parity:
 
 ### Test infrastructure
 
-All benchmarks run through `abixio-ui/tests/bench.rs` -- a Rust test harness
+All benchmarks run through `abixio-ui/tests/bench.rs`, a Rust test harness
 that starts real server processes, creates temp dirs, and benchmarks through
 real S3 clients. No synthetic tests, no mocked storage. Real servers, real
 clients, real data.
@@ -58,17 +58,17 @@ transparency.
 
 All servers run single-node, 1 disk, NTFS tmpdir, same machine (Windows 10).
 
-- **AbixIO** -- Rust S3 server with RAM write cache, log-structured storage, mmap GET
-- **RustFS** 1.0.0-alpha.90 -- Rust S3 server (MinIO-compatible)
-- **MinIO** RELEASE.2026-04-07 -- Go S3 server (reference implementation)
+- **AbixIO**: Rust S3 server with RAM write cache, log-structured storage, mmap GET
+- **RustFS** 1.0.0-alpha.90: Rust S3 server (MinIO-compatible)
+- **MinIO** RELEASE.2026-04-07: Go S3 server (reference implementation)
 
 All binaries must be release builds. Debug builds are 5-7x slower.
 
 ### What we report
 
-- **obj/sec** -- operations per second (primary metric for small objects)
-- **MB/s** -- throughput (primary metric for large objects)
-- **latency** -- per-request time in microseconds or milliseconds
+- **obj/sec**: operations per second (primary metric for small objects)
+- **MB/s**: throughput (primary metric for large objects)
+- **latency**: per-request time in microseconds or milliseconds
 
 ### Known limitations
 
@@ -101,10 +101,10 @@ Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --noca
 
 All clients now use the same I/O model: read PUT payload from disk, write
 GET output to disk, 3 PUT + 3 GET warmup before timing. CLI process
-overhead (~41ms mc, ~111ms rclone) is reported but NOT subtracted --
+overhead (~41ms mc, ~111ms rclone) is reported but NOT subtracted;
 numbers show real end-to-end time including process spawn.
 
-### 4KB -- small object performance (obj/sec)
+### 4KB: small object performance (obj/sec)
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET | rclone PUT | rclone GET |
 |--------|---------------|---------------|--------|--------|------------|------------|
@@ -116,9 +116,9 @@ numbers show real end-to-end time including process spawn.
 log-structured storage. 4.4x faster PUT than MinIO through aws-sdk-s3.
 GET leads at 1059 obj/s vs MinIO 842 (+26%). CLI tools (mc ~22 obj/s,
 rclone ~9 obj/s) are dominated by process spawn overhead (~41ms mc,
-~111ms rclone) -- these numbers measure startup, not S3 performance.
+~111ms rclone). These numbers measure startup, not S3 performance.
 
-### 10MB -- medium object throughput (MB/s)
+### 10MB: medium object throughput (MB/s)
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET | rclone PUT | rclone GET |
 |--------|---------------|---------------|--------|--------|------------|------------|
@@ -129,9 +129,9 @@ rclone ~9 obj/s) are dominated by process spawn overhead (~41ms mc,
 AbixIO leads PUT (347 MB/s vs RustFS 292, MinIO 181). GET through
 aws-sdk-s3 is similar across servers (~200 MB/s) because disk write
 speed equalizes the results. rclone GET shows ~86 MB/s for all servers
-at 10MB -- process overhead still significant at this size.
+at 10MB. Process overhead still significant at this size.
 
-### 1GB -- large object throughput (MB/s)
+### 1GB: large object throughput (MB/s)
 
 | Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET | rclone PUT | rclone GET |
 |--------|---------------|---------------|--------|--------|------------|------------|
@@ -139,16 +139,17 @@ at 10MB -- process overhead still significant at this size.
 | RustFS | 344 | 262 | **560** | **607** | 168 | * |
 | MinIO | 356 | 243 | **616** | **832** | 235 | * |
 
-`*` rclone 1GB GET numbers excluded -- rclone caches/skips repeated
+`*` rclone 1GB GET numbers excluded because rclone caches/skips repeated
 downloads to the same file, producing unreliable measurements.
 
 **AbixIO has the fastest 1GB PUT** through aws-sdk-s3 (465 MB/s vs MinIO
 356, RustFS 344) thanks to xxhash64 ETag (skips MD5 when client doesn't
 send Content-MD5). 1GB GET through aws-sdk-s3 is ~245 MB/s for ALL
-servers -- disk write speed is the bottleneck when writing GET output to
-file, proving the test is fair. mc GET shows the real network throughput
-difference: AbixIO 352, MinIO 832 -- the mc client (Go binary) transfers
-faster to Go servers (MinIO) due to shared HTTP stack optimizations.
+servers because disk write speed is the bottleneck when writing GET
+output to file, proving the test is fair. mc GET shows the real network
+throughput difference: AbixIO 352, MinIO 832. The mc client (Go binary)
+transfers faster to Go servers (MinIO) due to shared HTTP stack
+optimizations.
 
 ---
 
@@ -211,8 +212,6 @@ Debug header `x-debug-s3s-ms` shows actual server processing time
 The server processes 4KB GET in 80 microseconds. The remaining latency
 in benchmarks is client overhead (SigV4 signing, HTTP, connection management).
 
----
-
 ## Internal per-layer benchmarks
 
 Tests each layer of the storage stack independently (no HTTP client).
@@ -220,6 +219,128 @@ Run with: `cd abixio && cargo test --release --test layer_bench -- --ignored ben
 
 These measure the storage engine directly and are used for optimization
 work. See [layer-optimization.md](layer-optimization.md) for details.
+
+---
+
+## Write tier comparison (Phase 8 matrix, end-to-end HTTP)
+
+`bench_pool_l4_tier_matrix` spawns a fresh abixio server per
+configuration and drives it through the full hyper + s3s + VolumePool
+stack via reqwest. 1 disk, ftt=0, 127.0.0.1 loopback, sequential,
+1000 iters at 4KB, 500 at 64KB, 200 at 1MB, 50 at 10MB, 10 at 100MB.
+
+Three tiers compared:
+- **file**: baseline, no log store, no write pool. Every PUT does
+  `mkdir + File::create + write + close` for both shard.dat and
+  meta.json.
+- **log**: log-structured store enabled. Small PUTs (<=64KB) append
+  to a pre-opened segment file. Large PUTs fall through to the file
+  tier.
+- **pool**: pre-opened temp file pool enabled. Small PUTs pop a
+  slot, write data + meta concurrently, and hand off rename to an
+  async worker. Large PUTs also use the pool.
+
+Run with:
+```
+cargo test --release --test layer_bench -- --ignored --nocapture \
+    bench_pool_l4_tier_matrix
+```
+
+### PUT p50 latency (Phase 8.7 numbers, after multi-worker + raised defaults)
+
+| Size | file | log | pool | pool vs file | best tier |
+|---|---|---|---|---|---|
+| 4KB | 935us | **265us** | 454us | **2.1x** | **log** |
+| 64KB | 1330us | **385us** | 586us | **2.3x** | **log** |
+| 1MB | 4360us | 4057us | **3797us** | 1.1x | **pool** |
+| 10MB | 28974us | 31744us | 33837us | 0.9x | **file** |
+| 100MB | 149228us | 164974us | 165671us | 0.9x | **file** |
+
+### GET p50 latency
+
+| Size | file | log | pool | best tier |
+|---|---|---|---|---|
+| 4KB | 689us | **173us** | 708us | **log** |
+| 64KB | 949us | **218us** | 917us | **log** |
+| 1MB | 1929us | 1776us | **1882us** | log |
+| 10MB | 16840us | **10032us** | 10100us | log |
+| 100MB | 100848us | **97709us** | 98955us | log |
+
+### Interpretation
+
+**Log store wins small objects (<=64KB).** PUT p50 is 3-4x better
+than file tier and 1.7-1.5x better than the pool. GET p50 is 4x
+better than file tier and 4x better than the pool. The log store's
+HashMap-indexed reads from an always-mmap'd segment are
+fundamentally faster than the pool's `File::open + mmap` path for
+small objects.
+
+**Pool wins mid-range (1MB to 10MB).** At 1MB the pool's pre-opened
+file + concurrent write trick beats the file tier by 1.1x. The
+log store falls through to the file tier at >=64KB and stops
+helping. The pool's sweet spot is exactly this mid-range window.
+
+**File tier wins large objects (>10MB).** At 100MB the file tier's
+direct-write path beats the pool and the log store because the pool
+pays an extra NTFS rename at the end of each write. At those sizes
+the rename alone adds 60-100ms.
+
+**The three-tier handoff** that production should ship:
+- `<=64KB`: log store
+- `64KB to 10MB`: pool
+- `>10MB`: file tier
+
+The `--write-tier` CLI flag (still pending) would expose this as
+a runtime configuration knob. Today the tier is picked by the
+volume setup code.
+
+---
+
+## Stack breakdown (Phase 8.5: where does the 4KB time go)
+
+`bench_pool_l4_5_stack_breakdown` attributes the 4KB PUT latency to
+specific layers via progressive stages. Ten stages, each a fresh
+server that adds one layer:
+
+| Stage | config | p50 | what it adds |
+|---|---|---|---|
+| A | bare hyper | **94us** | HTTP floor |
+| B | hyper + direct write_shard | 641us | body read + file-tier write_shard |
+| C | hyper + s3s + AbixioS3 + null backend | 126us | +32us s3s + abixio dispatch |
+| D | file_tier (full stack) | 810us | +684us real file-tier storage work |
+| E | pool_tier (depth 32, ch 256 [old default]) | 737us | starved + channel blocked |
+| E* | pool_tier (depth 100) | 497us | starved less |
+| E'' | pool_tier (depth 1024) | 1236us | channel fully blocked |
+| E' | pool_tier_drained(32) | 322us | drain avoids both chokes |
+| E+ | pool_tier (depth 32, ch 100k) | 561us | unbounded ch, still starves |
+| **E#** | **pool_tier (depth 1024, ch 100k)** | **318us** | **pool true fast path** |
+
+Run with:
+```
+cargo test --release --test layer_bench -- --ignored --nocapture \
+    bench_pool_l4_5_stack_breakdown
+```
+
+**Key finding:** the HTTP stack (reqwest + TCP + hyper) contributes
+only 94us at 4KB. s3s + AbixioS3 + VolumePool dispatch adds only
+32us on top. The file tier's ~900us is real NTFS storage work, not
+HTTP overhead. The pool's true fast path at HTTP layer is ~318us,
+not 11us (that number was a storage-layer tight-loop measurement
+on an idle tokio runtime and does not translate to a live runtime).
+
+Phase 8.5 also discovered that the **default pool config was
+broken for sustained load**: depth 32 starved after ~30ms and
+channel 256 backpressured tx.send once the worker fell behind.
+Phase 8.7 fixed both by raising channel to 10k and adding a
+second worker (round-robin dispatch), which is what made the
+Phase 8 matrix above land on the current pool 4KB number of
+454us instead of the original Phase 8 value of 942us.
+
+Raw Phase 8.7 output: `bench-results/phase8.7-tier-matrix.txt`.
+Raw Phase 8.5 output: `bench-results/phase8.5-stack-breakdown-v5.txt`.
+
+See [write-pool.md](write-pool.md) for the full optimization
+journey including every phase of the write pool design.
 
 ---
 

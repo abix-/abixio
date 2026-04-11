@@ -2,8 +2,13 @@
 
 Rust S3-compatible object storage where each object chooses its own fault tolerance. Mix any OS, any disks, any nodes, one pool.
 
-> **Home lab use only.** Early development. Do not store business data on this.
-> For production, see [RustFS](https://github.com/rustfs/rustfs) or [SeaweedFS](https://github.com/seaweedfs/seaweedfs).
+> **Experimental. Not recommended for use.**
+>
+> This is a personal research project in active development. The storage layer, write path, on-disk format, and API surface are all changing regularly. Expect breaking changes between commits. Expect data loss. There are no releases, no stable format, no upgrade path, and no support.
+>
+> Do not store anything you care about on this. Not business data, not personal data, not a home lab backup. If you need S3-compatible storage for real use, look at [RustFS](https://github.com/rustfs/rustfs), [SeaweedFS](https://github.com/seaweedfs/seaweedfs), or [MinIO](https://github.com/minio/minio).
+>
+> This repo is useful if you want to read the code, run the benchmarks, or follow the design notes in `docs/`. It is not useful as a place to put files.
 
 ### Quick start
 
@@ -57,11 +62,11 @@ Same `--nodes` on every node. Identity resolves automatically. You now have 5 vo
 
 ### Docs
 
-[Architecture](docs/architecture.md) -- [Storage layout](docs/storage-layout.md) -- [Per-object EC](docs/per-object-ec.md) -- [Cluster](docs/cluster.md) -- [Admin API](docs/admin-api.md) -- [Healing](docs/healing.md) -- [S3 compliance](docs/s3-compliance.md) -- [Comparison](docs/comparison.md) -- [Benchmarks](docs/benchmarks.md) -- [Layer optimization](docs/layer-optimization.md) -- [Log-structured storage](docs/write-log.md)
+[Architecture](docs/architecture.md) | [Storage layout](docs/storage-layout.md) | [Per-object EC](docs/per-object-ec.md) | [Cluster](docs/cluster.md) | [Admin API](docs/admin-api.md) | [Healing](docs/healing.md) | [S3 compliance](docs/s3-compliance.md) | [Comparison](docs/comparison.md) | [Benchmarks](docs/benchmarks.md) | [Layer optimization](docs/layer-optimization.md) | [Log-structured storage](docs/write-log.md)
 
 ### Related
 
-[abixio-ui](https://github.com/abix-/abixio-ui) -- desktop S3 manager and AbixIO admin UI
+[abixio-ui](https://github.com/abix-/abixio-ui): desktop S3 manager and AbixIO admin UI
 
 ### License
 

@@ -70,7 +70,7 @@ adds a real S3 client with auth.
 
 blake3 uses SIMD (AVX2/SSE4.1), 4.3 GB/s is near hardware ceiling. MD5 at
 703 MB/s is near theoretical max for single-threaded MD5. Both are computed
-inline during the streaming encode path -- their cost overlaps with I/O for
+inline during the streaming encode path, so their cost overlaps with I/O for
 large objects (10MB+).
 
 MD5 is required by S3 (ETag = MD5 of body) when the client sends
@@ -81,7 +81,7 @@ MD5 is required by S3 (ETag = MD5 of body) when the client sends
 **Before**: MD5 computed inline on every PUT regardless of client headers.
 703 MB/s throughput = ~30% of L4 PUT time for 1GB objects.
 
-**After**: when `input.content_md5` is `None` (the common case -- aws-sdk-s3
+**After**: when `input.content_md5` is `None` (the common case; aws-sdk-s3
 with `disable_payload_signing()`, mc, rclone all skip it), set
 `PutOptions.skip_md5 = true`. The encode path uses xxhash64 (~10+ GB/s)
 instead of MD5 for the ETag. Format: `{xxh64:016x}{size:016x}` (32 hex
@@ -92,17 +92,17 @@ PUT improved from 320 to **441 MB/s (+38%)**, now fastest of all three
 servers.
 
 Files changed:
-- `src/storage/metadata.rs` -- added `skip_md5: bool` to `PutOptions`
-- `src/storage/erasure_encode.rs` -- conditional MD5/xxhash in streaming path
-- `src/storage/volume_pool.rs` -- conditional MD5/xxhash in small-object path
-- `src/s3_service.rs` -- set `skip_md5` based on `content_md5` header
+- `src/storage/metadata.rs`: added `skip_md5: bool` to `PutOptions`
+- `src/storage/erasure_encode.rs`: conditional MD5/xxhash in streaming path
+- `src/storage/volume_pool.rs`: conditional MD5/xxhash in small-object path
+- `src/s3_service.rs`: set `skip_md5` based on `content_md5` header
 
 ### MD5 assembly research
 
 Investigated 2026-04-09 for cases where MD5 IS required:
 
 - **`md-5` crate `asm` feature**: ships x86_64 assembly via `md5-asm` crate.
-  **Fails on MSVC** -- the `.S` files use GAS syntax which `cl.exe` cannot
+  **Fails on MSVC.** The `.S` files use GAS syntax which `cl.exe` cannot
   compile. Would work on Linux/macOS or with `x86_64-pc-windows-gnu` target.
 - **Go's `crypto/md5`** (what MinIO uses): has hand-written amd64 assembly
   that runs automatically.
@@ -146,7 +146,7 @@ Could use ISA-L bindings for ~2x more, but pointless when L4 is the bottleneck.
 
 ### Analysis
 
-These are the ceiling numbers for L4. Page-cache writes avoid disk sync -- real
+These are the ceiling numbers for L4. Page-cache writes avoid disk sync. Real
 durability requires fsync, which would cut throughput to physical disk speed
 (SATA SSD ~500 MB/s, NVMe ~2-3 GB/s).
 
@@ -206,7 +206,7 @@ Three approaches were tested to parallelize shard writes:
 **Root cause**: all tmpdir shard files are on the same physical NTFS volume.
 There is no actual I/O parallelism to exploit. The OS page cache serializes
 writes to the same device. Parallel shard writes would only help when shards
-map to different physical disks -- which the single-machine benchmark doesn't
+map to different physical disks, which the single-machine benchmark doesn't
 test.
 
 **Decision**: sequential writes are correct for same-disk configurations.
@@ -238,10 +238,10 @@ Key implementation details:
 **Result**: +9-16% throughput at L4, but the bigger win is at L6 (see below).
 
 Files changed:
-- `src/storage/erasure_decode.rs` -- `read_and_decode_stream()`
-- `src/storage/mod.rs` -- `Backend::read_shard_stream()`, `Store::get_object_stream()`
-- `src/storage/local_volume.rs` -- native file-backed `read_shard_stream()`
-- `src/storage/volume_pool.rs` -- `VolumePool::get_object_stream()`
+- `src/storage/erasure_decode.rs`: `read_and_decode_stream()`
+- `src/storage/mod.rs`: `Backend::read_shard_stream()`, `Store::get_object_stream()`
+- `src/storage/local_volume.rs`: native file-backed `read_shard_stream()`
+- `src/storage/volume_pool.rs`: `VolumePool::get_object_stream()`
 
 ### GET optimization: mmap fast path (done)
 
@@ -251,29 +251,29 @@ an mpsc channel (1024 chunks for 1GB). RustFS uses `tokio::io::duplex` + mmap.
 **After**: two-case approach via `memmap2`:
 
 1. **1+0 (no EC)**: mmap the shard file, `Bytes::from_owner(mmap)` gives a
-   ref-counted handle to the entire file. Yield 4MB `.slice()` chunks --
-   zero-copy, zero allocation, no RS decode, no spawned task.
+   ref-counted handle to the entire file. Yield 4MB `.slice()` chunks.
+   Zero-copy, zero allocation, no RS decode, no spawned task.
 
 2. **EC (N+M)**: mmap all shard files. Spawned task slices directly into mmap
    regions (no read syscall), RS-decodes 4MB blocks (4x fewer iterations than
    1MB), yields decoded data through mpsc channel.
 
-Both paths use `Backend::mmap_shard()` which returns `MmapOrVec` -- local
+Both paths use `Backend::mmap_shard()` which returns `MmapOrVec`. Local
 volumes return a real mmap, remote volumes fall back to buffered read.
 
 **Result**:
 - L4 GET (1 disk, mmap): 19,098 MB/s at 10MB (page cache), effectively instant
 - L6 GET (1 disk): 809 MB/s at 10MB, **1048 MB/s at 1GB** (was 833)
-- curl GET (no auth): **1220 MB/s at 1GB** -- faster than MinIO through mc
-- EC GET (4 disk): **1048 MB/s (10MB), 1236 MB/s (1GB)** -- zero-alloc fast
+- curl GET (no auth): **1220 MB/s at 1GB**, faster than MinIO through mc
+- EC GET (4 disk): **1048 MB/s (10MB), 1236 MB/s (1GB)**, zero-alloc fast
   path slices from mmap when all shards healthy. +35% over pre-mmap baseline
 
 Files changed:
-- `Cargo.toml` -- added `memmap2`
-- `src/storage/mod.rs` -- `MmapOrVec` type, `Backend::mmap_shard()`
-- `src/storage/local_volume.rs` -- mmap-backed `mmap_shard()`
-- `src/storage/erasure_decode.rs` -- mmap-based `read_and_decode_stream()`, 4MB blocks
-- `src/storage/volume_pool.rs` -- 1+0 mmap fast path in `get_object_stream()`
+- `Cargo.toml`: added `memmap2`
+- `src/storage/mod.rs`: `MmapOrVec` type, `Backend::mmap_shard()`
+- `src/storage/local_volume.rs`: mmap-backed `mmap_shard()`
+- `src/storage/erasure_decode.rs`: mmap-based `read_and_decode_stream()`, 4MB blocks
+- `src/storage/volume_pool.rs`: 1+0 mmap fast path in `get_object_stream()`
 
 ---
 
@@ -287,7 +287,7 @@ Files changed:
 
 ### Analysis
 
-hyper 1.x with http-body-util on localhost. 762 MB/s is reasonable -- limited
+hyper 1.x with http-body-util on localhost. 762 MB/s is reasonable, limited
 by memcpy + TCP stack overhead. The benchmark uses `data.clone()` on each PUT
 which adds a copy; the real S3 path streams the body without copying.
 
@@ -305,7 +305,7 @@ which adds a copy; the real S3 path streams the body without copying.
 |-----------|------|-----|
 | S3 PUT | 272 MB/s | 310 MB/s |
 | S3 GET (1 disk, mmap) | 809 MB/s | 1048 MB/s |
-| curl GET (1 disk, no auth) | -- | 1220 MB/s |
+| curl GET (1 disk, no auth) | n/a | 1220 MB/s |
 
 L6 runs in-process with `no_auth: true` and raw reqwest (no SigV4).
 
@@ -327,12 +327,12 @@ XML serialization, and service dispatch. This is inherent to the protocol
 layer and not easily reducible without replacing s3s.
 
 Files changed:
-- `src/s3_service.rs` -- `cached_versioning_config()`, `invalidate_versioning_cache()`
+- `src/s3_service.rs`: `cached_versioning_config()`, `invalidate_versioning_cache()`
 
 ### GET optimization: streaming response (done)
 
 **Before**: `get_object()` called `Store::get_object()` which returned
-`(Vec<u8>, ObjectInfo)` -- the entire object buffered in memory. Then it
+`(Vec<u8>, ObjectInfo)`, the entire object buffered in memory. Then it
 wrapped the data as a single-chunk `StreamingBlob::wrap(once(...))`. For
 1GB objects, this meant 1GB allocated before the first response byte was sent.
 
@@ -343,7 +343,7 @@ first 1MB block, not after decoding the entire object.
 
 Key implementation detail: s3s `StreamingBlob::wrap()` requires `Send + Sync`.
 The boxed stream from `get_object_stream()` is `Send` but not `Sync`. A
-`SyncStream` newtype wrapper adds `Sync` via `unsafe impl` -- this is safe
+`SyncStream` newtype wrapper adds `Sync` via `unsafe impl`. This is safe
 because streams are only polled from one task at a time.
 
 Range requests and versioned GETs still use the buffered path because they
@@ -355,7 +355,7 @@ minority of GET traffic.
 452 to 833 MB/s at 1GB (+84%).
 
 Files changed:
-- `src/s3_service.rs` -- streaming GET path, `SyncStream`, `get_object_buffered()`
+- `src/s3_service.rs`: streaming GET path, `SyncStream`, `get_object_buffered()`
 
 ---
 
@@ -369,13 +369,13 @@ external matrix benchmarks.
 | Operation | L6 (no auth, reqwest) | L6A (auth, reqwest) | L7 (auth, aws-sdk-s3) |
 |---|---|---|---|
 | PUT (before skip-md5) | 344 MB/s | 337 MB/s | 380 MB/s |
-| PUT (after skip-md5) | -- | -- | **695 MB/s** |
-| GET | 535 MB/s | -- | 696 MB/s |
+| PUT (after skip-md5) | n/a | n/a | **695 MB/s** |
+| GET | 535 MB/s | n/a | 696 MB/s |
 
 ### Analysis
 
-L7 runs in-process with auth enabled and the full aws-sdk-s3 client --
-same path as real users. aws-sdk-s3 does not send `Content-MD5`, so
+L7 runs in-process with auth enabled and the full aws-sdk-s3 client, the
+same path real users take. aws-sdk-s3 does not send `Content-MD5`, so
 `skip_md5` is active and xxhash64 is used for the ETag.
 
 The matrix benchmark previously showed 52 MB/s because it was running an
@@ -389,7 +389,7 @@ aws-sdk-s3 client overhead is negligible (L6 vs L7: 344 vs 380 MB/s pre-skip-md5
 
 ## Layer-to-layer gaps
 
-### 1GB GET -- full layer breakdown (2026-04-09, after chunked mmap)
+### 1GB GET: full layer breakdown (2026-04-09, after chunked mmap)
 
 | Layer | 1GB GET MB/s | What it measures |
 |-------|-------------|-----------------|
@@ -402,7 +402,7 @@ aws-sdk-s3 client overhead is negligible (L6 vs L7: 344 vs 380 MB/s pre-skip-md5
 
 Key findings:
 
-1. **s3s adds near-zero overhead to GET** (L5 724 vs L6 714 -- within noise).
+1. **s3s adds near-zero overhead to GET** (L5 724 vs L6 714, within noise).
    The s3s response path is efficient. Prior attribution of GET bottleneck to
    s3s was incorrect.
 
@@ -418,7 +418,7 @@ Key findings:
    chunked yield is working, s3s adds nothing. The remaining gap vs MinIO is
    hyper's TCP write performance on Windows vs Go's `net/http`.
 
-### 1GB PUT -- full layer breakdown
+### 1GB PUT: full layer breakdown
 
 | Layer | 1GB PUT MB/s | What it measures |
 |-------|-------------|-----------------|
@@ -435,9 +435,9 @@ Key findings:
 | L7 PUT -> Matrix PUT | 695 vs 498 MB/s | 1.4x | process boundary (improved from 1.5x with TCP_NODELAY) |
 | L7 GET -> Matrix GET | 920 vs 686 MB/s | 1.3x | process boundary (improved from 1.5x with TCP_NODELAY) |
 | Matrix GET: AbixIO vs MinIO | 686 vs 757 MB/s | 0.91x | 9% gap, down from 24% before TCP_NODELAY |
-| 10MB GET: AbixIO vs MinIO | 324 vs 748 MB/s | 0.43x | **2.3x gap** -- per-response overhead in hyper vs Go |
+| 10MB GET: AbixIO vs MinIO | 324 vs 748 MB/s | 0.43x | **2.3x gap** from per-response overhead in hyper vs Go |
 | L4 PUT vs L3 write | 510 vs 1625 MB/s | 3.2x | blake3 + xxhash + RS + metadata |
-| EC GET vs 1+0 GET | 1236 vs page cache | -- | RS decode (inherent cost of EC) |
+| EC GET vs 1+0 GET | 1236 vs page cache | n/a | RS decode (inherent cost of EC) |
 
 ### TCP_NODELAY analysis (2026-04-09)
 
@@ -472,10 +472,10 @@ Key findings:
 
 1. **Raw TCP is SLOWER than hyper** (327 vs 510 MB/s at 10MB). Naive
    `write_all` on a raw socket is worse than hyper's optimized write path.
-   hyper is NOT fundamentally slower -- its default config just isn't
+   hyper is NOT fundamentally slower; its default config just isn't
    optimized for large bodies.
 
-2. **`all_opts` hits 726 MB/s at 10MB** -- within 6% of MinIO's 685.
+2. **`all_opts` hits 726 MB/s at 10MB**, within 6% of MinIO's 685.
    The combination of `writev(true)` + `max_buf_size(4MB)` + chunked
    StreamBody nearly closes the gap at L5 level.
 
@@ -501,7 +501,7 @@ overhead between L5X and the full stack.
 | 4 | mmap GET (1+0 fast path) | L4+L6 | **L6 GET 1GB: 833->1048 MB/s (+26%)**. curl: 1220 MB/s | done |
 | 5 | mmap GET (EC, 4MB blocks) | L4 | 4-disk GET 675-803 MB/s (regressed from mmap->Vec copy) | superseded by #6 |
 | 6 | Zero-alloc EC GET fast path | L4 | **EC GET +35%** (919->1236 MB/s at 1GB). Slices from mmap, no Vec alloc | done |
-| 7 | Debug binary fix | -- | **Matrix PUT 52->320 MB/s** (was benchmarking debug build) | done |
+| 7 | Debug binary fix | n/a | **Matrix PUT 52->320 MB/s** (was benchmarking debug build) | done |
 | 8 | Pipeline experiments | L4 | Double-buffer -96%, channel -96%, 4MB chunks -11%. All worse | reverted |
 | 9 | Skip MD5 (xxhash64 ETag) | L1+L4+L7 | **L7 PUT +83%** (380->695 MB/s). Matrix PUT +38% (320->441). Fastest PUT at all sizes | done |
 | 10 | Chunked mmap GET (4MB slices) | L4+L7 | **Matrix GET +25%** (484->604 MB/s). Zero-copy Bytes::slice | done |
@@ -509,7 +509,7 @@ overhead between L5X and the full stack.
 | 12 | ChunkedBytes GET (hybrid) | L6+L7 | **10MB GET +36%** (324->440 MB/s). Collect <=64MB, stream >64MB. Eliminates SyncStream+StreamWrapper chain | done |
 | 13 | hyper writev + max_buf_size | L5+ | **1GB GET +15%** (584->674). L5X shows hyper can match MinIO with correct config | done |
 
-### Before and after (L7, full client path -- what users see)
+### Before and after (L7, full client path, what users see)
 
 ```
 Operation          Before          After           Change
@@ -518,7 +518,7 @@ PUT 1GB            380 MB/s        695 MB/s        +83%    (skip MD5)
 GET 1GB            752 MB/s        880 MB/s        +17%    (chunked mmap)
 ```
 
-### Before and after (matrix, external benchmark -- cumulative)
+### Before and after (matrix, external benchmark, cumulative)
 
 ```
 Operation          Start           Current         Change
@@ -543,7 +543,7 @@ PUT 10MB           214 MB/s        272 MB/s        +27%    (versioning cache)
 PUT 1GB            305 MB/s        310 MB/s        ~same
 GET 10MB           365 MB/s        809 MB/s        +122%   (streaming + mmap)
 GET 1GB            452 MB/s        1048 MB/s       +132%   (mmap fast path)
-GET 1GB (curl)     --              1220 MB/s       --      (no mc overhead)
+GET 1GB (curl)     n/a             1220 MB/s       n/a     (no mc overhead)
 ```
 
 ### Before and after (L4, storage pipeline)
@@ -577,7 +577,7 @@ assume 3+1 EC with 1024 encode blocks and 256 decode iterations (4MB each).
 | # | File:line | What | Count | Heap? |
 |---|-----------|------|-------|-------|
 | 1 | volume_pool.rs:307 | `Bytes::from_owner(mmap)` | 1 | ref-counted wrapper, no data copy |
-| 2 | volume_pool.rs:308 | `stream::once(owned)` -- yields entire Bytes | 1 | one yield, one poll_frame, zero slicing |
+| 2 | volume_pool.rs:308 | `stream::once(owned)`, yields entire Bytes | 1 | one yield, one poll_frame, zero slicing |
 | 3 | s3_service.rs:419 | `StreamingBlob::wrap(SyncStream(..))` | 1 | one Box for stream trait object |
 | 4 | s3_service.rs:424-435 | `info.content_type.clone()` etc | ~5 | small strings, once per request |
 
@@ -592,7 +592,7 @@ hyper writes to TCP in kernel-sized chunks. No slicing, no Arc per chunk.
 | 2 | :135 | `meta_clone = good_meta.clone()` | 1 | strings in ObjectMeta |
 | 3 | :137 | `mpsc::channel(4)` | 1 | channel internal buffers |
 | 4 | :146 | `ReedSolomon::new()` | 1 | RS lookup tables |
-| 5 | :158 | `pool.take()` -- **4MB output buffer from pool** | **0 (steady state)** | **done -- BufPool returns on drop** |
+| 5 | :158 | `pool.take()`, **4MB output buffer from pool** | **0 (steady state)** | **done. BufPool returns on drop** |
 | 6 | :174-177 | `extend_from_slice(&mmap[..])` into iter_data | 256 x data_n | copy from mmap (inherent for EC reassembly) but no alloc (writes into #5) |
 | 7 | :218 | `Bytes::from(iter_data)` | 256/GB | takes ownership of #5, no copy |
 
@@ -607,7 +607,7 @@ warmup, buffers circulate without allocation. EC GET 4-disk 1GB: 2105 MB/s.
 |---|-----------|------|-------|-------|
 | 1-7 | | same as healthy | same | same |
 | 8 | :183 | `vec![None; total]` shard slot array | per degraded block | yes |
-| 9 | :188 | `mmap[..].to_vec()` per available shard | per shard per degraded block | **yes -- full shard copy** |
+| 9 | :188 | `mmap[..].to_vec()` per available shard | per shard per degraded block | **yes, full shard copy** |
 | 10 | :200 | `rs.reconstruct()` internal | per degraded block | yes (reconstructs missing shards) |
 
 **Only when shards are missing.** Correctness path, not optimized.
@@ -622,17 +622,17 @@ warmup, buffers circulate without allocation. EC GET 4-disk 1GB: 2105 MB/s.
 | 4 | :118 | `ReedSolomon::new()` | 1 | RS lookup tables |
 | 5 | :131 | `writers: Vec<Box<dyn ShardWriter>>` | 1 | N boxed writers |
 | 6 | :138 | `shard_hashers: Vec<blake3::Hasher>` | 1 | N hashers |
-| 7 | :144-146 | `shard_bufs: Vec<Vec<u8>>` -- **pre-allocated, reused** | 1 | N Vecs with capacity, allocated once |
+| 7 | :144-146 | `shard_bufs: Vec<Vec<u8>>`, **pre-allocated, reused** | 1 | N Vecs with capacity, allocated once |
 | 8 | :149 | `block_buf: Vec::with_capacity(2MB)` | 1 | once, reused across all chunks |
-| 9 | :313 (split_data_into) | `buf.clear()` + `extend_from_slice` + `resize` | 0 | **zero alloc -- reuses #7 capacity** |
-| 10 | :318-320 | parity buf `clear()` + `resize` | 0 | **zero alloc -- reuses #7 capacity** |
+| 9 | :313 (split_data_into) | `buf.clear()` + `extend_from_slice` + `resize` | 0 | **zero alloc, reuses #7 capacity** |
+| 10 | :318-320 | parity buf `clear()` + `resize` | 0 | **zero alloc, reuses #7 capacity** |
 | 11 | :193-195 | `checksums: Vec<String>` from blake3 hex | N shards | finalize path, once |
 | 12 | :206-223 | `ObjectMeta { etag.clone(), .. }` per shard | N shards | finalize path, once per shard |
 | 13 | :255-256 | `MrfEntry { bucket.to_string(), .. }` | 0 or 1 | only on partial write |
 | 14 | :262-263 | `ObjectInfo { bucket.to_string(), .. }` | 1 | return value |
 
 **Data-path allocs per block: 0.** The encode loop (#9, #10) allocates
-nothing -- `split_data_into` and parity zeroing reuse pre-allocated buffers.
+nothing. `split_data_into` and parity zeroing reuse pre-allocated buffers.
 All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).
 
 #### s3_service.rs response/request wrappers
@@ -651,12 +651,12 @@ All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).
 
 | Path | Data-path allocs/GB | Remaining alloc | Can eliminate? |
 |------|---------------------|-----------------|----------------|
-| **1+0 GET** | **0** | -- | done |
-| **EC GET (healthy)** | **0 (steady state)** | 8 warmup allocs, then pool recycles | **done** -- BufPool + PooledBuf + Bytes::from_owner |
+| **1+0 GET** | **0** | none | done |
+| **EC GET (healthy)** | **0 (steady state)** | 8 warmup allocs, then pool recycles | **done**. BufPool + PooledBuf + Bytes::from_owner |
 | **EC GET (degraded)** | ~5400 | Vec per shard for RS reconstruct | no: RS API requires owned buffers |
-| **PUT (per-block loop)** | **0** | -- | done |
+| **PUT (per-block loop)** | **0** | none | done |
 | **PUT (total request)** | ~10 | setup + finalize allocs | no: inherent (metadata, hashers, writers) |
-| **Response wrapper** | **0** | -- | done |
+| **Response wrapper** | **0** | none | done |
 
 ---
 
@@ -681,7 +681,7 @@ AbixIO(log) 1096/1315. Within 20% of fastest.
 No fsync on writes. Page cache serves both read (mmap) and write
 (file.write_all) paths. Same durability model as MinIO/RustFS.
 
-Active segment is mmap'd at creation -- reads see writes immediately via
+Active segment is mmap'd at creation, so reads see writes immediately via
 shared page cache. No sealing needed for reads. One active segment per disk.
 
 **Windows `localhost` warning**: never use `localhost` for benchmarks.
@@ -729,7 +729,7 @@ on size, so the primitive is 3-4 orders of magnitude faster than what
 it needs to be.
 
 The p50/p99/p999 percentiles all snap to exactly 100ns, which is the
-`Instant::now()` resolution on this hardware -- the operation is
+`Instant::now()` resolution on this hardware. The operation is
 genuinely faster than the timer can measure individually.
 
 `crossbeam_queue::ArrayQueue` is the right choice. No reason to revisit
@@ -740,7 +740,7 @@ Output: `bench-results/phase1-pool-primitive.txt`
 Run: `k3sc cargo-lock test --release --test layer_bench -- --ignored
 --nocapture bench_pool_l0_primitive`
 
-### Next: Phase 2 (slot writes with real I/O) -- DONE, see Pool L1 below
+### Next: Phase 2 (slot writes with real I/O). Done, see Pool L1 below
 
 ---
 
@@ -788,7 +788,7 @@ at every size.
 | 1MB+ | tied | tied | noise |
 
 **SHIP as default for all sizes.** Measured win is way bigger than
-predicted -- the overlap of tokio blocking-pool dispatch helps more
+predicted. The overlap of tokio blocking-pool dispatch helps more
 than just saving the meta syscall.
 
 ### Optimization #2 (compact JSON)
@@ -800,7 +800,7 @@ bytes vs 597 bytes pretty, ~35% smaller on disk.
 **SHIP for the disk-size win.** No measurable speed improvement on
 this workload, but the disk savings are free. Open question: switching
 to a faster JSON crate (simd-json, sonic-rs) might unlock real speed
-wins -- queued as Phase 2.5 measurement.
+wins. Queued as Phase 2.5 measurement.
 
 ### Optimization #3 (sync `std::fs::File::write_all` for small payloads)
 
@@ -853,14 +853,14 @@ the file tier. 130x faster.**
 Bench: `tests/layer_bench.rs::bench_pool_l1_slot_write`
 Output: `bench-results/phase2-slot-writes.txt`
 
-### Next: Phase 2.5 (faster JSON serializer) -- DONE, see Pool L1.5 below
+### Next: Phase 2.5 (faster JSON serializer). Done, see Pool L1.5 below
 
 ---
 
 ## Pool L1.5: JSON serializer comparison (Phase 2.5)
 
 Phase 2 found that compact `serde_json::to_vec` showed no measurable
-speed improvement over `to_vec_pretty` -- despite producing 35%
+speed improvement over `to_vec_pretty`, despite producing 35%
 smaller output. The user wanted maximum possible JSON speed for the
 pool hot path, so Phase 2.5 measured drop-in alternatives in
 isolation.
@@ -887,7 +887,7 @@ not serializing 500-byte structs. The per-call codec overhead
 dominates at this size. Rejected.
 
 **simd-json's 30% win is also smaller than its marketing.** Same
-reason -- simd-json shines on parsing large documents with SIMD
+reason: simd-json shines on parsing large documents with SIMD
 acceleration. At 391 bytes the SIMD setup cost eats most of the
 theoretical speedup. We still get a real 30% improvement, just not
 the 2-3x.
@@ -919,7 +919,7 @@ on a given target.
 
 All four serializers complete in under 1us. The actual file syscall
 on the meta write is ~10us. The full pool hot path is ~6us.
-Switching to simd-json saves 161ns per PUT -- about 2-3% of the
+Switching to simd-json saves 161ns per PUT, about 2-3% of the
 end-to-end hot path. Real, but small in absolute terms.
 
 We're shipping it because (a) the user explicitly said maximum JSON
@@ -937,7 +937,7 @@ the target doesn't support SIMD acceleration. sonic-rs is dropped.
 Bench: `tests/layer_bench.rs::bench_pool_l1_5_json_serializers`
 Output: `bench-results/phase2.5-json-serializers.txt`
 
-After Phase 2.5: **Phase 3 (rename worker in isolation) -- DONE, see Pool L2 below.**
+After Phase 2.5: **Phase 3 (rename worker in isolation). Done, see Pool L2 below.**
 
 ---
 
@@ -951,15 +951,15 @@ makes the loop real.
 
 New code in `src/storage/write_slot_pool.rs`:
 
-- `RenameRequest` struct -- the message sent on the rename channel
-- `WriteSlotPool::replenish_slot(slot_id)` -- creates a fresh slot
+- `RenameRequest` struct. The message sent on the rename channel.
+- `WriteSlotPool::replenish_slot(slot_id)`. Creates a fresh slot
   file pair at the same paths and pushes a new `WriteSlot` to the
-  queue
-- `process_rename_request(pool, req)` -- the worker's per-request
+  queue.
+- `process_rename_request(pool, req)`. The worker's per-request
   work: mkdir + 2 renames + open a fresh slot to replace the
-  consumed one
-- `run_rename_worker(pool, rx, shutdown)` -- the loop, matching
-  the heal worker shutdown pattern at `heal/worker.rs:181-226`
+  consumed one.
+- `run_rename_worker(pool, rx, shutdown)`. The loop, matching
+  the heal worker shutdown pattern at `heal/worker.rs:181-226`.
 
 ### Numbers (Windows 10 NTFS, 1 disk)
 
@@ -985,11 +985,11 @@ means there's no per-batch overhead. Estimated breakdown:
 
 - mkdir: ~200us (17% of cost)
 - rename data + rename meta: ~200us total
-- open two new slot files: ~400-500us total -- **biggest line item**
+- open two new slot files: ~400-500us total. **Biggest line item.**
 - channel + tokio overhead: ~200us
 
 Opening the two new slot files takes more time than mkdir or rename
-individually. Pre-allocation doesn't help here -- every slot
+individually. Pre-allocation doesn't help here. Every slot
 replacement during steady-state pays the same cost.
 
 ### mkdir is ~17% of the cost
@@ -1008,7 +1008,7 @@ shows the worker as a bottleneck.
 4 workers → 2011 ops/sec    2.12x scaling (only +15% over 2)
 ```
 
-Two workers give near-linear scaling. Four workers fall off hard --
+Two workers give near-linear scaling. Four workers fall off hard.
 NTFS rename parallelism on a single disk has a hard ceiling around
 2 concurrent independent operations. The kernel/filesystem is the
 bottleneck past 2 workers, not the Rust code.
@@ -1039,13 +1039,13 @@ The hot-path PUT measured in Phase 2 is ~6us per request, **180x
 faster than the worker drain rate.** In any sustained load above
 940 ops/sec, the rename queue grows and writes fall through to the
 slow path (Phase 7 backpressure handles that). The PUT request side
-is faster than the worker can keep up with -- not the other way
+is faster than the worker can keep up with, not the other way
 around.
 
 ### Verdict
 
 **Pass.** Ship 1 worker per disk in Phase 4. Design supports 2
-workers per disk if production load shows saturation -- 1.84x
+workers per disk if production load shows saturation. 1.84x
 scaling already proven. Don't bother with 4 workers.
 
 ### Methodology note: Scenario 3 was poorly designed
@@ -1065,13 +1065,13 @@ is many parallel PUT-side tasks.** Will revisit in Phase 7
   larger than mkdir or rename.
 - NTFS rename parallelism caps at ~2 concurrent operations per disk.
 - 180x gap between hot path and worker drain rate. The pool's whole
-  design depends on the queue absorbing bursts -- the request side
+  design depends on the queue absorbing bursts. The request side
   is much faster than the worker can keep up with.
 
 Bench: `tests/layer_bench.rs::bench_pool_l2_worker_drain`
 Output: `bench-results/phase3-rename-worker.txt`
 
-### Next: Phase 4 (integrate the pool into LocalVolume::write_shard) -- DONE, see Pool L3 below
+### Next: Phase 4 (integrate the pool into LocalVolume::write_shard). Done, see Pool L3 below
 
 ---
 
@@ -1107,7 +1107,7 @@ adding bench code. All 336 existing tests still pass.
   because the production write path now uses it.
 - `LocalVolume::drain_pending()` is a test helper that waits until
   every in-flight rename has finished. Tests need it because Phase 4
-  has no read-path support yet -- a request that just got a 200 OK
+  has no read-path support yet, so a request that just got a 200 OK
   for a PUT through the pool can return 404 on an immediate GET
   until the worker has finished the rename. Phase 5 will fix that
   for real.
@@ -1151,8 +1151,8 @@ hardware changes.
 
 ### The integration cost: ~30-40us of constant overhead per call
 
-Phase 2 measured just the write step in isolation -- pop a slot,
-write the data, write the meta, drop the slot -- at about 4us
+Phase 2 measured just the write step in isolation (pop a slot,
+write the data, write the meta, drop the slot) at about 4us
 median for a 4KB object. Phase 4 measures the full
 `LocalVolume::write_shard` call at about 43us median for the same
 4KB. The gap is about 39us. It stays roughly the same across all
@@ -1200,7 +1200,7 @@ shows the wrong number leads to the wrong decision.
 Bench: `tests/layer_bench.rs::bench_pool_l3_integrated_put`
 Output: `bench-results/phase4-integrated-put.txt`
 
-### Next: Phase 4.5 (analyze and fix the integration overhead) -- DONE, see Pool L3.5 below
+### Next: Phase 4.5 (analyze and fix the integration overhead). Done, see Pool L3.5 below
 
 ---
 
@@ -1235,7 +1235,7 @@ Median per step at 4KB:
 **The path computation was almost as expensive as the actual file
 writes.** Calling `object_dir`, `object_shard_path`, and
 `object_meta_path` as three separate functions ran the bucket and
-key validation three times AND built three independent PathBufs --
+key validation three times AND built three independent PathBufs,
 when only one validation and one PathBuf are actually needed.
 
 The sum of medians (14.6us) is much less than the integrated
@@ -1259,7 +1259,7 @@ let data_dest = dest_dir.join("shard.dat");
 let meta_dest = dest_dir.join("meta.json");
 ```
 
-### Result -- much bigger than predicted
+### Result (much bigger than predicted)
 
 Predicted savings: ~5us. Actual measured savings:
 
@@ -1286,7 +1286,7 @@ behavior.
 | **100MB** | 285ms | **37.2ms** | **7.7x** |
 
 The 4KB win nearly tripled (15x to 46x). The pool is now within
-about 6us of the bare Phase 2 write step at 4KB -- nearly all of
+about 6us of the bare Phase 2 write step at 4KB. Nearly all of
 the integration overhead is gone.
 
 ### Methodology lesson: isolated measurements can hide interaction effects
@@ -1297,9 +1297,9 @@ the isolated measurement.**
 
 Why? The redundant validation and PathBuf allocation work was
 triggering downstream cost that only shows up when the rest of
-`write_shard`'s code is running around it -- probably allocator hot
+`write_shard`'s code is running around it (probably allocator hot
 paths, CPU cache pressure from extra heap traffic, and a larger
-async state machine. None of those show up when you time the path
+async state machine). None of those show up when you time the path
 computation alone.
 
 **Generalizable rule:** when a microbench says "this step costs X"
@@ -1364,16 +1364,16 @@ Source code analysis of all three servers (2026-04-09). MinIO source at
 |---|---|---|---|
 | Shard reads | 1+0: mmap, 4MB Bytes::slice. EC: sequential reads | **Parallel goroutines** via channel-based work-stealing (`parallelReader`) | **Parallel `FuturesUnordered`**, waits for `data_shards` to complete |
 | Response model | Async stream (Box<Pin<dyn Stream>>) -> s3s Body -> hyper poll_frame | **Synchronous io.Copy** with 128KB pooled buffer -> http.ResponseWriter | tokio::io::duplex -> AsyncRead response |
-| Dispatch overhead | 2x vtable per frame (DynByteStream + StreamingBlob) | **Zero** -- direct function calls | 1x vtable (AsyncRead trait object) |
-| Scheduling | tokio async poll/wake per frame | **OS goroutine** -- no scheduler overhead | tokio async |
+| Dispatch overhead | 2x vtable per frame (DynByteStream + StreamingBlob) | **Zero** (direct function calls) | 1x vtable (AsyncRead trait object) |
+| Scheduling | tokio async poll/wake per frame | **OS goroutine** (no scheduler overhead) | tokio async |
 | Key source | `volume_pool.rs:532`, `s3_service.rs:421` | `erasure-object.go:292`, `object-handlers.go:551` | `set_disk.rs:655`, `decode.rs:217` |
 
-### Why MinIO's GET is faster -- detailed code trace (2026-04-09)
+### Why MinIO's GET is faster: detailed code trace (2026-04-09)
 
 MinIO GET data path (`cmd/erasure-object.go`, `cmd/object-handlers.go`):
 ```
 getObjectNInfo():
-  pr, pw := xioutil.WaitPipe()       // io.Pipe() -- kernel-backed sync pipe
+  pr, pw := xioutil.WaitPipe()       // io.Pipe(), kernel-backed sync pipe
   go func() {
     er.getObjectWithFileInfo(pw)      // decode goroutine writes to pipe
       -> erasure.Decode(pw, readers)  // parallel disk reads -> RS decode -> pw.Write()
@@ -1399,7 +1399,7 @@ get_object():
 ```
 
 The fundamental difference is **synchronous io.Copy vs async stream polling**.
-MinIO's path has zero async overhead -- `io.CopyBuffer` reads 128KB from the
+MinIO's path has zero async overhead. `io.CopyBuffer` reads 128KB from the
 pipe and calls `Write()` on the HTTP response writer in a tight loop. AbixIO's
 path goes through 2 levels of dynamic dispatch (`Box<Pin<dyn Stream>>`) and
 tokio's async scheduler for every 4MB frame.
@@ -1407,7 +1407,7 @@ tokio's async scheduler for every 4MB frame.
 At **1GB** (256 frames), this overhead is amortized: 686 vs 757 MB/s (9% gap).
 At **10MB** (3 frames), per-request fixed cost dominates: 324 vs 748 MB/s
 (2.3x gap). The fixed cost includes s3s request parsing, response header
-serialization, and hyper connection setup -- none of which MinIO's Go path pays.
+serialization, and hyper connection setup, none of which MinIO's Go path pays.
 
 **Confirmed**: raw hyper L5 GET (no S3, no storage) = 510 MB/s for 10MB with
 TCP_NODELAY. MinIO achieves 748 MB/s through its full S3 stack. hyper's HTTP
@@ -1429,11 +1429,11 @@ Tested alternative pipeline strategies against the current sequential approach:
 
 | Experiment | 1GB MB/s | vs baseline | Verdict |
 |---|---|---|---|
-| `put_1mb_seq` (current) | **556** | baseline | -- |
+| `put_1mb_seq` (current) | **556** | baseline | n/a |
 | `put_4mb_chunk` (4MB input chunks) | 494 | **-11%** | larger chunks hurt |
 | `put_chan_pipe` (RustFS-style channel) | 24 | **-96%** | massive regression |
 | `put_dbl_buf` (MinIO-style double-buf) | 24 | **-96%** | massive regression |
-| `get_single` (current mmap, 1 Bytes) | page cache | baseline | -- |
+| `get_single` (current mmap, 1 Bytes) | page cache | baseline | n/a |
 | `get_4mb_chunk` (rechunk into 4MB) | 1,877 | much slower | chunking adds copy overhead |
 
 **Root cause of channel/double-buffer regression**: the experimental

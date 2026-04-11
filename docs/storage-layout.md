@@ -59,7 +59,7 @@ Each member in `cluster.members`:
 | `index` | u32 | Position in the pool |
 
 **Does NOT store**:
-- EC defaults (that is policy, not identity -- belongs to Layer 3 or CLI)
+- EC defaults (that is policy, not identity; belongs to Layer 3 or CLI)
 - Runtime state (belongs to Layer 2)
 - Bucket or object config
 
@@ -102,15 +102,15 @@ All three are UUIDv4, generated at format time, immutable after that.
 **First boot (standalone)**:
 
 1. `abixio --volumes /d{1...4}`
-2. No volume.json found -- generate node_id, volume_id UUIDs
-3. No `--nodes` -- standalone mode, generate cluster_id
+2. No volume.json found. Generate node_id, volume_id UUIDs
+3. No `--nodes` set, so standalone mode. Generate cluster_id
 4. Write complete volume.json to every volume
 5. Serve
 
 **First boot (cluster)**:
 
 1. `abixio --volumes /d{1...2} --nodes http://node{1...2}:10000`
-2. No volume.json found -- generate node_id, volume_id UUIDs
+2. No volume.json found. Generate node_id, volume_id UUIDs
 3. Write partial volume.json (node_id, volume_id only)
 4. Exchange identity with nodes via `/_admin/cluster/join`
 5. Block until all nodes respond
@@ -215,7 +215,7 @@ shard placement, checksums, user metadata, tags.
 
 Key rule: object metadata stores **resolved** values. The EC cascade is
 evaluated once at write time. The result is baked into meta.json. Reads and
-heals never consult bucket FTT -- they use the stored
+heals never consult bucket FTT; they use the stored
 values.
 
 ### meta.json
@@ -367,7 +367,7 @@ correctly without needing a separate mapping array.
 
 | Flag | Required | Default | Purpose |
 |---|---|---|---|
-| `--volumes` | yes | -- | Volume paths (comma-separated, supports `{N...M}`) |
+| `--volumes` | yes | none | Volume paths (comma-separated, supports `{N...M}`) |
 | `--listen` | no | `:10000` | Bind address |
 | `--nodes` | no | empty | All node endpoints (supports `{N...M}`) |
 | `--no-auth` | no | false | Disable all authentication |

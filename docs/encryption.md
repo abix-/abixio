@@ -1,4 +1,4 @@
-# Encryption — Decision Pending
+# Encryption (decision pending)
 
 No encryption feature is currently implemented in abixio. This document tracks
 options and threat analysis for future work only.
@@ -10,7 +10,7 @@ options and threat analysis for future work only.
 | Stolen disk (powered off) | Yes | Raw shard files |
 | Shell on server (no root) | Yes | Can read disk files as abixio user |
 | Root on server | Possible | Process memory, env vars, all disk files |
-| Root on server + root on client | Unlikely but worst case | Everything — no crypto scheme survives this |
+| Root on server + root on client | Unlikely but worst case | Everything. No crypto scheme survives this |
 
 ## Options Under Consideration
 
@@ -21,7 +21,7 @@ options and threat analysis for future work only.
 - **Protects:** stolen/powered-off disks
 - **Fails:** any running-system compromise (FDE is transparent while mounted)
 - **Complexity:** zero in AbixIO
-- **Debugging:** easy — shards are readable with `cat`
+- **Debugging:** easy. Shards are readable with `cat`
 
 ### Option B: SSE-S3 (Server-Side, Master Key from Env Var)
 
@@ -39,10 +39,10 @@ options and threat analysis for future work only.
 - Encrypt on client before upload, AbixIO stores opaque ciphertext
 - Server never sees keys or plaintext
 - Tool: `age` (modern, simple) or `gpg`
-- **Protects:** full server compromise including root — server only has ciphertext
+- **Protects:** full server compromise including root. Server only has ciphertext
 - **Fails:** root on client machine (captures plaintext in memory after decrypt)
 - **Complexity:** zero in AbixIO, wrapper scripts on client
-- **UX cost:** can't just `aws s3 cp` — need encrypt/decrypt wrappers
+- **UX cost:** can't just `aws s3 cp`. You need encrypt/decrypt wrappers
 
 ### Option D: CSE + TPM-Sealed Key
 
@@ -76,7 +76,7 @@ options and threat analysis for future work only.
 
 ## Key Insight
 
-No encryption scheme survives "root on the machine doing the decryption." The plaintext must exist in memory at some point. Layers reduce the blast radius of partial compromise — they don't prevent total compromise.
+No encryption scheme survives "root on the machine doing the decryption." The plaintext must exist in memory at some point. Layers reduce the blast radius of partial compromise; they don't prevent total compromise.
 
 The real security investment is **not getting rooted**: patching, minimal attack surface, firewalls, monitoring, SSH key-only access, not running services as root.
 
@@ -87,7 +87,7 @@ TBD. Likely some combination of:
 - CSE with age on client (server never sees keys)
 - TPM or YubiKey for key storage on client (key never on disk)
 
-No AbixIO code changes needed for any of these — encryption stays external.
+No AbixIO code changes needed for any of these. Encryption stays external.
 
 ## Current Status
 

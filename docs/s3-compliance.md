@@ -47,8 +47,8 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 | DeleteBucketWebsite | `DELETE /{bucket}?website` | No | 0/10 | |
 | GetBucketObjectLockConfig | `GET /{bucket}?object-lock` | No | 0/10 | |
 | PutBucketObjectLockConfig | `PUT /{bucket}?object-lock` | No | 0/10 | |
-| GetBucketAccelerate | `GET /{bucket}?accelerate` | N/A | -- | AWS-specific. |
-| GetBucketRequestPayment | `GET /{bucket}?requestPayment` | N/A | -- | AWS-specific. |
+| GetBucketAccelerate | `GET /{bucket}?accelerate` | N/A | n/a | AWS-specific. |
+| GetBucketRequestPayment | `GET /{bucket}?requestPayment` | N/A | n/a | AWS-specific. |
 | GetBucketPolicyStatus | `GET /{bucket}?policyStatus` | No | 0/10 | |
 
 ### Object listing
@@ -160,4 +160,4 @@ here.
 
 Not implemented: encryption config, replication, notifications,
 object lock/retention, ACLs, S3 Select.
-CORS is stub-only -- full implementation is a 2.0 item.
+CORS is stub-only. Full implementation is a 2.0 item.

@@ -1,0 +1,100 @@
+[cargo-lock] 11:11:37 waiting for build lock...
+[cargo-lock] 11:11:37 acquired lock, running: cargo test --release --test layer_bench --manifest-path C:\code\abixio\Cargo.toml -- --ignored --nocapture bench_pool_l3_6_write_shard_breakdown
+[cargo-lock] 11:11:37 running: cargo build --release --test layer_bench --manifest-path C:\code\abixio\Cargo.toml
+warning: unused import: `DEFAULT_SEGMENT_SIZE`
+  --> src\storage\log_store.rs:11:52
+   |
+11 | use super::segment::{ActiveSegment, SealedSegment, DEFAULT_SEGMENT_SIZE};
+   |                                                    ^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `self`
+  --> src\storage\segment.rs:10:21
+   |
+10 | use super::needle::{self, Needle, NeedleLocation, HEADER_SIZE};
+   |                     ^^^^
+
+warning: unused import: `tokio::io::AsyncReadExt`
+ --> src\storage\erasure_decode.rs:4:5
+  |
+4 | use tokio::io::AsyncReadExt;
+  |     ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:261:29
+    |
+261 |     fn bucket_exists(&self, bucket: &str) -> bool {
+    |                             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `bucket`
+   --> src\storage\remote_volume.rs:267:33
+    |
+267 |     fn bucket_created_at(&self, bucket: &str) -> u64 {
+    |                                 ^^^^^^ help: if this is intentional, prefix it with an underscore: `_bucket`
+
+warning: unused variable: `size`
+   --> src\storage\volume_pool.rs:502:21
+    |
+502 |                 let size = entry.original_size as usize;
+    |                     ^^^^ help: if this is intentional, prefix it with an underscore: `_size`
+
+warning: struct `BufPool` is never constructed
+  --> src\storage\erasure_decode.rs:17:8
+   |
+17 | struct BufPool {
+   |        ^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new`, `take`, and `return_buf` are never used
+  --> src\storage\erasure_decode.rs:23:8
+   |
+22 | impl BufPool {
+   | ------------ associated items in this implementation
+23 |     fn new(count: usize, capacity: usize) -> Arc<Self> {
+   |        ^^^
+...
+31 |     fn take(&self) -> Vec<u8> {
+   |        ^^^^
+...
+39 |     fn return_buf(&self, mut buf: Vec<u8>) {
+   |        ^^^^^^^^^^
+
+warning: struct `PooledBuf` is never constructed
+  --> src\storage\erasure_decode.rs:50:8
+   |
+50 | struct PooledBuf {
+   |        ^^^^^^^^^
+
+warning: hiding a lifetime that's elided elsewhere is confusing
+  --> src\storage\write_cache.rs:93:16
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<CacheKey, CacheEntry>> {
+   |                ^^^^^ the lifetime is elided here         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ the same lifetime is hidden here
+   |
+   = help: the same lifetime is referred to in inconsistent ways, making the signature confusing
+   = note: `#[warn(mismatched_lifetime_syntaxes)]` on by default
+help: use `'_` for type paths
+   |
+93 |     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<'_, CacheKey, CacheEntry>> {
+   |                                                                                    +++
+
+warning: `abixio` (lib) generated 10 warnings (run `cargo fix --lib -p abixio` to apply 6 suggestions)
+   Compiling abixio v0.1.0 (C:\code\abixio)
+warning: unused variable: `iters`
+   --> tests\layer_bench.rs:218:9
+    |
+218 |     let iters = 10;
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_iters`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `label`
+    --> tests\layer_bench.rs:2331:17
+     |
+2331 |             let label = human(size);
+     |                 ^^^^^ help: if this is intentional, prefix it with an underscore: `_label`
+
