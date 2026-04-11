@@ -119,6 +119,69 @@ slot's data file. `finalize` writes the meta JSON, inserts pending,
 sends to the rename queue. Same overhead beyond the chunk writes
 themselves.
 
+### Hot path optimizations
+
+The two writes can be made meaningfully faster without changing the
+design. These are committed defaults, not tunables:
+
+**1. Run the two writes concurrently with `tokio::join!`.** The data
+write and the meta write target two different file descriptors;
+nothing forces them to be sequential. `tokio::fs` dispatches each
+`write_all` to the blocking thread pool, so concurrent writes really
+do run on two threads in parallel:
+
+```rust
+tokio::try_join!(
+    slot.data_file.write_all(shard_bytes),
+    slot.meta_file.write_all(meta_json),
+)?;
+```
+
+The meta write is always tiny (~500 bytes) and finishes first; the
+data write is on the critical path either way. Wall-clock cost
+becomes `max(data, meta)` instead of `data + meta`. Savings: ~10us
+per PUT regardless of object size. That's about 50% of the syscall
+portion at 4KB, where it matters most.
+
+**2. Compact JSON instead of pretty JSON.** `metadata.rs:170`
+currently uses `serde_json::to_vec_pretty`. Switch to
+`serde_json::to_vec`. The output is ~30% smaller and ~20% faster to
+serialize. Nobody hand-reads meta.json files, so the whitespace has
+no audience. Savings: ~150 bytes per meta file on disk and ~3-5us
+of serialization time per PUT. Free; ship outside the pool work
+too.
+
+**3. Skip the tokio blocking pool for small writes.** Each
+`tokio::fs::write_all` call costs ~1-2us of tokio overhead before
+the actual syscall: enqueue work to the blocking pool, wake a
+worker thread, signal completion. For payloads <=4KB the syscall
+itself is ~10us, so the dispatch overhead is 10-20% of the cost.
+For these small writes, doing `std::fs::File::write_all`
+synchronously inside the async function is faster, and 10us is well
+under tokio's "don't block longer than 10ms" rule of thumb:
+
+```rust
+if shard_bytes.len() <= 4096 {
+    use std::io::Write;
+    slot.data_file.as_std().write_all(shard_bytes)?;
+    slot.meta_file.as_std().write_all(meta_json)?;
+} else {
+    // tokio blocking pool for large writes to avoid stalling the runtime
+    tokio::try_join!(
+        slot.data_file.write_all(shard_bytes),
+        slot.meta_file.write_all(meta_json),
+    )?;
+}
+```
+
+Savings: ~2-4us per small PUT.
+
+**Net hot path with all three.** For a 4KB PUT, the pre-ack path
+becomes roughly two synchronous writes to page cache (~10us each
+without dispatch overhead) plus a DashMap insert (~100ns). Total
+~10-20us before ack instead of ~30-50us. The pool starts to
+genuinely compete with the log store on small-object write latency.
+
 ### Async rename worker (one task per disk)
 
 ```
@@ -407,6 +470,44 @@ sizes, accept the small read regression for 4KB" or "pool for writes,
 keep the log store reads enabled for hot small objects." Benchmarks
 decide.
 
+### Additional pool-only benchmarks
+
+After the three-way tier comparison, run two more pool-only sweeps to
+quantify optimizations the design leaves on the table by default.
+These are tunables, not committed defaults.
+
+**Pre-allocation of slot data files.** When a slot's data file is
+created in `.abixio.sys/tmp/`, set its length to a max-expected size
+(1MB or 4MB) using `set_len`. This pre-allocates extents on the
+filesystem so the actual write doesn't have to allocate extents
+during the syscall. NTFS and ext4 both reward pre-allocated files:
+fewer extent allocations, fewer metadata updates, faster sequential
+writes.
+
+Trade-off:
+- Too small: large PUTs still extend the file, no win.
+- Too large: wastes space in `.abixio.sys/tmp/` while the slot is
+  unused.
+
+With 32 slots * 4MB = 128MB per disk reserved. Tunable. Measure
+4KB / 64KB / 1MB / 10MB PUT latency with and without pre-allocation
+at 1MB and 4MB sizes. Decision: enable pre-allocation if it shows
+>=10% improvement at any common size, otherwise leave it off.
+
+**Faster JSON serializer.** `serde_json` serializes a ~500-byte
+`ObjectMetaFile` in ~5-10us. `simd-json` and `sonic-rs` are 2-3x
+faster on the same workload. The destination meta.json must remain
+valid JSON (so any drop-in serializer is fine), and the temp meta
+file uses the same format.
+
+Trade-off: extra dependency, additional binary size, may not work
+on all targets (simd-json requires SSE4.2/AVX2 detection at runtime).
+
+Add behind a `feature = "fast-json"` cargo flag. Measure 4KB and
+64KB PUT latency with and without. Decision: enable by default if
+it shows >=5us improvement on the small-PUT path, otherwise leave
+as opt-in.
+
 ## Open questions for implementation
 
 - **Pool depth default.** Recommended 32 per disk. Tunable via config.
@@ -416,9 +517,14 @@ decide.
   the destination already exists from a half-completed crash.
 - **fsync.** Default no, matching the log store and write cache.
   Document the power-loss trade-off.
-- **Pre-allocation (fallocate / SetEndOfFile).** First version skips
-  it. If benchmarks show extent fragmentation matters at 1GB, add
-  a pre-allocation pass at slot creation.
+- **Pre-allocation (fallocate / SetEndOfFile).** Default off in the
+  first version. Quantified by the "additional pool-only benchmarks"
+  section above; flip the default if it shows >=10% improvement at
+  any common size.
+- **Faster JSON serializer.** simd-json or sonic-rs behind a
+  `feature = "fast-json"` flag. Quantified by the same benchmark
+  section. Flip the default if it shows >=5us improvement on small
+  PUTs.
 
 ## Files to modify (when phase 2 begins)
 
