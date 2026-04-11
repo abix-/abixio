@@ -23,6 +23,13 @@ use abixio::storage::volume_pool::VolumePool;
 async fn main() {
     tracing_subscriber::fmt::init();
 
+    // rustls 0.23 requires an explicit crypto provider when both aws-lc-rs
+    // and ring are available. Pick ring as the process default so the TLS
+    // listener (and any rustls client in this process) can build a ServerConfig.
+    tokio_rustls::rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("install rustls ring crypto provider");
+
     let mut cfg = Config::parse();
     if let Err(e) = cfg.expand_and_validate() {
         eprintln!("error: {}", e);
@@ -61,7 +68,27 @@ async fn main() {
             // local volumes
             for vp in &nv.volume_paths {
                 match LocalVolume::new(std::path::Path::new(vp)) {
-                    Ok(v) => backends.push(Box::new(v)),
+                    Ok(mut v) => {
+                        // apply --write-tier (default "file" = no extra wiring)
+                        match cfg.write_tier.as_str() {
+                            "log" => {
+                                if let Err(e) = v.enable_log_store() {
+                                    eprintln!("error: enable log store on {}: {}", vp, e);
+                                    std::process::exit(1);
+                                }
+                            }
+                            "pool" => {
+                                // depth 1024 matches Phase 8.5/8.7 best-config
+                                // (`docs/benchmarks.md::Stack breakdown`).
+                                if let Err(e) = v.enable_write_pool(1024).await {
+                                    eprintln!("error: enable write pool on {}: {}", vp, e);
+                                    std::process::exit(1);
+                                }
+                            }
+                            _ => {}
+                        }
+                        backends.push(Box::new(v));
+                    }
                     Err(e) => {
                         eprintln!("error: local volume {}: {}", vp, e);
                         std::process::exit(1);

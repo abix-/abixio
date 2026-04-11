@@ -41,6 +41,12 @@ pub struct Config {
     /// Number of MRF heal workers
     #[arg(long, default_value_t = 2)]
     pub mrf_workers: usize,
+
+    /// Write tier for local volumes: `file` (default), `log`
+    /// (log-structured small-object store), or `pool` (pre-opened
+    /// temp file pool with async rename worker). See `docs/write-path.md`.
+    #[arg(long, default_value = "file")]
+    pub write_tier: String,
 }
 
 impl Config {
@@ -78,6 +84,11 @@ impl Config {
             .map_err(|_| format!("invalid scan_interval: {}", self.scan_interval))?;
         parse_duration(&self.heal_interval)
             .map_err(|_| format!("invalid heal_interval: {}", self.heal_interval))?;
+        // validate write tier
+        match self.write_tier.as_str() {
+            "file" | "log" | "pool" => {}
+            other => return Err(format!("invalid write_tier: {} (expected file|log|pool)", other)),
+        }
         Ok(())
     }
 
@@ -216,6 +227,7 @@ mod tests {
             scan_interval: "10m".to_string(),
             heal_interval: "24h".to_string(),
             mrf_workers: 2,
+            write_tier: "file".to_string(),
         }
     }
 

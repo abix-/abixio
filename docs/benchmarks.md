@@ -14,10 +14,10 @@ practice.
 
 Cross-client numbers are only directly comparable when the harness holds
 the major variables constant. `abixio-ui/tests/bench.rs` now wires the
-canonical matrix and client comparison around that normalized mode. The
-published numeric tables below have not yet been re-run after this
-harness rewrite, so they should be read as historical results unless a
-section explicitly says otherwise.
+canonical matrix and client comparison around that normalized mode, and
+the matrix tables below were re-run end-to-end under the rewritten TLS
+harness on 2026-04-11 (raw artifact:
+`bench-results/2026-04-11-matrix-tls.txt`).
 
 1. **Same warmup**: 3 PUT + 3 GET warmup operations before timing, for
    every client. This ensures TCP connections are established, caches are
@@ -135,7 +135,7 @@ All binaries must be release builds. Debug builds are 5-7x slower.
 3 servers x 3 clients x 3 sizes x 2 operations.
 Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --nocapture bench_matrix`
 
-The harness for this benchmark now starts AbixIO, RustFS, and MinIO over
+The harness for this benchmark starts AbixIO, RustFS, and MinIO over
 TLS, injects a temporary benchmark CA, and benchmarks these canonical
 clients:
 
@@ -145,61 +145,74 @@ clients:
 
 All three are configured for `HTTPS + SigV4 + UNSIGNED-PAYLOAD`, with
 the same disk-backed PUT source / GET sink model and the same 3 PUT + 3
-GET warmup. CLI overhead is still real and is not subtracted.
+GET warmup. CLI process spawn cost is real and is not subtracted; per-op
+spawn overhead is printed in the bench output (~945 ms for AWS CLI v2,
+~120 ms for rclone) so the small-object CLI rows can be read as
+"startup-bound, not S3-bound".
 
-The numeric tables immediately below are legacy pre-normalization output
-from the older localhost HTTP harness. They remain useful historical
-context, but they are not the current canonical matrix and need to be
-re-run under the new TLS harness.
-
-### Legacy HTTP matrix results
+Canonical matrix results are below, dated 2026-04-11. Source artifact:
+`bench-results/2026-04-11-matrix-tls.txt`.
 
 ### 4KB: small object performance (obj/sec)
 
-| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET | rclone PUT | rclone GET |
-|--------|---------------|---------------|--------|--------|------------|------------|
-| **AbixIO** | **1618** | **1059** | 23 | 23 | 9 | 9 |
-| MinIO | 367 | 842 | 22 | 23 | 8 | 9 |
-| RustFS | 345 | 613 | 21 | 23 | 8 | 8 |
+| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | aws-cli PUT | aws-cli GET | rclone PUT | rclone GET |
+|--------|---------------|---------------|-------------|-------------|------------|------------|
+| **AbixIO** | **1586** | **659** | 1 | 1 | 8 | 8 |
+| RustFS | 329 | 518 | 1 | 1 | 8 | 8 |
+| MinIO | 371 | 566 | 1 | 1 | 8 | 8 |
 
-**AbixIO has the fastest 4KB PUT** thanks to RAM write cache and
-log-structured storage. 4.4x faster PUT than MinIO through aws-sdk-s3.
-GET leads at 1059 obj/s vs MinIO 842 (+26%). CLI tools (mc ~22 obj/s,
-rclone ~9 obj/s) are dominated by process spawn overhead (~41ms mc,
-~111ms rclone). These numbers measure startup, not S3 performance.
+**AbixIO leads sdk PUT decisively** at 1586 obj/s versus MinIO 371 (4.3x)
+and RustFS 329 (4.8x), thanks to the RAM write cache plus the
+log-structured small-write tier. AbixIO sdk GET also leads at 659 obj/s
+versus MinIO 566 and RustFS 518.
+
+The CLI rows for 4KB are dominated by per-op process spawn — measured
+overhead in this run was ~945 ms for `aws-cli` and ~120 ms for `rclone`.
+These are not S3 throughput measurements, they are CLI startup
+measurements. 4KB obj/sec via aws-cli rounds to 1 obj/s on every server,
+and via rclone to 8 obj/s on every server, regardless of which server is
+behind it.
 
 ### 10MB: medium object throughput (MB/s)
 
-| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET | rclone PUT | rclone GET |
-|--------|---------------|---------------|--------|--------|------------|------------|
-| **AbixIO** | **347** | 210 | 106 | 172 | 61 | 86 |
-| RustFS | 292 | 184 | 96 | 134 | 76 | 86 |
-| MinIO | 181 | **235** | **115** | **190** | 63 | 87 |
+| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | aws-cli PUT | aws-cli GET | rclone PUT | rclone GET |
+|--------|---------------|---------------|-------------|-------------|------------|------------|
+| AbixIO | 327 | 212 | 10 | 11 | 59 | 74 |
+| **RustFS** | **381** | 218 | 11 | 11 | 9 | 68 |
+| MinIO | 260 | **226** | 10 | 10 | 58 | 71 |
 
-AbixIO leads PUT (347 MB/s vs RustFS 292, MinIO 181). GET through
-aws-sdk-s3 is similar across servers (~200 MB/s) because disk write
-speed equalizes the results. rclone GET shows ~86 MB/s for all servers
-at 10MB. Process overhead still significant at this size.
+RustFS leads sdk PUT at 381 MB/s (AbixIO 327, MinIO 260), and MinIO
+narrowly leads sdk GET at 226 MB/s (RustFS 218, AbixIO 212). All three
+sdk GET rows cluster within ~7% — disk write speed equalizes the
+results. CLI tools at 10MB are still significantly affected by per-op
+spawn cost, especially aws-cli at ~10 MB/s. RustFS rclone PUT (8.5 MB/s)
+is an outlier on the slow side and is worth a separate investigation.
 
 ### 1GB: large object throughput (MB/s)
 
-| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | mc PUT | mc GET | rclone PUT | rclone GET |
-|--------|---------------|---------------|--------|--------|------------|------------|
-| **AbixIO** | **465** | 247 | 337 | 352 | 202 | * |
-| RustFS | 344 | 262 | **560** | **607** | 168 | * |
-| MinIO | 356 | 243 | **616** | **832** | 235 | * |
+| Server | aws-sdk-s3 PUT | aws-sdk-s3 GET | aws-cli PUT | aws-cli GET | rclone PUT | rclone GET |
+|--------|---------------|---------------|-------------|-------------|------------|------------|
+| AbixIO | 433 | 259 | 193 | **358** | 279 | 99 † |
+| **RustFS** | **489** | **286** | 197 | 289 | 19 ‡ | 325 |
+| MinIO | 428 | 255 | 200 | 325 | 282 | 342 |
 
-`*` rclone 1GB GET numbers excluded because rclone caches/skips repeated
-downloads to the same file, producing unreliable measurements.
+RustFS leads sdk PUT at 489 MB/s (AbixIO 433, MinIO 428) and sdk GET at
+286 MB/s (AbixIO 259, MinIO 255). AbixIO sdk PUT trails RustFS by ~13%
+at 1GB. sdk GET is again equalized by the disk-write sink (~250-285 MB/s
+for all three). aws-cli GET is faster than sdk GET for AbixIO and MinIO
+because aws-cli streams the body through a separate process and avoids
+the SDK's per-op buffer churn at this size.
 
-**AbixIO has the fastest 1GB PUT** through aws-sdk-s3 (465 MB/s vs MinIO
-356, RustFS 344) thanks to xxhash64 ETag (skips MD5 when client doesn't
-send Content-MD5). 1GB GET through aws-sdk-s3 is ~245 MB/s for ALL
-servers because disk write speed is the bottleneck when writing GET
-output to file, proving the test is fair. mc GET shows the real network
-throughput difference: AbixIO 352, MinIO 832. The mc client (Go binary)
-transfers faster to Go servers (MinIO) due to shared HTTP stack
-optimizations.
+`†` AbixIO rclone 1GB GET measured at 99 MB/s versus 325 (RustFS) and
+342 (MinIO). The previous (HTTP) doc excluded rclone 1GB GET entirely
+because "rclone caches/skips repeated downloads to the same file"; the
+new harness uses unique sinkpaths per iteration, so cache reuse should
+not apply. The number is reported as measured. Worth a follow-up
+investigation.
+
+`‡` RustFS rclone 1GB PUT at 19 MB/s is a clear outlier on the slow side
+versus 282 (MinIO) and 279 (AbixIO). Same payload, same warmup. Also
+worth a follow-up investigation.
 
 ---
 
@@ -455,7 +468,7 @@ Audited against the codebase on 2026-04-11.
 | Matrix comment said `3 servers, 2 clients` | Corrected | Document contradicted itself; client list and matrix section clearly use 3 clients |
 | CLI overhead was described as both subtracted and not subtracted | Corrected | Document contradicted itself; matrix section explicitly says published numbers are end-to-end including spawn |
 | Phase 8 / 8.5 benchmark section names and commands | Verified | `tests/layer_bench.rs:3111-3164`, `3455-3499` |
-| Specific published numeric results in matrix tables | Not independently re-run in this pass | Numbers match this document and related docs/artifacts, but I did not execute the external benchmark harness here |
+| Specific published numeric results in matrix tables | Verified | Re-run end-to-end on 2026-04-11 under the rewritten TLS harness; raw output at `bench-results/2026-04-11-matrix-tls.txt` |
 | `1220 MB/s` curl GET and other historical perf numbers | Not independently re-run in this pass | Repeated consistently across docs, but not re-measured during this audit |
 | Matrix harness normalizes disk I/O and warmup across clients | Verified | `../abixio-ui/tests/bench.rs:882-904`, `951-962`, `1030-1040` |
 | `HTTPS + SigV4 + UNSIGNED-PAYLOAD` is the documented authoritative normalized client mode | Verified | `docs/benchmarks.md:7-15` |
@@ -465,7 +478,7 @@ Audited against the codebase on 2026-04-11.
 | rclone path is explicitly configured for unsigned payloads | Verified | `../abixio-ui/tests/bench.rs:798-818` and all rclone calls route through those args |
 | SDK path uses unsigned payloads in the canonical client and matrix benches | Verified | `../abixio-ui/src/s3/client.rs:249-287`, `../abixio-ui/tests/bench.rs:869`, `876`, `1011`, `1021` |
 | Matrix harness fully normalizes connection reuse across clients | Incorrect | `../abixio-ui/tests/bench.rs:857-888` keeps the SDK in-process while `894-966`, `1048-1095`, and `1101-1182` spawn CLI commands per operation |
-| Published matrix tables below are current canonical TLS results | Incorrect | This document now labels those tables as legacy HTTP output pending a rerun under the rewritten harness |
+| Published matrix tables below are current canonical TLS results | Verified | Tables replaced with the 2026-04-11 TLS harness rerun; source artifact `bench-results/2026-04-11-matrix-tls.txt` |
 | `bench_clients` is still a mixed signed/in-memory comparison | Incorrect | `../abixio-ui/tests/bench.rs:842-966` now uses TLS, disk-backed I/O, and unsigned payloads for the canonical client set |
 
 Verdict: this document’s benchmark narrative is mostly internally consistent after fixing the overhead/client-count contradictions. The bench names, commands, raw artifact references, and profiling hook are backed by this repo. The many published performance numbers still need runtime re-benchmarking if you want strict empirical re-validation.
