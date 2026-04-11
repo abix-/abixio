@@ -3077,3 +3077,337 @@ fn chrono_lite_now() -> String {
     }
     format!("{:04}-{:02}-{:02}T{:02}-{:02}-{:02}Z", y, mo + 1, remaining_days + 1, h, m, s)
 }
+
+// ============================================================================
+// Pool L4: End-to-end three-tier matrix (sequential PUT + GET)
+// ============================================================================
+//
+// Phase 8 of the write-pool work. Measures PUT and GET latency percentiles
+// through the FULL HTTP stack (reqwest -> hyper -> s3s -> VolumePool ->
+// LocalVolume) for three tier configurations at five sizes. This is the
+// end-to-end measurement that proves the pool's win is visible to real
+// S3 clients (not just at the storage layer).
+//
+// Tiers:
+//   file  -- baseline, no log store, no write pool
+//   log   -- log_store enabled (current default for small objects)
+//   pool  -- write_pool enabled (depth 32)
+//
+// Sizes: 4KB, 64KB, 1MB, 10MB, 100MB. Sequential only (concurrent is
+// a separate phase).
+//
+// Iterations are scaled per size so the run stays under a few minutes:
+//   4KB: 1000, 64KB: 500, 1MB: 200, 10MB: 50, 100MB: 10.
+//
+// Methodology: for each (tier, size) pair, spawn a fresh abixio server
+// on 127.0.0.1 with 1 disk, create the bench bucket, warm up, then run
+// N sequential PUTs, drain pending renames if the tier has them, then
+// run N sequential GETs. Record latencies, compute percentiles, emit a
+// row. After all tiers finish, emit a comparison table so pool-vs-log
+// and pool-vs-file are side by side.
+//
+// Run with:
+//   k3sc cargo-lock test --release --test layer_bench -- --ignored \
+//       --nocapture bench_pool_l4_tier_matrix
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum L4Tier {
+    File,
+    Log,
+    Pool,
+}
+
+impl L4Tier {
+    fn label(self) -> &'static str {
+        match self {
+            L4Tier::File => "file",
+            L4Tier::Log => "log",
+            L4Tier::Pool => "pool",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct L4Stats {
+    avg_us: f64,
+    p50_us: f64,
+    p99_us: f64,
+    mbps: f64,
+}
+
+impl L4Stats {
+    fn from(samples: &mut [Duration], size: usize) -> Self {
+        samples.sort();
+        let n = samples.len();
+        let total_ns: u128 = samples.iter().map(|d| d.as_nanos()).sum();
+        let avg_us = (total_ns as f64 / n as f64) / 1000.0;
+        let p50_us = samples[n / 2].as_nanos() as f64 / 1000.0;
+        let p99_us = samples[(n * 99) / 100].min(samples[n - 1]).as_nanos() as f64 / 1000.0;
+        let total_s = total_ns as f64 / 1e9;
+        let mbps = (size * n) as f64 / total_s / MB as f64;
+        Self { avg_us, p50_us, p99_us, mbps }
+    }
+}
+
+/// One row of the output matrix.
+#[derive(Debug, Clone)]
+struct L4Row {
+    tier: L4Tier,
+    size: usize,
+    iters: usize,
+    put: L4Stats,
+    get: L4Stats,
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_pool_l4_tier_matrix() {
+    eprintln!("\n=== Pool L4: End-to-end three-tier matrix (sequential PUT + GET) ===\n");
+    eprintln!("  client -> reqwest -> hyper -> s3s -> VolumePool -> LocalVolume");
+    eprintln!("  1 disk, ftt=0, no erasure, 127.0.0.1 TCP loopback");
+    eprintln!();
+
+    // (size, iters) pairs. Keep the total under a few minutes.
+    let workload: &[(usize, usize)] = &[
+        (4 * 1024, 1000),
+        (64 * 1024, 500),
+        (1 * MB, 200),
+        (10 * MB, 50),
+        (100 * MB, 10),
+    ];
+
+    let tiers = [L4Tier::File, L4Tier::Log, L4Tier::Pool];
+    let mut rows: Vec<L4Row> = Vec::new();
+
+    for tier in tiers {
+        eprintln!("  --- Tier: {} ---", tier.label());
+        for &(size, iters) in workload {
+            let row = run_l4_single(tier, size, iters).await;
+            eprintln!(
+                "    PUT {:>6} ({:>4} iters)  avg {:>9.1}us  p50 {:>9.1}us  p99 {:>10.1}us  {:>8.1} MB/s",
+                human_l4(size), row.iters, row.put.avg_us, row.put.p50_us, row.put.p99_us, row.put.mbps,
+            );
+            eprintln!(
+                "    GET {:>6} ({:>4} iters)  avg {:>9.1}us  p50 {:>9.1}us  p99 {:>10.1}us  {:>8.1} MB/s",
+                human_l4(size), row.iters, row.get.avg_us, row.get.p50_us, row.get.p99_us, row.get.mbps,
+            );
+            rows.push(row);
+        }
+        eprintln!();
+    }
+
+    print_l4_comparison(&rows, workload);
+}
+
+/// Spawn a fresh server, create the bucket, run sequential PUTs then GETs.
+/// Returns a populated `L4Row` for one (tier, size) cell.
+async fn run_l4_single(tier: L4Tier, size: usize, iters: usize) -> L4Row {
+    let (_base, paths) = setup(1);
+
+    // Build the backend with the requested tier enabled. Must happen
+    // BEFORE boxing as Box<dyn Backend> because enable_* are &mut self.
+    let mut volume = LocalVolume::new(&paths[0]).unwrap();
+    match tier {
+        L4Tier::File => {}
+        L4Tier::Log => {
+            volume.enable_log_store().unwrap();
+        }
+        L4Tier::Pool => {
+            volume.enable_write_pool(32).await.unwrap();
+        }
+    }
+    let backends: Vec<Box<dyn Backend>> = vec![Box::new(volume) as Box<dyn Backend>];
+    let pool = Arc::new(VolumePool::new(backends).unwrap());
+    pool.make_bucket("bench").await.unwrap();
+
+    // Minimal cluster config (single node, no auth).
+    let cluster = Arc::new(
+        ClusterManager::new(ClusterConfig {
+            node_id: "bench".to_string(),
+            advertise_s3: "http://127.0.0.1:0".to_string(),
+            advertise_cluster: "http://127.0.0.1:0".to_string(),
+            nodes: Vec::new(),
+            access_key: String::new(),
+            secret_key: String::new(),
+            no_auth: true,
+            disk_paths: paths.clone(),
+        })
+        .unwrap(),
+    );
+
+    let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&pool), Arc::clone(&cluster));
+    let mut builder = s3s::service::S3ServiceBuilder::new(s3);
+    builder.set_validation(abixio::s3_service::RelaxedNameValidation);
+    let s3_service = builder.build();
+    let dispatch = Arc::new(AbixioDispatch::new(s3_service, None, None));
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let dispatch_clone = dispatch.clone();
+    let server_task = tokio::spawn(async move {
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(v) => v,
+                Err(_) => return,
+            };
+            stream.set_nodelay(true).ok();
+            let io = hyper_util::rt::TokioIo::new(stream);
+            let d = dispatch_clone.clone();
+            tokio::spawn(async move {
+                let service = hyper::service::service_fn(move |req| {
+                    let d = d.clone();
+                    async move { Ok::<_, hyper::Error>(d.dispatch(req).await) }
+                });
+                let _ = hyper::server::conn::http1::Builder::new()
+                    .serve_connection(io, service)
+                    .await;
+            });
+        }
+    });
+
+    // Single reqwest client reused across iters. Connection keepalive
+    // means after warmup every request reuses a pooled connection, so
+    // we measure the server side, not TCP setup.
+    let client = reqwest::Client::builder()
+        .pool_idle_timeout(Duration::from_secs(60))
+        .pool_max_idle_per_host(4)
+        .build()
+        .unwrap();
+
+    // Warmup: 5 PUTs + 5 GETs at the same size class to prime the
+    // connection pool, JIT any lazy s3s paths, and warm NTFS page cache.
+    let warmup_data = vec![0x42u8; size];
+    for i in 0..5 {
+        let url = format!("http://{}/bench/warmup_{}_{}", addr, size, i);
+        client.put(&url).body(warmup_data.clone()).send().await.unwrap();
+        let _ = client.get(&url).send().await.unwrap().bytes().await.unwrap();
+    }
+
+    // PUT phase. Unique key per iter so we never overwrite.
+    let data = vec![0xA5u8; size];
+    let mut put_samples = Vec::with_capacity(iters);
+    for i in 0..iters {
+        let url = format!("http://{}/bench/put_{}_{}", addr, size, i);
+        let t = Instant::now();
+        let resp = client.put(&url).body(data.clone()).send().await.unwrap();
+        put_samples.push(t.elapsed());
+        assert!(resp.status().is_success(), "PUT failed: {}", resp.status());
+    }
+
+    // For the pool tier, drain pending renames so the GET phase
+    // measures reads from the final destination (not pending_renames).
+    // Read-after-write via pending_renames is measured by a separate
+    // phase; this bench is the steady-state perf comparison.
+    if tier == L4Tier::Pool {
+        for backend in pool.disks() {
+            backend.drain_pending_writes().await;
+        }
+    }
+
+    // GET phase. Same keys, same order.
+    let mut get_samples = Vec::with_capacity(iters);
+    for i in 0..iters {
+        let url = format!("http://{}/bench/put_{}_{}", addr, size, i);
+        let t = Instant::now();
+        let resp = client.get(&url).send().await.unwrap();
+        assert!(resp.status().is_success(), "GET failed: {}", resp.status());
+        let bytes = resp.bytes().await.unwrap();
+        assert_eq!(bytes.len(), size, "GET wrong size");
+        get_samples.push(t.elapsed());
+    }
+
+    let put = L4Stats::from(&mut put_samples, size);
+    let get = L4Stats::from(&mut get_samples, size);
+
+    // Abort the server task so the next iteration's TcpListener can
+    // bind cleanly (even though we use port 0, be defensive).
+    server_task.abort();
+
+    L4Row { tier, size, iters, put, get }
+}
+
+fn human_l4(size: usize) -> String {
+    if size >= MB {
+        format!("{}MB", size / MB)
+    } else if size >= 1024 {
+        format!("{}KB", size / 1024)
+    } else {
+        format!("{}B", size)
+    }
+}
+
+/// Emit two comparison tables (one for PUT p50, one for GET p50) so the
+/// three tiers are side by side at each size.
+fn print_l4_comparison(rows: &[L4Row], workload: &[(usize, usize)]) {
+    eprintln!("=== Three-tier PUT p50 comparison ===");
+    eprintln!(
+        "  {:<8} | {:>10} | {:>10} | {:>10} | {:>12} | {:>12}",
+        "size", "file", "log", "pool", "pool vs file", "pool vs log",
+    );
+    for &(size, _) in workload {
+        let pick = |tier: L4Tier| {
+            rows.iter()
+                .find(|r| r.tier == tier && r.size == size)
+                .map(|r| r.put.p50_us)
+                .unwrap_or(0.0)
+        };
+        let f = pick(L4Tier::File);
+        let l = pick(L4Tier::Log);
+        let p = pick(L4Tier::Pool);
+        eprintln!(
+            "  {:<8} | {:>8.1}us | {:>8.1}us | {:>8.1}us | {:>10.1}x | {:>10.1}x",
+            human_l4(size),
+            f, l, p,
+            if p > 0.0 { f / p } else { 0.0 },
+            if p > 0.0 { l / p } else { 0.0 },
+        );
+    }
+    eprintln!();
+
+    eprintln!("=== Three-tier GET p50 comparison ===");
+    eprintln!(
+        "  {:<8} | {:>10} | {:>10} | {:>10} | {:>12} | {:>12}",
+        "size", "file", "log", "pool", "pool vs file", "pool vs log",
+    );
+    for &(size, _) in workload {
+        let pick = |tier: L4Tier| {
+            rows.iter()
+                .find(|r| r.tier == tier && r.size == size)
+                .map(|r| r.get.p50_us)
+                .unwrap_or(0.0)
+        };
+        let f = pick(L4Tier::File);
+        let l = pick(L4Tier::Log);
+        let p = pick(L4Tier::Pool);
+        eprintln!(
+            "  {:<8} | {:>8.1}us | {:>8.1}us | {:>8.1}us | {:>10.1}x | {:>10.1}x",
+            human_l4(size),
+            f, l, p,
+            if p > 0.0 { f / p } else { 0.0 },
+            if p > 0.0 { l / p } else { 0.0 },
+        );
+    }
+    eprintln!();
+
+    eprintln!("=== PUT avg throughput comparison (MB/s) ===");
+    eprintln!(
+        "  {:<8} | {:>10} | {:>10} | {:>10}",
+        "size", "file", "log", "pool",
+    );
+    for &(size, _) in workload {
+        let pick = |tier: L4Tier| {
+            rows.iter()
+                .find(|r| r.tier == tier && r.size == size)
+                .map(|r| r.put.mbps)
+                .unwrap_or(0.0)
+        };
+        eprintln!(
+            "  {:<8} | {:>8.1}   | {:>8.1}   | {:>8.1}  ",
+            human_l4(size),
+            pick(L4Tier::File),
+            pick(L4Tier::Log),
+            pick(L4Tier::Pool),
+        );
+    }
+    eprintln!();
+}

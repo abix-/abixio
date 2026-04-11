@@ -20,6 +20,39 @@ The [RAM write cache](write-cache.md) sits above whichever one is
 enabled. Which mechanism ships as the default is decided by benchmark;
 see the comparison plan at the end of this doc.
 
+## Correction: what's actually true about the pool's end-to-end performance
+
+**Read this before anything else in the doc.**
+
+Phase 8 (`bench_pool_l4_tier_matrix`) measured the pool through the
+full HTTP stack (reqwest to hyper to s3s to VolumePool to LocalVolume)
+for the first time. The results contradict the storage-layer
+claims that appear many times below:
+
+- **The pool only clearly wins PUTs in the 1MB to 10MB range.** Outside
+  that window it is either tied with the file tier, slower than the
+  log store, or slower than the file tier.
+- **The log store beats the pool 3.2x at 4KB PUT and 4.5x at 4KB GET**
+  end-to-end. The pool is **not** a log store replacement for small
+  objects.
+- **The file tier beats the pool at 100MB PUT** (152ms vs 257ms p50).
+  The temp-file rename on NTFS adds ~100ms at that size that the
+  file tier never pays because it writes directly to the final
+  location.
+- **The "pool is 53x faster at 4KB" claim from Phase 4.5 and Phase 5.6
+  is storage-layer only.** At 4KB, ~930us of hyper/s3s/axum overhead
+  per request is ~98% of the PUT latency budget. Any storage-layer
+  optimization below that is invisible to real clients. End-to-end
+  the pool at 4KB PUT is 942us p50 vs 1406us for the file tier, so
+  1.5x not 53x.
+
+Earlier phase sections below describe the storage-layer work as it
+was measured at the time. Those numbers are still correct at the
+storage layer. They are not the numbers a user will see. Read the
+[Phase 8 section](#phase-8-end-to-end-three-tier-matrix-done) first
+for the honest end-to-end story, then the earlier phases for how
+the storage-layer optimizations got built.
+
 ## Table of contents
 
 - [Why](#why): the syscall cost the pool eliminates
@@ -49,7 +82,8 @@ see the comparison plan at the end of this doc.
   - [Phase 5.6: move file drops off the hot path (done)](#phase-56-move-file-drops-off-the-hot-path-done)
   - [Methodology lessons](#methodology-lessons-from-phase-55-and-phase-56)
   - [Phase 6: crash recovery scan (done)](#phase-6-crash-recovery-scan-done)
-  - [Phase 7-9: pending](#phase-7-9-pending)
+  - [Phase 8: end-to-end three-tier matrix (done)](#phase-8-end-to-end-three-tier-matrix-done)
+  - [Phase 7, 9: pending](#phase-7-9-pending)
 - [Open questions for implementation](#open-questions-for-implementation)
 - [Files to modify (when phase 2 begins)](#files-to-modify-when-phase-2-begins)
 - [Verification](#verification)
@@ -454,22 +488,57 @@ not a required path.
 
 ## Coexistence with the log store
 
-The pool is designed as a replacement for the log store. The main
-motivation is GC: one file per object means `unlink()` reclaims space
-natively, with no segment compactor, no live needle scan, no
-copy-forward pass. The log store needs phase 8 GC. The pool needs
-zero new code.
+**The pool is not a log store replacement.** This was the original
+design goal, and the storage-layer benchmarks (Phase 4.5 / Phase 5.6)
+supported that goal. Phase 8 measured the gap end-to-end and the
+conclusion flipped.
 
-The one known trade-off in the other direction is GET latency for
-very small objects. The log store does HashMap lookup + slice from
-an already-mmap'd segment in ~10us. The pool does File::open + mmap
-in ~100us. The benchmark plan below quantifies the gap on real
-workloads. If the gap is small in practice, the log store goes away.
-If the gap is large for hot tiny objects, we can keep the log store
-enabled for those and use the pool for everything else.
+Phase 8 results at 4KB through the full HTTP stack:
 
-Until benchmarks decide which one to ship as the default, both
-coexist behind a runtime flag:
+| Operation | file | log | pool |
+|---|---|---|---|
+| PUT p50 | 1406us | **295us** | 942us |
+| GET p50 | 582us | **168us** | 761us |
+
+The log store is **3.2x faster** than the pool at 4KB PUT and
+**4.5x faster** at 4KB GET. The pool's storage-layer write-path
+optimizations exist but are dwarfed by the ~930us of HTTP stack
+overhead that applies to all three tiers equally. For reads, the
+pool falls through to `File::open + mmap` (~100us syscall floor)
+while the log store does HashMap lookup and slice from a
+permanently-mmap'd segment. The design doc has flagged this GET
+trade-off from day one. Phase 8 put a number on it.
+
+**The pool's actual sweet spot is 1MB to 10MB.** That's where the
+log store has fallen through to the file tier (it only handles
+<=64KB) and the pool's rename trick still pays off:
+
+| Size | file PUT p50 | log PUT p50 | pool PUT p50 |
+|---|---|---|---|
+| 1MB | 4200us | 4057us | **3623us** |
+| 10MB | 17910us | 37003us | **16582us** |
+
+At 10MB the pool beats the log store by **2.2x** because the log
+store has degraded to file-tier fallback, and it beats the file
+tier by **1.1x** because the pool's temp-file write is only
+marginally cheaper than a direct write at that size.
+
+**At 100MB the file tier beats the pool.** PUT p50: file 152ms,
+pool 257ms. The 100MB temp-file rename on NTFS adds ~100ms that
+the file tier never pays. Use the file tier for huge objects.
+
+**The right ship plan, per Phase 8:**
+
+- `<=64KB`: log store
+- `64KB to 10MB`: pool
+- `>10MB`: file tier
+
+Phase 7 (admin endpoint), Phase 9 (concurrency bench), and the
+`--write-tier` CLI wiring all still need to land before this
+becomes a shippable default. But the per-size tier decision is no
+longer an open question at the sequential-sequential baseline.
+
+Runtime flag (still planned, still right):
 
 ```
 --write-tier log     # log store + file tier (current behavior)
@@ -477,8 +546,8 @@ coexist behind a runtime flag:
 --write-tier file    # both disabled, baseline slow path
 ```
 
-This lets us run `bench_4kb.py` and the bench matrix three ways and
-make a data-driven call before deleting the loser.
+`--write-tier=pool` is the all-pool mode for benchmarking only.
+The production default remains the three-tier handoff above.
 
 ## Implementation phases
 
@@ -498,8 +567,8 @@ make a data-driven call before deleting the loser.
 | 5.6 | Move file drops off the hot path | flatter latency at every size | **done** (4KB avg 3x better, 10MB p99 12x better; pool now 53x file tier at 4KB and 4.6x at 100MB) |
 | 6 | Crash recovery scan in `enable_write_pool` | restart safety | **done** (Phase 6: `recover_pool_dir` finishes any pending renames left from a crash before fresh slots are created; 14 new tests, all 355 total pass) |
 | 7 | Admin endpoint `GET /_admin/pool/status` | operator visibility | pending |
-| 8 | Tests: unit + integration + crash kill | confidence | pending |
-| 9 | Benchmark all three tiers | data-driven decision | pending |
+| 8 | End-to-end three-tier matrix (HTTP layer) | data-driven decision | **done** (Phase 8: bench_pool_l4_tier_matrix measures PUT+GET p50 through the full hyper/s3s/VolumePool stack at 5 sizes for file/log/pool tiers. **Result: pool only wins 1MB-10MB, log store dominates <=64KB, file tier wins 100MB. Storage-layer 53x claims do not translate end-to-end.**) |
+| 9 | Benchmark all three tiers under concurrency | concurrent load picture | pending |
 
 ## Benchmark plan
 
@@ -1073,6 +1142,14 @@ the file tier is already a huge win.
 
 ### Phase 4.5: profile and fix the 4KB integration overhead (done)
 
+> **Phase 8 correction:** the numbers in this section measure
+> `LocalVolume::write_shard` directly, not end-to-end. At 4KB the
+> pool's real user-facing PUT latency is 942us p50 through
+> hyper/s3s, not 10us. See the
+> [Phase 8 section](#phase-8-end-to-end-three-tier-matrix-done)
+> for the honest story. The work in this section is still real
+> at the storage layer. It just is not what a user sees.
+
 Phase 4 left a puzzle: the integrated `LocalVolume::write_shard`
 call took ~43us median for 4KB even though Phase 2's bare write
 step was ~4us. That's ~39us of fixed per-call cost, regardless of
@@ -1294,6 +1371,16 @@ on a measurement that has millisecond p99 spikes.
    to fail fast without disrupting normal runs.
 
 ### Phase 5.6: move file drops off the hot path (done)
+
+> **Phase 8 correction:** the "pool 53x file tier at 4KB" number
+> below measures `LocalVolume::write_shard` in a loop that does
+> not exist in production. End-to-end 4KB PUT p50 through
+> hyper/s3s is 942us for the pool vs 1406us for the file tier
+> (1.5x, not 53x). The drops-off-hot-path optimization still
+> helped the storage layer, but most of that help is invisible
+> to users because the HTTP stack dominates the 4KB budget. See
+> the [Phase 8 section](#phase-8-end-to-end-three-tier-matrix-done)
+> for the honest story.
 
 Phase 5/5.5 looked like a 17us regression at 4KB. After running the
 integrated bench with 10k samples per size (Phase 5.5+), the median
@@ -1555,15 +1642,161 @@ production-safe for non-versioned writes:
 - Phase 6 closes the crash-recovery gap so acked PUTs survive a
   restart.
 
-### Phase 7-9: pending
+### Phase 8: end-to-end three-tier matrix (done)
+
+The first eight phases all measured the pool at the storage layer
+(directly calling `LocalVolume::write_shard` in a loop). Phase 8
+measured it end-to-end through the full HTTP stack for the first
+time, and the story that came back is very different.
+
+#### Methodology
+
+`tests/layer_bench.rs::bench_pool_l4_tier_matrix`. Spawns a fresh
+abixio server per (tier, size) cell, single disk with ftt=0 (no
+erasure), binds a random 127.0.0.1 port, runs sequential PUTs
+followed by sequential GETs through `reqwest::Client` against the
+full hyper http1 + s3s dispatch stack. Each tier is configured by
+calling `enable_log_store` or `enable_write_pool(32)` on the
+`LocalVolume` before it is boxed into the VolumePool. For the
+pool tier, `drain_pending_writes` is called between the PUT and
+GET phases so GETs measure steady-state read latency, not
+read-after-write-via-pending.
+
+Workload: 4KB/64KB/1MB/10MB/100MB, 1000/500/200/50/10 iterations
+each. Three tiers: file (baseline), log (log_store enabled), pool
+(write_pool enabled). Total ~1760 PUTs and ~1760 GETs per tier.
+Raw output in `bench-results/phase8-tier-matrix-sequential.txt`.
+
+#### PUT p50 results
+
+| size | file | log | pool | pool vs file | pool vs log |
+|---|---|---|---|---|---|
+| 4KB | 1406us | **295us** | 942us | 1.5x | **0.3x** |
+| 64KB | 1506us | **377us** | 1037us | 1.5x | **0.4x** |
+| 1MB | 4200us | 4057us | **3623us** | 1.2x | 1.1x |
+| 10MB | 17910us | 37003us | **16582us** | 1.1x | **2.2x** |
+| 100MB | **152094us** | 176931us | 257470us | **0.6x** | 0.7x |
+
+#### GET p50 results
+
+| size | file | log | pool |
+|---|---|---|---|
+| 4KB | 582us | **168us** | 761us |
+| 64KB | 831us | **208us** | 920us |
+| 1MB | 1818us | 1668us | **1626us** |
+| 10MB | 12271us | 10705us | **9604us** |
+| 100MB | 104539us | 104346us | **96414us** |
+
+#### PUT throughput (MB/s)
+
+| size | file | log | pool |
+|---|---|---|---|
+| 4KB | 2.4 | **12.5** | 3.6 |
+| 64KB | 35.7 | **157.1** | 45.2 |
+| 1MB | 231.0 | 231.5 | **271.7** |
+| 10MB | 555.9 | 302.7 | **592.4** |
+| 100MB | **655.8** | 575.0 | 439.3 |
+
+#### Findings
+
+**1. The 53x-at-4KB storage-layer claim is invisible to users.**
+Phase 5.6 measured `write_shard` at 11.9us p50 for 4KB. End-to-end
+at 4KB is 942us p50. That means ~930us per request is spent above
+`LocalVolume` in the HTTP stack (reqwest body read, hyper framing,
+s3s parsing, axum routing, validation). At 4KB, the HTTP stack is
+~98% of the PUT budget. Any storage-layer optimization below that
+is fighting over the remaining ~2%. The 11.9us win is still real
+at the storage layer and this doc keeps it for history, but it
+does not translate to a user-facing 53x win.
+
+**2. Log store dominates small objects.** At 4KB PUT, log store
+295us vs pool 942us is a **3.2x gap**. At 4KB GET, log store 168us
+vs pool 761us is a **4.5x gap**. The gap holds at 64KB. The log
+store's segment-append and HashMap-indexed reads are just faster
+than the pool's per-object file-create and `File::open + mmap`
+reads once you're paying the HTTP overhead on both sides. The
+design doc's Trade-offs section always flagged the read gap. Phase
+8 put a number on it.
+
+**3. The pool loses to the file tier at 100MB PUT.** 257ms vs
+152ms (0.6x). Likely cause: NTFS rename of a 100MB temp file adds
+~100ms that the file tier never pays, because the file tier
+writes directly to the final location. The Phase 5.6 breakdown
+bench missed this cost because it called `drain_pending` between
+PUTs, which excluded the rename from the measured step. A 100MB
+PUT is dominated by the rename, not the write.
+
+**4. The pool's real sweet spot is 1MB to 10MB.** At 1MB pool
+beats file 1.2x and log 1.1x. At 10MB pool beats log 2.2x (log
+has fallen through to the file tier because it only handles
+<=64KB) and file 1.1x. This is a narrow but real win. At these
+sizes the HTTP stack is <20% of the PUT budget and the pool's
+write-path savings become visible again.
+
+**5. The pool's GETs are slower than log store GETs at small
+sizes.** 4.5x slower at 4KB, 4.4x slower at 64KB. This is
+exactly what the Trade-offs section predicted. Keep the log
+store enabled for small objects.
+
+#### What this means for the pool story
+
+- **The pool is not a log store replacement.** See the
+  [Coexistence with the log store](#coexistence-with-the-log-store)
+  section for the updated three-tier ship plan.
+- **The pool's 1MB to 10MB win is real.** It ships there and
+  nowhere else (pending Phase 9 confirmation under concurrency).
+- **The storage-layer 53x/130x numbers in earlier phases** are
+  still correct at the storage layer and are still accurate
+  history of the optimization work. They are not user-facing
+  latency. Phase 4.5 and Phase 5.6 sections above carry a
+  one-line Phase 8 correction banner.
+
+#### Things that would change these numbers
+
+- **Concurrency (Phase 9).** Sequential measurement is the worst
+  case for the pool because the rename worker never overlaps
+  with the next request. Under concurrency the async worker
+  might claw back some of the 100MB regression. Or might not.
+  Measure first.
+- **More iterations per cell.** 1000 at 4KB is stable at p50
+  but noisy at p99 (Phase 5.5+ lesson). 5000 would be safer.
+- **Fresh process per tier.** All three tiers ran in one test
+  invocation. OS cache state bleeds between cells.
+- **Linux/ext4.** The 100MB pool regression is NTFS rename cost
+  and may be smaller on other filesystems. Measured only on
+  Windows.
+
+#### Code changes
+
+- `tests/layer_bench.rs::bench_pool_l4_tier_matrix` (the bench
+  itself, 11 iteration cells, plus three comparison tables).
+- `src/storage/mod.rs`: added `async fn drain_pending_writes` to
+  the `Backend` trait with a default no-op implementation. Lets
+  the bench drain the pool between PUT and GET phases via the
+  trait without downcasting to `LocalVolume`.
+- `src/storage/local_volume.rs`: overrides `drain_pending_writes`
+  to delegate to the existing `drain_pending` method.
+
+### Phase 7, 9: pending
 
 The remaining phases are:
 
 - **Phase 7** (backpressure / fall-through to slow path) when the
-  pool is empty or the rename queue gets too long.
-- **Phase 8** (`--write-tier` CLI flag + full bench matrix) for
-  the data-driven call on log store vs pool.
-- **Phase 9** (pre-allocation tunable via fallocate / SetEndOfFile).
+  pool is empty or the rename queue gets too long. Still
+  pending. More important now that Phase 8 has shown the pool
+  is only the right tier for a specific size window.
+- **Phase 9** (concurrency). The Phase 8 numbers are all
+  sequential. Real workloads are concurrent and the pool's async
+  rename worker is designed to overlap with the next request.
+  The concurrency bench is the final confidence check before
+  shipping the three-tier default.
+- The `--write-tier` CLI flag in `src/main.rs`. Still pending.
+  The bench harness enables tiers directly in code; production
+  needs the flag.
+- Pre-allocation tunable via `fallocate` / `SetEndOfFile`. Still
+  pending. Much less urgent now that Phase 8 has located the
+  real bottleneck (HTTP stack overhead) that pre-allocation
+  cannot touch.
 - Streaming `open_shard_writer` integration through the pool.
 - Versioned writes through the pool.
 

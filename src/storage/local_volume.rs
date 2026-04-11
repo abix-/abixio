@@ -395,6 +395,10 @@ impl ShardWriter for LocalShardWriter {
 
 #[async_trait::async_trait]
 impl Backend for LocalVolume {
+    async fn drain_pending_writes(&self) {
+        self.drain_pending().await;
+    }
+
     async fn open_shard_writer(
         &self,
         bucket: &str,

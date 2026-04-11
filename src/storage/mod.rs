@@ -84,6 +84,12 @@ pub trait Backend: Send + Sync {
         meta: &ObjectMeta,
     ) -> Result<(), StorageError>;
 
+    /// Wait until every in-flight background write finishes (e.g.
+    /// the write pool's rename worker). Default no-op. Used by tests
+    /// and benches that need to observe steady state after a burst
+    /// of writes without relying on timing.
+    async fn drain_pending_writes(&self) {}
+
     async fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError>;
 
     /// Memory-map the shard file. Returns the mapping + metadata.
