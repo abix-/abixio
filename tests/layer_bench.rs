@@ -589,6 +589,8 @@ async fn bench_pool_l1_slot_write() {
             inline_data: None,
         };
         ObjectMetaFile {
+            bucket: "bench".to_string(),
+            key: "obj".to_string(),
             versions: vec![meta],
         }
     }
@@ -844,6 +846,8 @@ async fn bench_pool_l1_5_json_serializers() {
             inline_data: None,
         };
         ObjectMetaFile {
+            bucket: "bench".to_string(),
+            key: "obj".to_string(),
             versions: vec![meta],
         }
     }
@@ -1240,6 +1244,154 @@ async fn bench_pool_l2_worker_drain() {
             ops_per_sec,
         );
         assert_eq!(pool.available(), n);
+    }
+
+    eprintln!();
+}
+
+// ============================================================================
+// Pool L3: integrated PUT throughput via LocalVolume::write_shard (Phase 4)
+// ============================================================================
+//
+// Phase 4 wires the pool into LocalVolume::write_shard. This bench measures
+// the integrated PUT path -- not the bare slot write from Phase 2 -- so we
+// can see the integration overhead. Compares against the existing file
+// tier (without pool enabled) at the same sizes.
+//
+// PUT-only. The Phase 4 design has no read path integration yet, so the
+// bench drains the rename worker between iterations to keep slots
+// available for the pool fast path.
+//
+// Run with:
+//   k3sc cargo-lock test --release --test layer_bench -- --ignored \
+//       --nocapture bench_pool_l3_integrated_put
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_pool_l3_integrated_put() {
+    use abixio::storage::local_volume::LocalVolume;
+    use abixio::storage::metadata::{ErasureMeta, ObjectMeta};
+    use abixio::storage::Backend;
+
+    fn make_meta() -> ObjectMeta {
+        ObjectMeta {
+            size: 4096,
+            etag: "abc".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            created_at: 1700000000,
+            erasure: ErasureMeta {
+                ftt: 1,
+                index: 0,
+                epoch_id: 1,
+                volume_ids: vec!["vol-0".to_string(), "vol-1".to_string()],
+            },
+            checksum: "deadbeef".to_string(),
+            user_metadata: std::collections::HashMap::new(),
+            tags: std::collections::HashMap::new(),
+            version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+            inline_data: None,
+        }
+    }
+
+    fn fmt_dur(d: Duration) -> String {
+        let us = d.as_secs_f64() * 1_000_000.0;
+        if us >= 1000.0 {
+            format!("{:.2}ms", us / 1000.0)
+        } else {
+            format!("{:.1}us", us)
+        }
+    }
+
+    fn report(size: usize, label: &str, iters: usize, mut samples: Vec<Duration>) {
+        samples.sort();
+        let total: Duration = samples.iter().sum();
+        let avg = total / iters as u32;
+        let p50 = samples[iters / 2];
+        let p99_idx = ((iters * 99) / 100).min(iters - 1);
+        let p99 = samples[p99_idx];
+        let mbps = (size * iters) as f64 / total.as_secs_f64() / MB as f64;
+        eprintln!(
+            "  {:<8} {:<26} {:>5}  {:>9}  {:>9}  {:>9}  {:>10.1} MB/s",
+            human(size),
+            label,
+            iters,
+            fmt_dur(avg),
+            fmt_dur(p50),
+            fmt_dur(p99),
+            mbps,
+        );
+    }
+
+    eprintln!("\n=== Pool L3: integrated PUT (LocalVolume::write_shard) ===\n");
+    eprintln!(
+        "  {:<8} {:<26} {:>5}  {:>9}  {:>9}  {:>9}  {:>14}",
+        "SIZE", "STRATEGY", "ITERS", "AVG", "p50", "p99", "THROUGHPUT"
+    );
+
+    let sizes: &[(usize, usize)] = &[
+        (4 * 1024, 100),
+        (64 * 1024, 60),
+        (1 * MB, 30),
+        (10 * MB, 15),
+        (100 * MB, 5),
+    ];
+
+    let meta = make_meta();
+
+    for &(size, iters) in sizes {
+        let data = vec![0x42u8; size];
+        eprintln!();
+
+        // ---------------------------------------------------------------
+        // File tier baseline: LocalVolume without pool enabled
+        // ---------------------------------------------------------------
+        {
+            let tmp = TempDir::new().unwrap();
+            let disk = LocalVolume::new(tmp.path()).unwrap();
+            let mut timings = Vec::with_capacity(iters);
+            for i in 0..iters {
+                let key = format!("obj_{}", i);
+                let t = Instant::now();
+                disk.write_shard("bench", &key, &data, &meta).await.unwrap();
+                timings.push(t.elapsed());
+            }
+            report(size, "file_tier (baseline)", iters, timings);
+        }
+
+        // ---------------------------------------------------------------
+        // Pool: LocalVolume with enable_write_pool(64)
+        // ---------------------------------------------------------------
+        {
+            let tmp = TempDir::new().unwrap();
+            let mut disk = LocalVolume::new(tmp.path()).unwrap();
+            disk.enable_write_pool(64).await.unwrap();
+            // Warmup -- get the worker spinning so the first measurement
+            // doesn't include task spawn cost.
+            for i in 0..4 {
+                let key = format!("warm_{}", i);
+                disk.write_shard("bench", &key, &data, &meta).await.unwrap();
+            }
+            disk.drain_pending().await;
+
+            let mut timings = Vec::with_capacity(iters);
+            for i in 0..iters {
+                let key = format!("obj_{}", i);
+                let t = Instant::now();
+                disk.write_shard("bench", &key, &data, &meta).await.unwrap();
+                timings.push(t.elapsed());
+                // Drain between iters so the pool stays full and we
+                // measure the fast path on every iteration. The drain
+                // wait is OUTSIDE the timing.
+                if (i + 1) % 32 == 0 {
+                    disk.drain_pending().await;
+                }
+            }
+            disk.drain_pending().await;
+            report(size, "pool (Phase 4)", iters, timings);
+        }
     }
 
     eprintln!();

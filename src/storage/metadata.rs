@@ -8,8 +8,20 @@ use serde_json::Value;
 
 /// Single meta.json per object, containing all version metadata.
 /// Matches MinIO's xl.meta pattern.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+///
+/// `bucket` and `key` are the object's identity. They were added so
+/// the write pool's temp meta files are self-describing -- the rename
+/// worker (and crash recovery) can find the destination from the file
+/// alone, without an in-RAM index. Backward-compatible with old
+/// meta.json files via `#[serde(default)]`: existing files have empty
+/// strings here, and existing call sites that derive bucket/key from
+/// the path keep working unchanged.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ObjectMetaFile {
+    #[serde(default)]
+    pub bucket: String,
+    #[serde(default)]
+    pub key: String,
     pub versions: Vec<ObjectMeta>,
 }
 
@@ -222,6 +234,7 @@ mod tests {
     fn meta_file_serde_round_trip() {
         let mf = ObjectMetaFile {
             versions: vec![test_version(0)],
+            ..Default::default()
         };
         let json = serde_json::to_string(&mf).unwrap();
         let decoded: ObjectMetaFile = serde_json::from_str(&json).unwrap();
@@ -234,6 +247,7 @@ mod tests {
         let path = dir.path().join("meta.json");
         let mf = ObjectMetaFile {
             versions: vec![test_version(1)],
+            ..Default::default()
         };
         write_meta_file(&path, &mf).await.unwrap();
         let loaded = read_meta_file(&path).await.unwrap();
@@ -280,6 +294,7 @@ mod tests {
                     ..test_version(0)
                 },
             ],
+            ..Default::default()
         };
         write_meta_file(&path, &mf).await.unwrap();
         let loaded = read_meta_file(&path).await.unwrap();

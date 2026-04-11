@@ -330,6 +330,8 @@ pub async fn complete_upload(
         let mut disk_meta = meta.clone();
         disk_meta.erasure.index = disk_idx;
         let mf = crate::storage::metadata::ObjectMetaFile {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
             versions: vec![disk_meta],
         };
         let meta_path = pathing::object_meta_path(&disk_root(disk), bucket, key)?;
