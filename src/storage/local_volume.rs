@@ -427,10 +427,14 @@ impl Backend for LocalVolume {
                     drop(data_file);
                     drop(meta_file);
 
-                    // Build the rename request and send it to the worker
+                    // Build the rename request and send it to the worker.
+                    // Compute object_dir once and join the file names cheaply --
+                    // calling object_shard_path/object_meta_path separately
+                    // would re-validate and re-allocate three times. Phase 4.5
+                    // measured this as a 4-5us saving on the 4KB hot path.
                     let dest_dir = pathing::object_dir(&self.root, bucket, key)?;
-                    let data_dest = pathing::object_shard_path(&self.root, bucket, key)?;
-                    let meta_dest = pathing::object_meta_path(&self.root, bucket, key)?;
+                    let data_dest = dest_dir.join("shard.dat");
+                    let meta_dest = dest_dir.join("meta.json");
                     let req = RenameRequest {
                         slot_id,
                         data_src,

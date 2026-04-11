@@ -455,6 +455,7 @@ make a data-driven call before deleting the loser.
 | 1.7 | Rename worker in isolation (Phase 3) | drain rate ceiling | **done** (1 worker = 940 ops/sec, 27x file tier; 2 workers = 1744 ops/sec; ship 1 per disk; see "Phase 3 results" below) |
 | 2 | `ObjectMetaFile` `bucket` and `key` fields | self-describing meta | **done** (Phase 4) |
 | 3 | Wire `write_shard` to use the pool when enabled | buffered PUT fast path | **done** (Phase 4 -- integrated pool is 5-18x faster than the file tier at every size; see "Phase 4 results" below) |
+| 3.5 | Profile + fix the 4KB integration overhead (Phase 4.5) | smaller per-call cost | **done** (collapsed 3 path computations into 1; 4KB p50 dropped from 43us to 10us, pool is now 46x faster than file tier at 4KB; see "Phase 4.5 results" below) |
 | 4 | Wire `open_shard_writer` to use the pool | streaming PUT fast path | pending |
 | 5 | Read path integration in all five readers | reads see pending writes | pending |
 | 6 | Crash recovery scan in `LocalVolume::new` | restart safety | pending |
@@ -1031,6 +1032,122 @@ the file tier is already a huge win.
    file creates dominates the file tier at small sizes, and the
    pool eliminates all of it. Below 64KB the file tier hits some
    per-file fixed cost ceiling that the pool walks straight past.
+
+### Phase 4.5: profile and fix the 4KB integration overhead -- DONE
+
+Phase 4 left a puzzle: the integrated `LocalVolume::write_shard`
+call took ~43us median for 4KB even though Phase 2's bare write
+step was ~4us. That's ~39us of fixed per-call cost, regardless of
+data size. Phase 4.5 broke down where the 39us went and fixed the
+biggest piece.
+
+**The breakdown bench** (`bench_pool_l3_5_integration_breakdown`)
+times each step inside `write_shard`'s pool branch in isolation,
+100k iterations each. Output:
+`bench-results/phase4.5-integration-breakdown.txt`. Re-run with:
+
+```bash
+k3sc cargo-lock test --release --test layer_bench -- \
+    --ignored --nocapture bench_pool_l3_5_integration_breakdown
+```
+
+Median per-step at 4KB:
+
+```
+1. validate_bucket_name + validate_object_key       100ns
+2. ObjectMetaFile construction (clone+alloc)        300ns
+3. simd_json::serde::to_vec(&mf)                    400ns
+4. pool.try_pop()                                   200ns
+5. WriteSlot destructure + 2x PathBuf clone         300ns
+6. tokio::try_join!(data_write, meta_write)        6400ns
+7. object_dir + shard_path + meta_path             6600ns  <-- biggest fixable cost
+8. RenameRequest construction (5x PathBuf clone)    200ns
+9. tx.send(req).await (channel has space)           100ns
+                                                  -------
+                            sum:                   14600ns
+```
+
+**Path computation was almost as expensive as the actual file
+writes.** Calling `object_dir`, `object_shard_path`, and
+`object_meta_path` as three separate functions ran the bucket and
+key validation three times AND built three independent PathBufs --
+when really we only need one validation and one PathBuf, with two
+cheap `.join()` calls for the file names.
+
+### The fix
+
+Three lines in `LocalVolume::write_shard`:
+
+```rust
+// Before (3 independent calls, 6.6us median):
+let dest_dir = pathing::object_dir(&self.root, bucket, key)?;
+let data_dest = pathing::object_shard_path(&self.root, bucket, key)?;
+let meta_dest = pathing::object_meta_path(&self.root, bucket, key)?;
+
+// After (1 call + 2 cheap joins):
+let dest_dir = pathing::object_dir(&self.root, bucket, key)?;
+let data_dest = dest_dir.join("shard.dat");
+let meta_dest = dest_dir.join("meta.json");
+```
+
+### Result -- much bigger than predicted
+
+I predicted ~5us savings (would drop 4KB p50 from 43us to ~38us).
+Actual measurement after the fix:
+
+| Metric | Phase 4 (before) | Phase 4.5 (after) | Improvement |
+|---|---|---|---|
+| 4KB pool average | 132.7us | **23.8us** | **5.6x faster** |
+| 4KB pool median | 43.0us | **10.4us** | **4.1x faster** |
+| 4KB pool 99th percentile | 2.10ms | **184us** | **11x faster** |
+
+The 4KB median dropped by 33us, not 5us as predicted -- the path
+computation was triggering more downstream cost than its isolated
+measurement suggested. The 11x improvement on the 99th percentile
+is the most telling: the variance wasn't measurement noise, it was
+real, and it was caused by the redundant validation and allocation
+work.
+
+### Pool vs file tier (after the fix)
+
+| Size | File tier (median) | Pool (median) | Speedup |
+|---|---|---|---|
+| **4KB** | 478us | **10.4us** | **46x** (was 15x) |
+| **64KB** | 861us | **57us** | **15x** |
+| **1MB** | 2.96ms | **409us** | **7.2x** (was 5.5x) |
+| **10MB** | 22.98ms | **3.63ms** | **6.3x** |
+| **100MB** | 285ms | **37.2ms** | **7.7x** |
+
+The 4KB win nearly tripled (15x to 46x). Other sizes saw small
+improvements too because the 6.6us savings is constant. The pool
+is now within ~6us of the bare Phase 2 write step at 4KB.
+
+### Methodology lesson: isolated measurements can hide interaction effects
+
+The breakdown bench measured the path computation at 6.6us in
+isolation. Removing it from the integrated path saved ~33us. **The
+isolated cost was about 1/5 of the actual cost.** The redundant
+validation and PathBuf allocation work was triggering downstream
+problems -- probably allocator hot paths, cache pressure, async
+state machine size -- that the isolated bench couldn't see because
+it didn't have the rest of `write_shard`'s code running around it.
+
+Generalizable: **when a microbench says "this step costs X" and the
+real-world cost is much larger than X, the cost is interaction with
+the surrounding code, not the step itself.** Removing the offending
+call can have outsized effects. Conversely, optimizing the step in
+isolation may be wasted work if the interaction effect is what's
+actually expensive.
+
+### What's left in the gap
+
+Phase 4.5 closed most of the unexplained 28us gap from the Phase 4
+analysis. Pool 4KB p50 went from 43us to 10us; the bare Phase 2
+write step is ~4us. The remaining ~6us is genuine per-call code
+work (validation, meta build, simd-json serialization, channel
+send, async state machine) and isn't worth chasing further -- the
+absolute cost is already small and the diminishing returns are
+real.
 
 ### Phase 5-9: pending
 

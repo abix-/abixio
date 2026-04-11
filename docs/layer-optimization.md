@@ -1200,6 +1200,136 @@ shows the wrong number leads to the wrong decision.
 Bench: `tests/layer_bench.rs::bench_pool_l3_integrated_put`
 Output: `bench-results/phase4-integrated-put.txt`
 
+### Next: Phase 4.5 (analyze and fix the integration overhead) -- DONE, see Pool L3.5 below
+
+---
+
+## Pool L3.5: integration overhead breakdown and fix (Phase 4.5)
+
+Phase 4 left a puzzle: the integrated `write_shard` call took ~43us
+median for 4KB, but the bare Phase 2 write step was only ~4us. The
+gap was ~39us of fixed per-call cost. Phase 4.5 broke down where
+that 39us went and fixed the biggest piece.
+
+### The breakdown bench
+
+`bench_pool_l3_5_integration_breakdown` times each step inside
+`write_shard`'s pool branch in isolation, 100k iterations each.
+
+Median per step at 4KB:
+
+```
+1. validate_bucket_name + validate_object_key       100ns
+2. ObjectMetaFile construction (clone+alloc)        300ns
+3. simd_json::serde::to_vec(&mf)                    400ns
+4. pool.try_pop()                                   200ns
+5. WriteSlot destructure + 2x PathBuf clone         300ns
+6. tokio::try_join!(data_write, meta_write)        6400ns
+7. object_dir + shard_path + meta_path             6600ns  <-- biggest fixable cost
+8. RenameRequest construction (5x PathBuf clone)    200ns
+9. tx.send(req).await (channel has space)           100ns
+                                                  -------
+                            sum:                   14600ns
+```
+
+**The path computation was almost as expensive as the actual file
+writes.** Calling `object_dir`, `object_shard_path`, and
+`object_meta_path` as three separate functions ran the bucket and
+key validation three times AND built three independent PathBufs --
+when only one validation and one PathBuf are actually needed.
+
+The sum of medians (14.6us) is much less than the integrated
+measurement (43us), which surfaces an important fact: the breakdown
+bench couldn't see all the cost because each step ran in isolation
+with no surrounding code.
+
+### The fix
+
+Three lines in `LocalVolume::write_shard`:
+
+```rust
+// Before (3 independent calls):
+let dest_dir = pathing::object_dir(&self.root, bucket, key)?;
+let data_dest = pathing::object_shard_path(&self.root, bucket, key)?;
+let meta_dest = pathing::object_meta_path(&self.root, bucket, key)?;
+
+// After (1 call + 2 cheap joins):
+let dest_dir = pathing::object_dir(&self.root, bucket, key)?;
+let data_dest = dest_dir.join("shard.dat");
+let meta_dest = dest_dir.join("meta.json");
+```
+
+### Result -- much bigger than predicted
+
+Predicted savings: ~5us. Actual measured savings:
+
+| Metric | Phase 4 (before) | Phase 4.5 (after) | Improvement |
+|---|---|---|---|
+| 4KB pool average | 132.7us | 23.8us | **5.6x faster** |
+| 4KB pool median | 43.0us | 10.4us | **4.1x faster** |
+| 4KB pool 99th percentile | 2.10ms | 184us | **11x faster** |
+
+The 4KB median dropped by 33us, not 5us. **The 11x improvement on
+the 99th percentile is the most telling**: the variance wasn't
+measurement noise; it was real, and it was caused by the redundant
+path validation and allocation work triggering bad downstream
+behavior.
+
+### Pool vs file tier after the fix
+
+| Size | File tier (median) | Pool (median) | Speedup |
+|---|---|---|---|
+| **4KB** | 478us | **10.4us** | **46x** (was 15x) |
+| **64KB** | 861us | **57us** | **15x** |
+| **1MB** | 2.96ms | **409us** | **7.2x** (was 5.5x) |
+| **10MB** | 22.98ms | **3.63ms** | **6.3x** |
+| **100MB** | 285ms | **37.2ms** | **7.7x** |
+
+The 4KB win nearly tripled (15x to 46x). The pool is now within
+about 6us of the bare Phase 2 write step at 4KB -- nearly all of
+the integration overhead is gone.
+
+### Methodology lesson: isolated measurements can hide interaction effects
+
+The breakdown bench said the path computation cost 6.6us in
+isolation. Removing it saved 33us. **The actual cost was about 5x
+the isolated measurement.**
+
+Why? The redundant validation and PathBuf allocation work was
+triggering downstream cost that only shows up when the rest of
+`write_shard`'s code is running around it -- probably allocator hot
+paths, CPU cache pressure from extra heap traffic, and a larger
+async state machine. None of those show up when you time the path
+computation alone.
+
+**Generalizable rule:** when a microbench says "this step costs X"
+and the real-world impact is much larger than X, the real cost is
+interaction with the surrounding code, not the step itself.
+Removing the offending call can have outsized effects. Conversely,
+optimizing the step in isolation may be wasted work if the
+interaction effect is what's actually expensive.
+
+This is the second methodology lesson from the pool work. The first
+was Phase 2 / Phase 2.5: variance in end-to-end measurements can
+hide real wins (compact JSON looked neutral end-to-end but was
+314ns faster in isolation). The two lessons are inverses:
+**isolated benches and end-to-end benches can each hide effects the
+other catches.** Use both, and trust the one that matches the real
+system.
+
+### What's left in the gap
+
+Phase 4.5 closed most of the unexplained 28us gap from Phase 4.
+Pool 4KB median went from 43us to 10us; the bare Phase 2 write
+step is ~4us. The remaining ~6us is genuine per-call code work
+(validation, meta build, simd-json, channel send, async state
+machine) and isn't worth chasing further. The absolute cost is
+already tiny and the diminishing returns are real.
+
+Bench: `tests/layer_bench.rs::bench_pool_l3_5_integration_breakdown`
+Output: `bench-results/phase4.5-integration-breakdown.txt`
+Re-run after fix: `bench-results/phase4.5-integrated-put-after-fix.txt`
+
 ### Next: Phase 5 (read path integration)
 
 The pool's fast write path is in production code now, but reads

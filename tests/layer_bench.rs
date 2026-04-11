@@ -1398,6 +1398,243 @@ async fn bench_pool_l3_integrated_put() {
 }
 
 // ============================================================================
+// Pool L3.5: 4KB integration overhead breakdown (Phase 4.5)
+// ============================================================================
+//
+// Phase 4 measured the full LocalVolume::write_shard call at ~43us p50
+// for a 4KB object. The Phase 2 bare write was ~4us p50. The gap is
+// ~39us of "integration overhead" -- per-call work that doesn't scale
+// with payload size. This bench breaks down where that 39us goes by
+// timing each step in isolation, so we can see which optimizations
+// would help most.
+//
+// Run with:
+//   k3sc cargo-lock test --release --test layer_bench -- --ignored \
+//       --nocapture bench_pool_l3_5_integration_breakdown
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_pool_l3_5_integration_breakdown() {
+    use abixio::storage::metadata::{ErasureMeta, ObjectMeta, ObjectMetaFile};
+    use abixio::storage::pathing;
+    use abixio::storage::write_slot_pool::{RenameRequest, WriteSlot, WriteSlotPool};
+    use std::collections::HashMap;
+    use tokio::io::AsyncWriteExt;
+
+    fn make_meta() -> ObjectMeta {
+        ObjectMeta {
+            size: 4096,
+            etag: "abc".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            created_at: 1700000000,
+            erasure: ErasureMeta {
+                ftt: 1,
+                index: 0,
+                epoch_id: 1,
+                volume_ids: vec!["vol-0".to_string(), "vol-1".to_string()],
+            },
+            checksum: "deadbeef".to_string(),
+            user_metadata: HashMap::new(),
+            tags: HashMap::new(),
+            version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+            inline_data: None,
+        }
+    }
+
+    fn report(label: &str, iters: usize, mut samples: Vec<Duration>) {
+        samples.sort();
+        let total: Duration = samples.iter().sum();
+        let avg = total / iters as u32;
+        let p50 = samples[iters / 2];
+        let p99_idx = ((iters * 99) / 100).min(iters - 1);
+        let p99 = samples[p99_idx];
+        eprintln!(
+            "  {:<48}  avg {:>7}ns  p50 {:>7}ns  p99 {:>7}ns",
+            label,
+            avg.as_nanos(),
+            p50.as_nanos(),
+            p99.as_nanos(),
+        );
+    }
+
+    let iters = 100_000;
+    let bucket = "bench";
+    let key = "obj.bin";
+    let meta = make_meta();
+    let data_4kb = vec![0x42u8; 4096];
+
+    eprintln!("\n=== Pool L3.5: 4KB integration overhead breakdown ===\n");
+    eprintln!("  iterations: {}", iters);
+    eprintln!();
+
+    // ----- Step 1: validate bucket + key -----
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        pathing::validate_bucket_name(bucket).unwrap();
+        pathing::validate_object_key(key).unwrap();
+        samples.push(t.elapsed());
+    }
+    report("1. validate_bucket_name + validate_object_key", iters, samples);
+
+    // ----- Step 2: build ObjectMetaFile (clone meta + alloc Vec) -----
+    let bucket_str = bucket.to_string();
+    let key_str = key.to_string();
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let mut version = meta.clone();
+        version.is_latest = true;
+        let _mf = ObjectMetaFile {
+            bucket: bucket_str.clone(),
+            key: key_str.clone(),
+            versions: vec![version],
+        };
+        samples.push(t.elapsed());
+    }
+    report("2. ObjectMetaFile construction (clone+alloc)", iters, samples);
+
+    // ----- Step 3: simd_json::serde::to_vec -----
+    let mut version = meta.clone();
+    version.is_latest = true;
+    let mf = ObjectMetaFile {
+        bucket: bucket_str.clone(),
+        key: key_str.clone(),
+        versions: vec![version],
+    };
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let _bytes = simd_json::serde::to_vec(&mf).unwrap();
+        samples.push(t.elapsed());
+    }
+    report("3. simd_json::serde::to_vec(&mf)", iters, samples);
+
+    // ----- Step 4: pool.try_pop + replenish -----
+    let tmp = TempDir::new().unwrap();
+    let pool_dir = tmp.path().join("pool_step4");
+    let pool = WriteSlotPool::new(&pool_dir, 32).await.unwrap();
+    let mut samples = Vec::with_capacity(iters);
+    // Use replenish_slot to avoid running out of slots
+    for _ in 0..iters {
+        let t = Instant::now();
+        let slot = pool.try_pop().unwrap();
+        samples.push(t.elapsed());
+        // restore slot via replenish_slot to keep pool stocked
+        let slot_id = slot.slot_id;
+        drop(slot);
+        pool.replenish_slot(slot_id).await.unwrap();
+    }
+    report("4. pool.try_pop()", iters, samples);
+
+    // ----- Step 5: WriteSlot destructure (PathBuf clones) -----
+    let pool_dir = tmp.path().join("pool_step5");
+    let pool = WriteSlotPool::new(&pool_dir, 32).await.unwrap();
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let slot = pool.try_pop().unwrap();
+        let t = Instant::now();
+        let _slot_id = slot.slot_id;
+        let _data_src = slot.data_path.clone();
+        let _meta_src = slot.meta_path.clone();
+        let WriteSlot {
+            data_file: _,
+            meta_file: _,
+            ..
+        } = slot;
+        samples.push(t.elapsed());
+        // Replenish a slot to refill the pool
+        pool.replenish_slot(_slot_id).await.unwrap();
+    }
+    report("5. WriteSlot destructure + 2x PathBuf clone", iters, samples);
+
+    // ----- Step 6: tokio::try_join writes (Phase 2 measurement, confirming) -----
+    let pool_dir = tmp.path().join("pool_step6");
+    let pool = WriteSlotPool::new(&pool_dir, 32).await.unwrap();
+    let meta_json = simd_json::serde::to_vec(&mf).unwrap();
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let WriteSlot {
+            slot_id,
+            mut data_file,
+            mut meta_file,
+            ..
+        } = pool.try_pop().unwrap();
+        let t = Instant::now();
+        tokio::try_join!(
+            data_file.write_all(&data_4kb),
+            meta_file.write_all(&meta_json),
+        )
+        .unwrap();
+        samples.push(t.elapsed());
+        drop(data_file);
+        drop(meta_file);
+        pool.replenish_slot(slot_id).await.unwrap();
+    }
+    report("6. tokio::try_join!(data_write, meta_write)", iters, samples);
+
+    // ----- Step 7: compute destination paths -----
+    let root = tmp.path();
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let _dest_dir = pathing::object_dir(root, bucket, key).unwrap();
+        let _data_dest = pathing::object_shard_path(root, bucket, key).unwrap();
+        let _meta_dest = pathing::object_meta_path(root, bucket, key).unwrap();
+        samples.push(t.elapsed());
+    }
+    report("7. object_dir + shard_path + meta_path", iters, samples);
+
+    // ----- Step 8: RenameRequest construction -----
+    let dummy_dir = tmp.path().join("dummy");
+    let dummy_data = dummy_dir.join("shard.dat");
+    let dummy_meta = dummy_dir.join("meta.json");
+    let dummy_data_src = tmp.path().join("data.tmp");
+    let dummy_meta_src = tmp.path().join("meta.tmp");
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let t = Instant::now();
+        let _req = RenameRequest {
+            slot_id: 0,
+            data_src: dummy_data_src.clone(),
+            meta_src: dummy_meta_src.clone(),
+            dest_dir: dummy_dir.clone(),
+            data_dest: dummy_data.clone(),
+            meta_dest: dummy_meta.clone(),
+        };
+        samples.push(t.elapsed());
+    }
+    report("8. RenameRequest construction (5x PathBuf clone)", iters, samples);
+
+    // ----- Step 9: tx.send(req).await on a channel with plenty of space -----
+    let (tx, mut rx) =
+        tokio::sync::mpsc::channel::<RenameRequest>(iters + 16);
+    let mut samples = Vec::with_capacity(iters);
+    for _ in 0..iters {
+        let req = RenameRequest {
+            slot_id: 0,
+            data_src: dummy_data_src.clone(),
+            meta_src: dummy_meta_src.clone(),
+            dest_dir: dummy_dir.clone(),
+            data_dest: dummy_data.clone(),
+            meta_dest: dummy_meta.clone(),
+        };
+        let t = Instant::now();
+        tx.send(req).await.unwrap();
+        samples.push(t.elapsed());
+    }
+    report("9. tx.send(req).await (channel has space)", iters, samples);
+    drop(tx);
+    // drain the channel so it doesn't accumulate
+    while rx.recv().await.is_some() {}
+
+    eprintln!();
+}
+
+// ============================================================================
 // bench_perf: structured multi-size benchmark with JSON output and comparison
 // ============================================================================
 //
