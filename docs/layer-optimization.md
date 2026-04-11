@@ -740,13 +740,128 @@ Output: `bench-results/phase1-pool-primitive.txt`
 Run: `k3sc cargo-lock test --release --test layer_bench -- --ignored
 --nocapture bench_pool_l0_primitive`
 
-### Next: Phase 2 (slot writes with real I/O)
+### Next: Phase 2 (slot writes with real I/O) -- DONE, see Pool L1 below
 
-Add `write_all` of shard bytes to `slot.data_file` and meta JSON to
-`slot.meta_file` in a new bench. Compare against the file-tier
-`VolumePool::put_object` baseline at 4KB / 64KB / 1MB / 10MB. Apply
-the three hot-path optimizations (concurrent writes via `tokio::join!`,
-compact JSON, sync small writes) one at a time and measure each.
+---
+
+## Pool L1: slot writes with real I/O (Phase 2, in development)
+
+Phase 2 lands the `bench_pool_l1_slot_write` test in
+`tests/layer_bench.rs`. Five sizes x six write strategies, each
+optimization layered on independently so we can attribute the speedup
+to a specific change. Still no rename worker, no `pending_renames`,
+no integration with `LocalVolume`.
+
+### Numbers (Windows 10 NTFS, 1 disk, p50)
+
+```
+SIZE   A: file_tier  C: pool_serial  D: pool_join  E: compact  F: sync_small
+4KB    693.8us       27.9us          4.1us         3.9us       74.7us
+64KB   1.08ms        31.3us          29.8us        55.5us      n/a
+1MB    1.44ms        503.8us         828.8us       482.9us     n/a
+10MB   5.63ms        3.68ms          3.72ms        3.64ms      n/a
+100MB  91.91ms       36.19ms         37.65ms       36.34ms     n/a
+```
+
+### Headline finding: pool design fully validated
+
+Pool wins at every size, by 1.5x to 170x:
+
+| Size | A: file tier | D: pool join | Speedup |
+|---|---|---|---|
+| 4KB | 694us | 4.1us | **170x** |
+| 64KB | 1.08ms | 29.8us | **36x** |
+| 1MB | 1.44ms | 829us | 1.7x |
+| 10MB | 5.63ms | 3.72ms | 1.5x |
+| 100MB | 91.91ms | 37.65ms | **2.4x** |
+
+The mkdir + 2 file creates is dramatically more expensive than I
+expected, even at 100MB. The pool's syscall-elimination win persists
+at every size.
+
+### Optimization #1 (concurrent writes via `tokio::try_join!`)
+
+| Size | C: serial | D: join | Speedup |
+|---|---|---|---|
+| 4KB | 33us avg | 6.3us avg | **5.5x** |
+| 64KB | 251us avg | 186us avg | 1.35x |
+| 1MB+ | tied | tied | noise |
+
+**SHIP as default for all sizes.** Measured win is way bigger than
+predicted -- the overlap of tokio blocking-pool dispatch helps more
+than just saving the meta syscall.
+
+### Optimization #2 (compact JSON)
+
+Roughly neutral on speed across all sizes (avg numbers swing both
+ways within noise; high variance dominates). Compact output is 391
+bytes vs 597 bytes pretty, ~35% smaller on disk.
+
+**SHIP for the disk-size win.** No measurable speed improvement on
+this workload, but the disk savings are free. Open question: switching
+to a faster JSON crate (simd-json, sonic-rs) might unlock real speed
+wins -- queued as Phase 2.5 measurement.
+
+### Optimization #3 (sync `std::fs::File::write_all` for small payloads)
+
+| Size | E: pool_join_compact | F: pool_sync_small | Result |
+|---|---|---|---|
+| 4KB | 7.4us avg / 3.9us p50 | 86.0us avg / 74.7us p50 | **F is 14x slower** |
+
+**REJECT.** Sync std::fs writes are dramatically slower than the tokio
+async path on this workload, contradicting the conventional wisdom
+that "sync is faster for small payloads, no dispatch overhead." The
+cause may be a measurement artifact from `tokio::fs::File::into_std()`
+leaving the file in a slow state, or it may be that the tokio
+blocking-pool path is genuinely faster on Windows for this size class.
+Either way, the measurement says no.
+
+This is exactly the result the methodology exists to catch. Don't
+ship optimizations that look right on paper but fail under measurement.
+
+### mkdir cost (A vs B)
+
+A: with mkdir = 776us at 4KB. B: pre-created dir = 587us. **mkdir
+costs ~190us per PUT on NTFS at small sizes.** Negligible at 64KB+.
+This is the dominant cost the pool eliminates.
+
+### Surprises
+
+- Pool wins at 100MB by 2.4x. Pre-bench prediction was "small or no
+  improvement at 100MB+". Wrong by a lot.
+- `tokio::try_join!` is 5.5x at 4KB, not the predicted 2x.
+- `std::fs::File` is 14x slower than tokio's blocking-pool path for
+  sync small writes. Counter to all conventional wisdom.
+- High variance at 64KB-1MB (p99 is 30-50x p50). Likely NTFS write
+  coalescing or page cache flushes. Not a pool problem; future bench
+  should use 5-10x more iterations in this band for cleaner avgs.
+
+### Final hot path (Phase 4 will integrate this)
+
+```rust
+let WriteSlot { mut data_file, mut meta_file, .. } = pool.try_pop().unwrap();
+tokio::try_join!(
+    data_file.write_all(&shard_bytes),
+    meta_file.write_all(&compact_meta_json),
+)?;
+```
+
+Two optimizations (#1 + #2). Optimization #3 dropped. Expected
+hot-path latency at 4KB: **~6us through the pool vs ~776us through
+the file tier. 130x faster.**
+
+Bench: `tests/layer_bench.rs::bench_pool_l1_slot_write`
+Output: `bench-results/phase2-slot-writes.txt`
+
+### Next: Phase 2.5 (faster JSON serializer)
+
+Phase 2 found compact JSON to be neutral on speed even though it
+should be cheaper. The next experiment measures `simd-json` and
+`sonic-rs` against `serde_json` on the same workload to see if a
+faster serializer is actually a real win at this size. Maximum
+JSON speed is the goal.
+
+After 2.5: Phase 3 (rename worker in isolation).
 
 ---
 

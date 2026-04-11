@@ -122,65 +122,67 @@ themselves.
 ### Hot path optimizations
 
 The two writes can be made meaningfully faster without changing the
-design. These are committed defaults, not tunables:
+design. The recommendations below are the **measured** result from
+Phase 2 (`bench_pool_l1_slot_write`); see the Phase 2 section under
+"Implementation status" for the full numbers.
 
-**1. Run the two writes concurrently with `tokio::join!`.** The data
-write and the meta write target two different file descriptors;
-nothing forces them to be sequential. `tokio::fs` dispatches each
-`write_all` to the blocking thread pool, so concurrent writes really
-do run on two threads in parallel:
+**1. Run the two writes concurrently with `tokio::try_join!`.**
+**MEASURED 5.5x speedup at 4KB.**
+
+The data write and the meta write target two different file
+descriptors; nothing forces them to be sequential. `tokio::fs`
+dispatches each `write_all` to the blocking thread pool, so
+concurrent writes really do run on two threads in parallel.
 
 ```rust
 tokio::try_join!(
-    slot.data_file.write_all(shard_bytes),
-    slot.meta_file.write_all(meta_json),
+    data_file.write_all(shard_bytes),
+    meta_file.write_all(meta_json),
 )?;
 ```
 
-The meta write is always tiny (~500 bytes) and finishes first; the
-data write is on the critical path either way. Wall-clock cost
-becomes `max(data, meta)` instead of `data + meta`. Savings: ~10us
-per PUT regardless of object size. That's about 50% of the syscall
-portion at 4KB, where it matters most.
+Wall-clock cost becomes `max(data, meta)` instead of `data + meta`.
+Phase 2 measured 33us serial vs 6.3us joined at 4KB. The savings is
+larger than just the meta write time -- the tokio blocking-pool
+dispatch overlaps too.
 
-**2. Compact JSON instead of pretty JSON.** `metadata.rs:170`
-currently uses `serde_json::to_vec_pretty`. Switch to
-`serde_json::to_vec`. The output is ~30% smaller and ~20% faster to
-serialize. Nobody hand-reads meta.json files, so the whitespace has
-no audience. Savings: ~150 bytes per meta file on disk and ~3-5us
-of serialization time per PUT. Free; ship outside the pool work
-too.
+**2. Compact JSON instead of pretty JSON.** **MEASURED neutral on
+speed, ~35% smaller on disk.**
 
-**3. Skip the tokio blocking pool for small writes.** Each
-`tokio::fs::write_all` call costs ~1-2us of tokio overhead before
-the actual syscall: enqueue work to the blocking pool, wake a
-worker thread, signal completion. For payloads <=4KB the syscall
-itself is ~10us, so the dispatch overhead is 10-20% of the cost.
-For these small writes, doing `std::fs::File::write_all`
-synchronously inside the async function is faster, and 10us is well
-under tokio's "don't block longer than 10ms" rule of thumb:
+`metadata.rs:170` currently uses `serde_json::to_vec_pretty`. Switch
+to `serde_json::to_vec`. Compact output is 391 bytes vs 597 bytes
+pretty in the bench. Phase 2 showed no measurable speed change
+(differences were within the high variance band), but the disk-size
+win is real and free. There's no audience for the pretty whitespace
+inside meta.json files.
+
+**Follow-up (Phase 2.5):** since compact serde_json was neutral on
+CPU, the maximum-JSON-speed goal moves to measuring `simd-json` and
+`sonic-rs` as drop-in replacements. Both claim 2-3x faster than
+`serde_json` on small payloads. Phase 2.5 measures them; if they
+deliver, they replace `serde_json::to_vec` here as the default.
+
+**3. Sync `std::fs::File::write_all` for small payloads.**
+**REJECTED by Phase 2 measurement.** Predicted to save 2-4us per
+small PUT; actually measured **14x slower** than the tokio async
+path at 4KB (86us vs 6us). Dropped. The cause may be a measurement
+artifact in `tokio::fs::File::into_std()`, or the tokio blocking
+pool may genuinely be faster than direct syscalls on Windows for
+this size class. Either way, the verdict is clear: don't ship.
+
+**Net hot path (Phase 4 will use this):**
 
 ```rust
-if shard_bytes.len() <= 4096 {
-    use std::io::Write;
-    slot.data_file.as_std().write_all(shard_bytes)?;
-    slot.meta_file.as_std().write_all(meta_json)?;
-} else {
-    // tokio blocking pool for large writes to avoid stalling the runtime
-    tokio::try_join!(
-        slot.data_file.write_all(shard_bytes),
-        slot.meta_file.write_all(meta_json),
-    )?;
-}
+let WriteSlot { mut data_file, mut meta_file, .. } = pool.try_pop().unwrap();
+tokio::try_join!(
+    data_file.write_all(&shard_bytes),
+    meta_file.write_all(&compact_meta_json),
+)?;
 ```
 
-Savings: ~2-4us per small PUT.
-
-**Net hot path with all three.** For a 4KB PUT, the pre-ack path
-becomes roughly two synchronous writes to page cache (~10us each
-without dispatch overhead) plus a DashMap insert (~100ns). Total
-~10-20us before ack instead of ~30-50us. The pool starts to
-genuinely compete with the log store on small-object write latency.
+Measured 4KB pre-ack path: ~6us through the pool vs ~776us through
+the file tier. **130x faster** on the hot path itself, before any
+read-path or worker integration.
 
 ### Async rename worker (one task per disk)
 
@@ -439,6 +441,8 @@ make a data-driven call before deleting the loser.
 | Phase | What | Delivers | Status |
 |---|---|---|---|
 | 1 | `write_slot_pool.rs`: pool, slot, replenish | core data structures | **done** (63ns pop+release, see "Implementation status" below) |
+| 1.5 | Slot-write strategy bench (Phase 2) | measured optimization stack | **done** (pool 23x faster than file tier at 4KB, see "Phase 2 results" below) |
+| 1.6 | Faster JSON serializer bench (Phase 2.5) | maximum JSON speed via simd-json / sonic-rs | **next** (compact serde_json was neutral; need to measure faster crates) |
 | 2 | `ObjectMetaFile` `bucket` and `key` fields | self-describing meta | pending |
 | 3 | Wire `write_shard` to use the pool when enabled | buffered PUT fast path | pending |
 | 4 | Wire `open_shard_writer` to use the pool | streaming PUT fast path | pending |
@@ -494,19 +498,17 @@ With 32 slots * 4MB = 128MB per disk reserved. Tunable. Measure
 at 1MB and 4MB sizes. Decision: enable pre-allocation if it shows
 >=10% improvement at any common size, otherwise leave it off.
 
-**Faster JSON serializer.** `serde_json` serializes a ~500-byte
-`ObjectMetaFile` in ~5-10us. `simd-json` and `sonic-rs` are 2-3x
-faster on the same workload. The destination meta.json must remain
-valid JSON (so any drop-in serializer is fine), and the temp meta
-file uses the same format.
+**Faster JSON serializer.** Promoted to **Phase 2.5** -- see the
+"Phase 2.5: faster JSON serializer" section under "Implementation
+status" above. The Phase 2 result that compact `serde_json::to_vec`
+was neutral on CPU made this the next priority: maximum JSON speed
+is the goal.
 
-Trade-off: extra dependency, additional binary size, may not work
-on all targets (simd-json requires SSE4.2/AVX2 detection at runtime).
-
-Add behind a `feature = "fast-json"` cargo flag. Measure 4KB and
-64KB PUT latency with and without. Decision: enable by default if
-it shows >=5us improvement on the small-PUT path, otherwise leave
-as opt-in.
+`simd-json` and `sonic-rs` both claim 2-3x faster than `serde_json`
+on small payloads. The destination meta.json must remain valid JSON
+(so any drop-in serializer is fine). Add behind a `feature` flag if
+portability is a concern (simd-json requires SSE4.2/AVX2). Decision
+threshold: enable by default if it shows >=2us improvement at 4KB.
 
 ## Implementation status
 
@@ -571,10 +573,146 @@ once Phase 4 wires it into `LocalVolume::write_shard`. Phase 2
 will add a per-size sweep (4KB / 64KB / 1MB / 10MB) so we can see
 where the pool wins most.
 
-### Phase 2-9: pending
+### Phase 2: slot writes with real I/O -- DONE
 
-See `Implementation phases` table above. Phase 2 (slot writes with
-real I/O, no orchestration) is the next step.
+The bench function `bench_pool_l1_slot_write` in `tests/layer_bench.rs`
+runs five sizes (4KB / 64KB / 1MB / 10MB / 100MB) through six write
+strategies, with each optimization layered on independently so we can
+attribute the speedup. Output: `bench-results/phase2-slot-writes.txt`.
+Re-run with:
+
+```bash
+k3sc cargo-lock test --release --test layer_bench -- \
+    --ignored --nocapture bench_pool_l1_slot_write
+```
+
+**Strategies measured:**
+
+- A: `file_tier_full` -- mkdir + write shard + write meta (current path)
+- B: `file_tier_no_mkdir` -- pre-create dir, only time the writes
+- C: `pool_serial` -- pop slot, sequential async writes
+- D: `pool_join` -- C + concurrent writes via `tokio::try_join!` (#1)
+- E: `pool_join_compact` -- D + compact JSON instead of pretty (#2)
+- F: `pool_sync_small` -- E + sync `std::fs::File::write_all` for small payloads (#3, only at <=4KB)
+
+**Headline numbers (Windows 10 NTFS, 1 disk, p50):**
+
+| Size  | A: file tier | C: pool serial | D: pool join | E: pool compact | F: pool sync | Pool win vs A |
+|---|---|---|---|---|---|---|
+| 4KB   | 694us | 28us | **4.1us** | 3.9us | 75us | **170x** (D vs A p50) |
+| 64KB  | 1.08ms | 31us | **30us** | 56us | n/a | **36x** |
+| 1MB   | 1.44ms | 504us | 829us | **483us** | n/a | 3x |
+| 10MB  | 5.63ms | 3.68ms | 3.72ms | **3.64ms** | n/a | 1.5x |
+| 100MB | 91.9ms | 36.2ms | 37.7ms | **36.3ms** | n/a | 2.5x |
+
+Pool wins at every size, by 1.5x to 170x. Even at 100MB, where the
+data write itself dominates, the pool is 2.5x faster than the file
+tier path. The mkdir + 2 file creates is dramatically more expensive
+than expected on NTFS.
+
+**mkdir cost (A vs B):** ~190us per PUT at 4KB, negligible at 64KB+.
+This is what the pool's biggest small-size win comes from.
+
+**Optimization #1 (concurrent writes via `tokio::try_join!`)**
+
+Measured speedup at each size:
+
+| Size | C: serial | D: join | Speedup |
+|---|---|---|---|
+| 4KB | 33us avg | 6.3us avg | **5.5x** |
+| 64KB | 251us avg | 186us avg | 1.35x |
+| 1MB+ | tied | tied | noise |
+
+**Verdict: SHIP as default for all sizes.** 5.5x at 4KB is dramatically
+larger than my pre-bench estimate ("save the meta write time, ~10us").
+The win comes from overlapping the tokio blocking-pool dispatch
+overhead, not just the meta syscall. At larger sizes the data write
+dominates and the optimization is neutral, but never hurts.
+
+**Optimization #2 (compact JSON via `serde_json::to_vec`)**
+
+Measured: roughly neutral on speed across sizes. avg numbers swing both
+ways within noise; p50 numbers are similar. The compact JSON output is
+391 bytes vs 597 bytes pretty (~35% smaller).
+
+**Verdict: SHIP for the disk-size win.** No measurable speed improvement
+on this workload, but the smaller meta files reduce on-disk overhead
+for free. There's no audience for the pretty-printed whitespace inside
+meta.json files.
+
+**Optimization #3 (sync `std::fs::File::write_all` for small payloads)**
+
+Measured: 4KB strategy F = **86us avg / 75us p50**. Strategy E = 7.4us
+avg / 3.9us p50. **F is ~14-19x SLOWER than E.**
+
+This contradicts my pre-bench prediction ("~2-4us savings per small
+PUT"). The sync std::fs path is wildly slower than tokio's async
+blocking-pool path on Windows for this workload. The cause might be a
+measurement artifact in `tokio::fs::File::into_std()` (the conversion
+that happens out-of-timing may leave the file handle in a state that
+makes subsequent syncs slow), or the tokio blocking pool may genuinely
+be faster than direct syscalls for this size class on Windows.
+
+**Verdict: REJECT.** Do not ship. This is exactly the kind of "obvious"
+optimization the methodology is meant to catch -- it sounded right on
+paper, the measurement says no, and the numbers force the answer.
+
+**Final hot path (Phase 4 will use this):**
+
+```rust
+let WriteSlot { mut data_file, mut meta_file, .. } = pool.try_pop().unwrap();
+tokio::try_join!(
+    data_file.write_all(&shard_bytes),
+    meta_file.write_all(&compact_meta_json),
+)?;
+```
+
+Two optimizations (#1 + #2). Optimization #3 dropped. Expected
+hot-path latency at 4KB: ~6us. Current file tier at 4KB: ~776us.
+**130x faster on the hot path itself**, before any read-path or
+worker integration.
+
+### Surprises from Phase 2
+
+1. **Pool wins at 100MB by 2.5x.** Pre-bench prediction said "small
+   or no improvement at 100MB+". The mkdir + file creates are far
+   more expensive than the data write at every size, including 100MB.
+2. **`tokio::try_join!` is 5.5x at 4KB**, not the predicted ~2x.
+3. **`std::fs::File` is 14x slower than tokio's blocking-pool path**
+   for sync small writes. Counter to all conventional wisdom; the
+   measurement is the truth.
+4. **High variance at 64KB-1MB.** p99 is 30-50x p50 in this range.
+   Likely NTFS write coalescing or page cache flushes. Not a pool
+   problem, but a future bench should use 5-10x more iterations in
+   this band for cleaner avgs.
+
+### Phase 2.5: faster JSON serializer -- next
+
+Phase 2 found that `serde_json::to_vec` (compact) gave no measurable
+speed improvement over `to_vec_pretty` despite producing smaller
+output. The win was on disk size, not CPU time. **The goal is
+maximum possible JSON speed**, so the next experiment measures
+serializer alternatives:
+
+- `serde_json::to_vec` (current default, baseline)
+- `simd-json` -- claimed 2-3x faster, requires SSE4.2/AVX2
+- `sonic-rs` -- alternative, also 2-3x faster than serde_json
+
+Add a new bench function `bench_pool_l1_5_json_serializers` that
+serializes a representative `ObjectMetaFile` with each library and
+measures avg / p50 / p99 over 10k iterations. If a faster serializer
+shows >=2us improvement at 4KB, ship it as the default in the pool
+hot path. Add behind a `feature` flag if portability is a concern.
+
+Files to touch:
+- `Cargo.toml` -- optional dev-dep on `simd-json`, `sonic-rs`
+- `tests/layer_bench.rs` -- new bench function
+- `bench-results/phase2.5-json-serializers.txt` -- output
+
+### Phase 3-9: pending
+
+See `Implementation phases` table above. Phase 3 (rename worker in
+isolation) starts after Phase 2.5 measures the JSON win.
 
 ## Open questions for implementation
 

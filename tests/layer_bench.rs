@@ -537,6 +537,266 @@ async fn bench_pool_l0_primitive() {
 }
 
 // ============================================================================
+// Pool L1: slot writes with real I/O (no orchestration)
+// ============================================================================
+//
+// Phase 2 of the write-pool work. Measures the cost of writing shard
+// bytes + meta JSON to a pre-opened slot, layered through six write
+// strategies, vs the current file tier slow path. Still no rename
+// worker, no pending_renames, no integration with LocalVolume. The
+// goal is to attribute speedup to specific optimizations:
+//   #1 concurrent writes via tokio::try_join!
+//   #2 compact JSON instead of pretty
+//   #3 sync std::fs::File::write_all for small payloads
+//
+// Run with:
+//   k3sc cargo-lock test --release --test layer_bench -- --ignored \
+//       --nocapture bench_pool_l1_slot_write
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_pool_l1_slot_write() {
+    use abixio::storage::metadata::{ErasureMeta, ObjectMeta, ObjectMetaFile};
+    use abixio::storage::write_slot_pool::{WriteSlot, WriteSlotPool};
+    use std::collections::HashMap;
+    use tokio::io::AsyncWriteExt;
+
+    // Build a representative ObjectMetaFile and serialize both ways.
+    fn make_test_meta() -> ObjectMetaFile {
+        let meta = ObjectMeta {
+            size: 4096,
+            etag: "d41d8cd98f00b204e9800998ecf8427e".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            created_at: 1700000000,
+            erasure: ErasureMeta {
+                ftt: 1,
+                index: 0,
+                epoch_id: 1,
+                volume_ids: vec![
+                    "vol-0".to_string(),
+                    "vol-1".to_string(),
+                    "vol-2".to_string(),
+                    "vol-3".to_string(),
+                ],
+            },
+            checksum: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_string(),
+            user_metadata: HashMap::new(),
+            tags: HashMap::new(),
+            version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+            inline_data: None,
+        };
+        ObjectMetaFile {
+            versions: vec![meta],
+        }
+    }
+
+    fn fmt_dur(d: Duration) -> String {
+        let us = d.as_secs_f64() * 1_000_000.0;
+        if us >= 1000.0 {
+            format!("{:.2}ms", us / 1000.0)
+        } else {
+            format!("{:.1}us", us)
+        }
+    }
+
+    fn report_row(size: usize, label: &str, iters: usize, timings: &mut Vec<Duration>) {
+        timings.sort();
+        let total: Duration = timings.iter().sum();
+        let avg = total / iters as u32;
+        let p50 = timings[iters / 2];
+        let p99_idx = ((iters * 99) / 100).min(iters - 1);
+        let p99 = timings[p99_idx];
+        let mbps = (size * iters) as f64 / total.as_secs_f64() / MB as f64;
+        eprintln!(
+            "  {:<8} {:<26} {:>5}  {:>9}  {:>9}  {:>9}  {:>9.1} MB/s",
+            human(size),
+            label,
+            iters,
+            fmt_dur(avg),
+            fmt_dur(p50),
+            fmt_dur(p99),
+            mbps,
+        );
+    }
+
+    let meta_file = make_test_meta();
+    let meta_pretty: Vec<u8> = serde_json::to_vec_pretty(&meta_file).unwrap();
+    let meta_compact: Vec<u8> = serde_json::to_vec(&meta_file).unwrap();
+
+    eprintln!("\n=== Pool L1: slot write strategies ===\n");
+    eprintln!(
+        "  meta.json sizes:  pretty {} bytes,  compact {} bytes",
+        meta_pretty.len(),
+        meta_compact.len()
+    );
+    eprintln!();
+    eprintln!(
+        "  {:<8} {:<26} {:>5}  {:>9}  {:>9}  {:>9}  {:>14}",
+        "SIZE", "STRATEGY", "ITERS", "AVG", "p50", "p99", "THROUGHPUT"
+    );
+
+    let sizes: &[(usize, usize)] = &[
+        (4 * 1024, 100),
+        (64 * 1024, 60),
+        (1 * MB, 30),
+        (10 * MB, 15),
+        (100 * MB, 5),
+    ];
+
+    for &(size, iters) in sizes {
+        let data = vec![0x42u8; size];
+        let base = TempDir::new().unwrap();
+        eprintln!();
+
+        // ---------------------------------------------------------------
+        // A: file_tier_full -- mkdir + 2 file creates per iter
+        // ---------------------------------------------------------------
+        let dir_a = base.path().join("a");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        let mut timings = Vec::with_capacity(iters);
+        for i in 0..iters {
+            let obj_dir = dir_a.join(format!("obj_{}", i));
+            let t = Instant::now();
+            tokio::fs::create_dir_all(&obj_dir).await.unwrap();
+            tokio::fs::write(obj_dir.join("shard.dat"), &data).await.unwrap();
+            tokio::fs::write(obj_dir.join("meta.json"), &meta_pretty).await.unwrap();
+            timings.push(t.elapsed());
+        }
+        report_row(size, "A: file_tier_full", iters, &mut timings);
+
+        // ---------------------------------------------------------------
+        // B: file_tier_no_mkdir -- pre-create dirs, only time the writes
+        // ---------------------------------------------------------------
+        let dir_b = base.path().join("b");
+        std::fs::create_dir_all(&dir_b).unwrap();
+        let obj_dirs_b: Vec<std::path::PathBuf> = (0..iters)
+            .map(|i| {
+                let p = dir_b.join(format!("obj_{}", i));
+                std::fs::create_dir_all(&p).unwrap();
+                p
+            })
+            .collect();
+        let mut timings = Vec::with_capacity(iters);
+        for obj_dir in &obj_dirs_b {
+            let t = Instant::now();
+            tokio::fs::write(obj_dir.join("shard.dat"), &data).await.unwrap();
+            tokio::fs::write(obj_dir.join("meta.json"), &meta_pretty).await.unwrap();
+            timings.push(t.elapsed());
+        }
+        report_row(size, "B: file_tier_no_mkdir", iters, &mut timings);
+
+        // ---------------------------------------------------------------
+        // C: pool_serial -- sequential async writes via WriteSlot
+        // ---------------------------------------------------------------
+        let dir_c = base.path().join("c");
+        let pool = WriteSlotPool::new(&dir_c, iters as u32).await.unwrap();
+        let mut timings = Vec::with_capacity(iters);
+        for _ in 0..iters {
+            let t = Instant::now();
+            let mut slot = pool.try_pop().unwrap();
+            slot.data_file.write_all(&data).await.unwrap();
+            slot.meta_file.write_all(&meta_pretty).await.unwrap();
+            drop(slot);
+            timings.push(t.elapsed());
+        }
+        report_row(size, "C: pool_serial", iters, &mut timings);
+
+        // ---------------------------------------------------------------
+        // D: pool_join -- concurrent writes via tokio::try_join! (#1)
+        // ---------------------------------------------------------------
+        let dir_d = base.path().join("d");
+        let pool = WriteSlotPool::new(&dir_d, iters as u32).await.unwrap();
+        let mut timings = Vec::with_capacity(iters);
+        for _ in 0..iters {
+            let t = Instant::now();
+            let WriteSlot {
+                mut data_file,
+                mut meta_file,
+                ..
+            } = pool.try_pop().unwrap();
+            tokio::try_join!(
+                data_file.write_all(&data),
+                meta_file.write_all(&meta_pretty),
+            )
+            .unwrap();
+            drop(data_file);
+            drop(meta_file);
+            timings.push(t.elapsed());
+        }
+        report_row(size, "D: pool_join", iters, &mut timings);
+
+        // ---------------------------------------------------------------
+        // E: pool_join_compact -- D + compact JSON (#1+#2)
+        // ---------------------------------------------------------------
+        let dir_e = base.path().join("e");
+        let pool = WriteSlotPool::new(&dir_e, iters as u32).await.unwrap();
+        let mut timings = Vec::with_capacity(iters);
+        for _ in 0..iters {
+            let t = Instant::now();
+            let WriteSlot {
+                mut data_file,
+                mut meta_file,
+                ..
+            } = pool.try_pop().unwrap();
+            tokio::try_join!(
+                data_file.write_all(&data),
+                meta_file.write_all(&meta_compact),
+            )
+            .unwrap();
+            drop(data_file);
+            drop(meta_file);
+            timings.push(t.elapsed());
+        }
+        report_row(size, "E: pool_join_compact", iters, &mut timings);
+
+        // ---------------------------------------------------------------
+        // F: pool_sync_small -- E + std::io sync writes (#1+#2+#3)
+        //    Only meaningful for payloads <= 4KB. For larger sizes the
+        //    sync write would block the tokio runtime too long.
+        //    File handle conversion (into_std) happens OUTSIDE the timing.
+        // ---------------------------------------------------------------
+        if size <= 4 * 1024 {
+            let dir_f = base.path().join("f");
+            let pool = WriteSlotPool::new(&dir_f, iters as u32).await.unwrap();
+            // Pre-convert all slot file handles to std::fs::File outside timing
+            let mut std_pairs: Vec<(std::fs::File, std::fs::File)> = Vec::with_capacity(iters);
+            for _ in 0..iters {
+                let WriteSlot {
+                    data_file,
+                    meta_file,
+                    ..
+                } = pool.try_pop().unwrap();
+                let data_std = data_file.into_std().await;
+                let meta_std = meta_file.into_std().await;
+                std_pairs.push((data_std, meta_std));
+            }
+            let mut timings = Vec::with_capacity(iters);
+            for (mut data_std, mut meta_std) in std_pairs {
+                use std::io::Write;
+                let t = Instant::now();
+                data_std.write_all(&data).unwrap();
+                meta_std.write_all(&meta_compact).unwrap();
+                timings.push(t.elapsed());
+            }
+            report_row(size, "F: pool_sync_small", iters, &mut timings);
+        } else {
+            eprintln!(
+                "  {:<8} {:<26} {:>5}  {}",
+                human(size),
+                "F: pool_sync_small",
+                "-",
+                "(N/A above 4KB; would block runtime)"
+            );
+        }
+    }
+
+    eprintln!();
+}
+
+// ============================================================================
 // bench_perf: structured multi-size benchmark with JSON output and comparison
 // ============================================================================
 //
