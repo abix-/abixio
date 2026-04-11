@@ -83,8 +83,9 @@ version is a delete marker.
 Current implementation note:
 
 - list versions correctly shows the delete marker
-- plain `GET /bucket/key` currently still resolves the latest non-delete-marker
-  version rather than returning a delete-marker-style 404
+- plain `GET /bucket/key` and `HEAD /bucket/key` currently still resolve the
+  latest non-delete-marker version rather than returning a delete-marker-style
+  404
 
 ### DELETE with versionId
 The specific version entry is removed from `meta.json` and its shard data
@@ -94,13 +95,13 @@ directory (`key/<uuid>/`) is deleted. This is a permanent delete.
 
 | Header | When | Status |
 |---|---|---|
-| `x-amz-version-id` | On PUT (versioned), GET, DELETE responses | **Not yet wired** through s3s DTOs |
-| `x-amz-delete-marker: true` | On DELETE when a delete marker is created | **Not yet wired** through s3s DTOs |
+| `x-amz-version-id` | On versioned PUT, suspended PUT (`null`), versioned DELETE, and version-addressed GET/HEAD responses | Implemented through s3s DTOs |
+| `x-amz-delete-marker: true` | On DELETE when a delete marker is created | Implemented through s3s DTOs |
 
-> **Known gap:** version-id and delete-marker response headers are not yet
-> returned by the s3s integration layer. The storage layer tracks versions
-> correctly, but `s3_service.rs` does not yet set these headers on the s3s
-> output DTOs. Tracked in docs/todo.md.
+> **Current gap:** when the latest version is a delete marker, plain
+> `GET /bucket/key` and `HEAD /bucket/key` still resolve the latest
+> non-delete-marker version instead of surfacing delete-marker semantics.
+> Version-addressed reads and `ListObjectVersions` behave correctly.
 
 ## ListObjectVersions response
 
@@ -144,3 +145,21 @@ Tested with:
 - `mc ls --versions`: list object versions
 - `mc rm --version-id=X`: delete specific version
 - `aws-sdk-s3` (Rust): used by abixio-ui
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| Bucket versioning states `Disabled`, `Enabled`, `Suspended` | Verified | `src/s3_service.rs:903-943`, `tests/s3_integration.rs:873-977` |
+| Suspended versioning returns `x-amz-version-id: null` on PUT | Verified | `src/s3_service.rs:416-420`, `tests/s3_integration.rs:1248-1279` |
+| Enabled versioning returns UUID version IDs on PUT | Verified | `src/s3_service.rs:380-423`, `tests/s3_integration.rs:981-1027` |
+| `GET /{bucket}?versions` lists versions and delete markers | Verified | `src/s3_service.rs:946-980`, `tests/s3_integration.rs:1032-1136` |
+| `GET /{bucket}/{key}?versionId=X` reads a specific version | Verified | `src/s3_service.rs:433-435`, storage `get_object_version` in `src/storage/volume_pool.rs:900-919`, test `tests/s3_integration.rs:1141-1186` |
+| `DELETE /{bucket}/{key}?versionId=X` permanently deletes a specific version | Verified | `src/s3_service.rs:540-549`, storage `delete_object_version` in `src/storage/volume_pool.rs:922-937`, test `tests/s3_integration.rs:1189-1243` |
+| Response headers were not wired through s3s DTOs | Corrected | DTO fields are set in `src/s3_service.rs:416-420`, `489-491`, `529-530`, `546-547`, `571-574`; tests assert headers in `tests/s3_integration.rs:998-1027`, `1124-1126`, `1229`, `1279` |
+| Plain GET after delete marker still returns the latest live version | Verified | Storage read path finds latest non-delete-marker in `src/storage/local_volume.rs:666-670`, `709-723`, `773-787`; delete-marker behavior test exists for listing, not for plain GET |
+| On-disk config location `.abixio.sys/buckets/<bucket>/settings.json` | Plausible but not re-opened in this pass | This doc’s higher-level path claim was not directly re-traced in source during this audit |
+
+Verdict: the core versioning behavior is implemented and tested. The document was stale mainly in its response-header section. The remaining important behavioral gap is delete-marker semantics on plain GET/HEAD.

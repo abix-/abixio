@@ -63,6 +63,7 @@ extra:
 nav:
   - Overview: index.md
   - Architecture: architecture.md
+  - Write Path: write-path.md
   - Cluster: cluster.md
   - Storage Layout: storage-layout.md
   - Per-Object EC: per-object-ec.md

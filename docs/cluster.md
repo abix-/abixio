@@ -273,3 +273,23 @@ See [storage-layout.md](storage-layout.md) for the full design.
 - [admin-api.md](admin-api.md) for the admin endpoints
 - [per-object-ec.md](per-object-ec.md) for current erasure-coding behavior
 - [storage-layout.md](storage-layout.md) for volume identity and metadata architecture
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| Startup identity exchange via `/_admin/cluster/join` | Verified | `src/cluster/identity.rs:128-180` |
+| Standalone boot finalizes immediately and reports `ready` | Verified | `src/cluster/identity.rs:75-97`, `src/cluster/mod.rs:861-878` |
+| Clustered config starts blocked / syncing until quorum is met | Verified | `src/cluster/mod.rs:880-898`, `922-954` |
+| Quorum loss fences the node | Verified | `src/cluster/mod.rs:335-339`, `394`, tests `956-1013` |
+| S3 traffic is rejected while fenced | Verified | `src/s3_access.rs:22`, `tests/s3_integration.rs:152-160` |
+| Mutating admin requests are rejected while fenced | Verified | `src/admin/handlers.rs:376-395`, `tests/admin_integration.rs:343-353` |
+| Cluster admin endpoints `/status`, `/nodes`, `/epochs`, `/topology` exist | Verified | `src/admin/handlers.rs:122-172` |
+| Internode storage RPC uses JWT plus `x-abixio-time` | Verified | `src/storage/remote_volume.rs:40-55`, `106`, `src/storage/storage_server.rs:42-45` |
+| `--volumes` and `--nodes` support `{N...M}` | Verified | `src/config.rs:13-19`, `39-45` |
+| Current implementation does not provide consensus-backed topology reconfiguration | Verified | No Raft/consensus implementation is present; cluster manager is probe-based in `src/cluster/mod.rs` |
+| `/_admin/object` reports placement identity per shard | Not verified in this pass | This claim may be true via admin inspect paths, but I did not directly audit that endpoint implementation here |
+
+Verdict: this document is largely accurate against the current cluster code and tests. It reads like a good summary of the current probe-and-fence model, with the main remaining audit gap being the exact `/_admin/object` placement-reporting claim.

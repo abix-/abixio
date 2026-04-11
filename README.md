@@ -53,7 +53,7 @@ Same `--nodes` on every node. Identity resolves automatically. You now have 5 vo
 
 | | |
 |---|---|
-| **Tests** | 320 passing (unit + integration) |
+| **Tests** | 355 passed, 18 ignored (current `cargo test`) |
 | **S3 coverage** | 41 of 72 operations ([details](docs/s3-compliance.md)) |
 | **Protocol** | [s3s](https://crates.io/crates/s3s) v0.13 (SigV4, chunked auth, smithy XML) |
 | **GET perf** | 1220 MB/s at 1GB (mmap, zero-copy). Zero-alloc EC decode ([benchmarks](docs/benchmarks.md)) |
@@ -71,3 +71,20 @@ Same `--nodes` on every node. Identity resolves automatically. You now have 5 vo
 ### License
 
 [GPLv3](LICENSE)
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| Quick start requires `ABIXIO_ACCESS_KEY` and `ABIXIO_SECRET_KEY` unless `--no-auth` is used | Verified | `src/main.rs:53-58` |
+| `--volumes` and `--nodes` support `{N...M}` range expansion | Verified | `src/config.rs:13-19`, `src/config.rs:39-45` |
+| Default object fault tolerance is 1 volume failure | Verified | `src/storage/volume_pool.rs:39-40` |
+| Protocol layer is `s3s` v0.13 | Verified | `Cargo.toml:28` |
+| Current automated test count | Corrected | `cargo test --quiet` on 2026-04-11: 355 passed, 18 ignored |
+| `S3 coverage: 41 of 72 operations` | Not re-derived from code in this pass | Matches `docs/s3-compliance.md:6`, but that document still needs its own audit |
+| `GET perf: 1220 MB/s at 1GB` | Not code-verifiable in a static audit | Sourced from `docs/benchmarks.md`; benchmark not re-run in this pass |
+| `Small objects: 1096 PUT/s, 1315 GET/s` | Not code-verifiable in a static audit | Sourced from `docs/write-log.md`; benchmark not re-run in this pass |
+
+Verdict: README operational setup is mostly accurate. The main stale item was the hardcoded test count. Performance and coverage claims are plausible but depend on benchmark/compliance docs that still need separate audits.

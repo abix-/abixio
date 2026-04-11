@@ -67,10 +67,10 @@ Current reality as of 2026-04-06:
 | Doc | What it covers |
 |---|---|
 | [Architecture](architecture.md) | Design principles, cluster direction, project structure |
+| [Write Path](write-path.md) | Canonical PUT path from client request to final resting place |
 | [Cluster](cluster.md) | Node exchange, quorum model, fencing behavior |
 | [Storage Layout](storage-layout.md) | On-disk identity, metadata layout, reconstruction model |
 | [Per-Object EC](per-object-ec.md) | Per-object FTT and bucket defaults |
 | [Admin API](admin-api.md) | Status, disks, healing, inspect, and EC controls |
 | [S3 Compliance](s3-compliance.md) | Operation-by-operation audit of current API coverage |
 | [Comparison](comparison.md) | Overlap with MinIO, Garage, RustFS, SeaweedFS, Ceph, Swift, and others |
-

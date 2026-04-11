@@ -1,6 +1,6 @@
 # Pre-opened temp file pool
 
-An alternative write path designed to replace the
+An alternative write path originally designed to replace the
 [log store](write-log.md). Each disk holds a small pool of already-open
 temp files. A PUT writes shard bytes to one slot's data file and meta
 JSON to its companion meta file, then acks. The mkdir, file creates,
@@ -17,8 +17,15 @@ filesystem handles it natively, no compactor needed.
 
 The pool and the log store are alternatives at the same tier level.
 The [RAM write cache](write-cache.md) sits above whichever one is
-enabled. Which mechanism ships as the default is decided by benchmark;
-see the comparison plan at the end of this doc.
+enabled. The current benchmark conclusion is a three-tier split:
+log store for `<=64KB`, pool for the mid-range write window, and
+file tier for large writes. Production `--write-tier` CLI wiring is
+still pending; see the later sections for details.
+
+For the canonical end-to-end PUT path, the exact ack semantics of the
+pool branch, and how it relates to the other branches, see
+[write-path.md](write-path.md). This page stays focused on the pool's
+internal design and benchmark history.
 
 ## Correction: what's actually true about the pool's end-to-end performance
 
@@ -2362,3 +2369,22 @@ size.
   removing disk I/O from the write path, orthogonal to the pool.
 - [Architecture](architecture.md): where the pool fits in the
   overall design principles.
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| Pool uses `WriteSlotPool`, `RenameRequest`, background rename workers, and `pending_renames` | Verified | `src/storage/write_slot_pool.rs`, `src/storage/local_volume.rs:171-198`, `525-553`, `636`, `739`, `805`, `854`, `933` |
+| `ObjectMetaFile` now contains `bucket` and `key` with `#[serde(default)]` | Verified | `src/storage/metadata.rs:20-24` |
+| Crash recovery must run before `WriteSlotPool::new` | Verified | `src/storage/write_slot_pool.rs:391`, `src/storage/local_volume.rs:151-171` |
+| Phase 8.7 multi-worker round-robin dispatch landed | Verified | `src/storage/write_slot_pool.rs:168-195`, `src/storage/local_volume.rs:179-198` |
+| Default channel buffer / worker-count increase from Phase 8.7 landed | Verified | `src/storage/local_volume.rs:111-135` |
+| Pool is not the universal replacement for the log store | Verified | Matches this doc’s correction section and the benchmark summary in `docs/benchmarks.md` |
+| `--write-tier` CLI flag is still pending | Verified | This doc says it is pending, and no `write_tier` wiring exists in current `src/main.rs` / `src/config.rs` |
+| Historical sections like `Files to modify (when phase 2 begins)` are current implementation guidance | Not current | Those sections are preserved as historical planning notes; many listed items are already implemented |
+| Some microbenchmark claims are user-visible end-to-end results | Needs nuance | The doc itself now distinguishes storage-layer measurements from HTTP-layer results; earlier phase sections remain historical context, not current product-level numbers |
+| Depth default recommendations are settled product defaults | Not settled | The code exposes pool depth via call sites while channel/workers have newer defaults; the doc’s depth discussion remains partly forward-looking |
+
+Verdict: the document’s top-level correction and implementation-state sections are broadly aligned with the code. The main remaining risk is reader confusion from the historical planning sections near the bottom, which are useful as design history but should not be read as current task lists.

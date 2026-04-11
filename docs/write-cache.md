@@ -1,8 +1,13 @@
 # Write cache
 
-RAM write cache with peer replication. Writes go to RAM on two nodes
-simultaneously, ack after both confirm. Background flush destages to
-disk asynchronously. Both nodes must fail simultaneously to lose data.
+RAM write cache for the small-object buffered write path. In the current
+repo it is a local `DashMap` cache that acks from RAM and can later be
+flushed to disk through `VolumePool::flush_write_cache()`. The older
+peer-replication and automatic-destage sections below are still useful as
+design direction, but they are not fully implemented behavior today.
+
+For the canonical end-to-end PUT path, ack semantics, and timing sources,
+see [write-path.md](write-path.md).
 
 The design comes from our own latency measurements (see request trace
 below): the disk write itself is microseconds, but every write through
@@ -25,6 +30,16 @@ shipped this model in production for years; the safety analysis below is
 the same one they relied on.
 
 ## Architecture
+
+This section is the design intent. The current implementation is a
+smaller subset:
+
+- local RAM cache insert on the small-object path
+- read hits from RAM cache
+- explicit flush to lower storage tiers through `flush_write_cache`
+
+The current implementation does **not** yet wire the peer replication
+endpoint or a periodic background destage worker from `main.rs`.
 
 ```
 PUT 4KB (2+ node cluster):
@@ -324,3 +339,19 @@ Reads check each tier in order, returning on the first hit.
 The log store and the temp pool are alternatives at tier 1, gated by
 `--write-tier`. See [write-pool.md](write-pool.md) for the pool design
 and the benchmark plan.
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| `VolumePool` can enable a RAM write cache and insert small buffered objects into it before disk writes | Verified | `src/storage/volume_pool.rs`, `src/storage/write_cache.rs`, `src/main.rs` |
+| Cache hits are visible to the read path before disk persistence | Verified | `src/storage/volume_pool.rs` read paths consult `write_cache()` before disk backends |
+| The current cache implementation is local-only | Verified | `src/storage/write_cache.rs`, `src/main.rs` |
+| `flush_write_cache()` exists and writes cached shards out through backend `write_shard` calls | Verified | `src/storage/volume_pool.rs`, `src/admin/handlers.rs` |
+| A periodic background flush task is wired in the current runtime | Not implemented in current wiring | No cache-destage task is spawned in `src/main.rs`; flush is explicit via `flush_write_cache()` |
+| Peer replication protocol and `/_cache/v1/*` endpoints are implemented | Not implemented in current code | No cache replication server routes exist in `src/storage/storage_server.rs` |
+| The timing tables in this doc are current product-level measurements | Needs nuance | Some timings are useful design references, but much of this doc mixes measured internals with forward-looking design assumptions |
+
+Verdict: the in-memory cache data structure and manual flush path are real. The peer-replicated write-back design remains partly aspirational and should be read as design direction unless this report says otherwise.

@@ -61,8 +61,9 @@ cluster-control direction.
     instead of mkdir + shard.dat + meta.json (3 fs ops). The log IS the
     permanent storage. No flush, no second format.
     In-memory index maps bucket+key to segment:offset. GC reclaims dead space.
-    Large objects keep the file-per-object layout. 4KB PUT: 1.5ms (40% faster
-    than file tier). 4KB GET: 1.2ms (37% faster). No fsync. Page cache
+    Large objects keep the file-per-object layout. Recent published 4KB
+    numbers in the docs are ~0.91ms PUT and ~0.76ms GET in the dedicated
+    log-store benchmark. No fsync. Page cache
     serves both read and write paths. See [write-log.md](write-log.md).
 
 14. **Pre-opened temp file pool (alternative to the log store).**
@@ -73,32 +74,33 @@ cluster-control direction.
     syscalls on the hot path instead of seven. Designed as a
     replacement for the log store, motivated by GC simplicity (one
     file per object means `unlink()` reclaims space natively, no
-    compactor needed). Which approach ships as the default is decided
-    by benchmark. See [write-pool.md](write-pool.md).
+    compactor needed). Current benchmark conclusion is that the pool
+    wins a mid-range write window, while the log store wins <=64KB and
+    the file tier wins large writes. See [write-pool.md](write-pool.md).
 
 ## Data flow
 
 ### PUT path
 
-Two tiers based on object size:
+AbixIO now has multiple write branches with different ack semantics.
+The authoritative end-to-end trace lives in [write-path.md](write-path.md).
+This section stays as a summary only.
 
 ```
 HTTP request body
   -> s3s parses headers, checks versioning config (cached)
-  -> RS encode body into shards
-
-  object <= 64KB? -> LOG-STRUCTURED PATH
-    -> serialize needle (header + bucket + key + msgpack meta + shard data)
-    -> append needle to active log segment (one sequential write per disk)
-    -> update in-memory index
-    -> fsync + ack
-    Result: 4 appends for 4KB object on 4 disks (vs 12 fs ops before)
-
-  object > 64KB? -> FILE PATH (existing, unchanged)
-    -> open ShardWriters, stream 1MB blocks through RS encode
-    -> write shard.dat + meta.json per disk
-    -> ack
+  -> VolumePool resolves EC, placement, and the write branch
+  -> possible branches:
+       RAM write cache (ack from RAM, disk later on explicit flush)
+       log store (append is the final resting place)
+       write pool (ack from temp files, rename later)
+       file tier (ack after final files are written)
+       remote volume RPC (target node executes its own local branch)
+  -> ack
 ```
+
+For the exact branch matrix, per-layer responsibilities, and measured
+timings, see [write-path.md](write-path.md).
 
 ### GET path
 
@@ -215,3 +217,21 @@ docs/
 | `jsonwebtoken` | JWT sign/validate (internode RPC auth) |
 | `reqwest` | HTTP client (internode RPC) |
 | `async-trait` / `futures` | async trait support |
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| `Backend`, `LocalVolume`, `RemoteVolume`, `VolumePool`, `AbixioS3`, and `AbixioDispatch` roles | Verified | `src/storage/mod.rs`, `src/storage/local_volume.rs`, `src/storage/remote_volume.rs`, `src/storage/volume_pool.rs`, `src/s3_service.rs`, `src/s3_route.rs` |
+| Versioning config is cached in `s3_service.rs` | Verified | `src/s3_service.rs:74`, `96-117`, `359-366`, `552-562` |
+| Small objects `<=64KB` use log-structured routing | Verified | `src/storage/volume_pool.rs:239-365`, `src/storage/local_volume.rs:564-568` |
+| Log-store PUT path includes `fsync + ack` | Corrected | Code comments and implementation explicitly say no fsync: `src/storage/local_volume.rs:251-253` |
+| Pool/default choice is still unsettled | Corrected | Newer docs and bench artifacts already establish the three-tier result; see `docs/benchmarks.md` and `docs/write-pool.md` |
+| 1+0 mmap fast path and EC mmap decode exist | Verified | `src/s3_service.rs:458-474`, `src/storage/erasure_decode.rs`, `src/storage/volume_pool.rs` |
+| `1220 MB/s` curl GET figure | Not re-run in this pass | Repeated consistently across docs, but not independently benchmarked during this audit |
+| Small-object latency numbers in this summary | Updated for consistency, not re-measured | Old values were stale relative to `docs/write-log.md`; current summary now points at newer published numbers |
+| Dependency table | Mostly verified at a glance | The listed crates are present and used, but I did not exhaustively reconcile every crate entry against `Cargo.toml` in this pass |
+
+Verdict: the architecture summary is structurally accurate, but it had a few stale summary claims inherited from older benchmark/design phases. The corrected version now matches the current storage-tier story and no-fsync write model.

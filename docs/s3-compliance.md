@@ -36,12 +36,12 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 | PutBucketCors | `PUT /{bucket}?cors` | Stub | 3/10 | Returns 501 NotImplemented (matches MinIO). 2.0 item. |
 | DeleteBucketCors | `DELETE /{bucket}?cors` | Stub | 3/10 | Returns 501 NotImplemented (matches MinIO). 2.0 item. |
 | GetBucketACL | `GET /{bucket}?acl` | Stub | 3/10 | Returns hardcoded FULL_CONTROL (matches MinIO). |
-| PutBucketACL | `PUT /{bucket}?acl` | Stub | 3/10 | Accepts private only, rejects others with 501 (matches MinIO). |
+| PutBucketACL | `PUT /{bucket}?acl` | Stub | 3/10 | Current stub accepts requests and returns success; ACLs are not enforced. |
 | GetBucketReplication | `GET /{bucket}?replication` | No | 0/10 | |
 | PutBucketReplication | `PUT /{bucket}?replication` | No | 0/10 | |
 | DeleteBucketReplication | `DELETE /{bucket}?replication` | No | 0/10 | |
 | GetBucketNotification | `GET /{bucket}?notification` | Stub | 3/10 | Returns empty config XML. 2.0 item. |
-| PutBucketNotification | `PUT /{bucket}?notification` | Stub | 3/10 | Returns 501. 2.0 item. |
+| PutBucketNotification | `PUT /{bucket}?notification` | Stub | 3/10 | Current stub accepts and returns an empty success response. 2.0 item. |
 | GetBucketLogging | `GET /{bucket}?logging` | No | 0/10 | |
 | GetBucketWebsite | `GET /{bucket}?website` | No | 0/10 | |
 | DeleteBucketWebsite | `DELETE /{bucket}?website` | No | 0/10 | |
@@ -73,7 +73,7 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 | PutObjectTagging | `PUT /{bucket}/{key}?tagging` | Done | 8/10 | |
 | DeleteObjectTagging | `DELETE /{bucket}/{key}?tagging` | Done | 8/10 | |
 | GetObjectACL | `GET /{bucket}/{key}?acl` | Stub | 3/10 | Returns hardcoded FULL_CONTROL (matches MinIO). |
-| PutObjectACL | `PUT /{bucket}/{key}?acl` | Stub | 3/10 | Accepts private only (matches MinIO). |
+| PutObjectACL | `PUT /{bucket}/{key}?acl` | Stub | 3/10 | Current stub accepts requests and returns success; ACLs are not enforced. |
 | GetObjectRetention | `GET /{bucket}/{key}?retention` | No | 0/10 | |
 | PutObjectRetention | `PUT /{bucket}/{key}?retention` | No | 0/10 | |
 | GetObjectLegalHold | `GET /{bucket}/{key}?legal-hold` | No | 0/10 | |
@@ -118,8 +118,8 @@ s3s generates all XML responses from smithy models (AWS spec-compliant).
 | `Content-Type` | Set by s3s on all XML and object responses. |
 | `ETag` | Set on PUT, GET, HEAD. RFC 7232 strong entity tag. |
 | `Last-Modified` | RFC 7231 HTTP-date on GET, HEAD. |
-| `x-amz-version-id` | Pending (versioning response headers not yet wired). |
-| `x-amz-delete-marker` | Pending (versioning response headers not yet wired). |
+| `x-amz-version-id` | Set on versioned PUT, DELETE, and version-addressed responses. |
+| `x-amz-delete-marker` | Set on delete-marker DELETE responses. |
 
 ### Error responses
 
@@ -158,6 +158,26 @@ tests, and distributed placement tests. Exact test counts change over time and
 should be taken from the current `cargo test` output rather than hardcoded
 here.
 
-Not implemented: encryption config, replication, notifications,
+Not implemented: encryption config, replication,
 object lock/retention, ACLs, S3 Select.
 CORS is stub-only. Full implementation is a 2.0 item.
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| `x-amz-version-id` response header was pending | Corrected | Tests assert header presence in `tests/s3_integration.rs:998-1027`, `1126`, `1229`, `1279` |
+| `x-amz-delete-marker` response header was pending | Corrected | Test asserts header on versioned delete in `tests/s3_integration.rs:1124-1126` |
+| `PutBucketNotification` returns 501 | Corrected | Stub returns success in `src/s3_service.rs:1320-1324`; test allows 200 in `tests/s3_integration.rs:2607-2620` |
+| `PutBucketACL` only accepts private / rejects others with 501 | Corrected | Stub unconditionally returns success in `src/s3_service.rs:1352-1357`; test notes current 200-or-501 behavior in `tests/s3_integration.rs:2656-2669` |
+| `PutObjectACL` only accepts private | Corrected | Stub unconditionally returns success in `src/s3_service.rs:1359-1364`; private-path test in `tests/s3_integration.rs:2692-2710` |
+| Bucket CORS stubs | Verified with nuance | Implementation is `404 NoSuchCORSConfiguration` for GET and `501 NotImplemented` for PUT/DELETE in `src/s3_service.rs:1329-1347`; PUT test allows 400 parse failure before stub in `tests/s3_integration.rs:2560-2573` |
+| Bucket notification GET stub | Verified | `src/s3_service.rs:1313-1318`, `tests/s3_integration.rs:2590-2604` |
+| Versioning operations and headers | Verified | `src/s3_service.rs:903-942`, `tests/s3_integration.rs:873-1279` |
+| Multipart operations marked Done | Verified | `src/s3_service.rs:1006-1158`, `tests/s3_integration.rs:1656-2383`, `3901-3930` |
+| `41 of 72` implemented | Not re-derived in this pass | Value is internally plausible, but I did not re-count every route against code in this audit |
+| `POST policy uploads` in Auth section | Not verified in this pass | No direct implementation or test evidence reviewed here; this may be protocol capability from `s3s`, but the doc currently conflicts with `PostPolicyBucket = No` above |
+
+Verdict: this document had several stale entries. The versioning-header rows and some stub-operation notes are now corrected. The remaining big unresolved item is the `POST policy uploads` claim, which needs a dedicated audit because it conflicts with the operation table.

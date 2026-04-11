@@ -18,8 +18,9 @@ comparison is not valid. These rules ensure parity:
 
 3. **Same connection model**: each client uses a single connection with
    keep-alive across all iterations. For per-process CLI tools (mc,
-   rclone), process spawn overhead is measured and subtracted so we
-   measure transfer time, not startup time.
+   rclone), process spawn overhead is measured and reported. Published
+   matrix numbers below are end-to-end and include process spawn unless
+   a section explicitly says otherwise.
 
 4. **Same iterations**: all clients run the same number of iterations
    per (server, size) combination.
@@ -46,13 +47,13 @@ clients, real data.
 | Client | Type | Auth | Connection | Overhead |
 |--------|------|------|-----------|----------|
 | **aws-sdk-s3** (Rust) | In-process SDK | SigV4, UNSIGNED-PAYLOAD | Keep-alive | None |
-| **mc** (MinIO client) | Per-process CLI | SigV4 | New process per op | ~41ms (subtracted) |
-| **rclone** | Per-process CLI | SigV4 | New process per op | ~111ms (subtracted) |
+| **mc** (MinIO client) | Per-process CLI | SigV4 | New process per op | ~41ms |
+| **rclone** | Per-process CLI | SigV4 | New process per op | ~111ms |
 
 For CLI tools, process spawn overhead is measured before each benchmark
-run (`mc ls` / `rclone lsd`) and subtracted from every timing. This gives
-transfer-only throughput. The overhead is printed in the output for
-transparency.
+run (`mc ls` / `rclone lsd`) and printed in the output for transparency.
+The comprehensive matrix below reports real end-to-end timing including
+that overhead.
 
 ### Servers
 
@@ -224,6 +225,11 @@ work. See [layer-optimization.md](layer-optimization.md) for details.
 
 ## Write tier comparison (Phase 8 matrix, end-to-end HTTP)
 
+The authoritative explanation of what each write branch actually does,
+what ack means, and when data reaches its final resting place is now
+[write-path.md](write-path.md). This section stays focused on the
+measured comparison.
+
 `bench_pool_l4_tier_matrix` spawns a fresh abixio server per
 configuration and drives it through the full hyper + s3s + VolumePool
 stack via reqwest. 1 disk, ftt=0, 127.0.0.1 loopback, sequential,
@@ -298,6 +304,10 @@ volume setup code.
 
 ## Stack breakdown (Phase 8.5: where does the 4KB time go)
 
+Use [write-path.md](write-path.md) for the canonical layer-by-layer
+interpretation of these branches. This section is the timing source for
+that document, not the canonical flow description by itself.
+
 `bench_pool_l4_5_stack_breakdown` attributes the 4KB PUT latency to
 specific layers via progressive stages. Ten stages, each a fresh
 server that adds one layer:
@@ -350,7 +360,7 @@ journey including every phase of the write pool design.
 # build AbixIO release binary first
 cd /path/to/abixio && cargo build --release
 
-# comprehensive matrix (3 servers, 2 clients, 3 sizes)
+# comprehensive matrix (3 servers, 3 clients, 3 sizes)
 cd /path/to/abixio-ui
 ABIXIO_BIN=/path/to/abixio/target/release/abixio \
     cargo test --release --test bench -- --ignored --nocapture bench_matrix
@@ -371,6 +381,25 @@ RustFS and MinIO binaries auto-detected at `C:\tools\rustfs.exe` and
 
 ---
 
+For the canonical end-to-end PUT path, see [write-path.md](write-path.md).
 For optimization history and allocation audit, see [layer-optimization.md](layer-optimization.md).
 For log-structured storage design, see [write-log.md](write-log.md).
 For RAM write cache design, see [write-cache.md](write-cache.md).
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| `bench_pool_l4_tier_matrix` and `bench_pool_l4_5_stack_breakdown` exist | Verified | `tests/layer_bench.rs:3164`, `3499` |
+| Raw artifacts referenced for Phase 8.7 and 8.5 exist | Verified | `bench-results/phase8.7-tier-matrix.txt`, `bench-results/phase8.5-stack-breakdown-v5.txt` |
+| Debug profiling header `x-debug-s3s-ms` exists in code | Verified | `src/s3_route.rs:82` |
+| Matrix comment said `3 servers, 2 clients` | Corrected | Document contradicted itself; client list and matrix section clearly use 3 clients |
+| CLI overhead was described as both subtracted and not subtracted | Corrected | Document contradicted itself; matrix section explicitly says published numbers are end-to-end including spawn |
+| Phase 8 / 8.5 benchmark section names and commands | Verified | `tests/layer_bench.rs:3111-3164`, `3455-3499` |
+| Specific published numeric results in matrix tables | Not independently re-run in this pass | Numbers match this document and related docs/artifacts, but I did not execute the external benchmark harness here |
+| `1220 MB/s` curl GET and other historical perf numbers | Not independently re-run in this pass | Repeated consistently across docs, but not re-measured during this audit |
+| `abixio-ui/tests/bench.rs` harness description | Not audited in this pass | This repo references that harness, but the `abixio-ui` repo was not opened here |
+
+Verdict: this document’s benchmark narrative is mostly internally consistent after fixing the overhead/client-count contradictions. The bench names, commands, raw artifact references, and profiling hook are backed by this repo. The many published performance numbers still need runtime re-benchmarking if you want strict empirical re-validation.

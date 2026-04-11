@@ -36,6 +36,10 @@ Both sides hit RAM. Disk flush happens when the OS decides.
 
 ## How it works
 
+For the canonical end-to-end PUT path and branch selection, see
+[write-path.md](write-path.md). This page stays focused on the log tier
+itself.
+
 ```
 PUT 4KB object (Content-Length <= 64KB):
   -> RS encode into shards
@@ -182,13 +186,32 @@ Remaining:
 ## See also
 
 - [Pre-opened temp file pool](write-pool.md): a replacement for the
-  log store currently being benchmarked. Same
+  log store with benchmark results now documented. Same
   eliminate-syscalls-from-the-hot-path goal, different mechanism (one
   pre-opened file per object instead of many objects per segment).
   The pool's main draw is that it has no GC: one file per object
   means `unlink()` reclaims space natively, no compactor needed. The
-  two are gated by `--write-tier` until benchmarks decide which ships
-  as the default.
+  newer benchmark conclusion is a three-tier split: log store for
+  `<=64KB`, pool for mid-range writes, file tier for large objects.
 - [RAM write cache](write-cache.md): orthogonal, writes to a DashMap
   in RAM with peer replication, flushes to whichever lower tier is
   active.
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| Small objects `<=64KB` route through the log store when enabled | Verified | `src/storage/volume_pool.rs:239-365`, `src/storage/local_volume.rs:564-568` |
+| Versioned objects bypass the log store | Verified | `src/storage/local_volume.rs:564-567` |
+| Log store uses append-only segments plus an in-memory index | Verified | `src/storage/log_store.rs:18-26`, `121-156`, `183-192` |
+| Segment files are pre-allocated to 64MB | Verified | `src/storage/segment.rs:19-20`, `54-75` |
+| Crash recovery rebuilds the index by scanning segments on startup | Verified | `src/storage/log_store.rs:29-75`, `78-103` |
+| Tombstone/delete support exists for small deletes | Verified | `src/storage/log_store.rs:158-172` |
+| Log-store reads are zero-copy in all described paths | Needs nuance | The implementation has mmap-backed segments, but `LogStore::read_data_vec` still returns copied `Vec` data in the path described here (`src/storage/log_store.rs:195-210`) |
+| `tests/bench_4kb.py` is the source of the published 4KB performance numbers | Plausible but not re-run in this pass | The benchmark script exists and is referenced from docs/tests, but the numbers were not reproduced during this audit |
+| Pool is “currently being benchmarked” to decide the default | Corrected | Newer docs already conclude the benchmark outcome in `docs/benchmarks.md` and `docs/write-pool.md` |
+| `--write-tier` currently gates the decision | Not code-verified in this pass | Other docs say the CLI flag is still pending; I did not verify `src/main.rs` wiring here |
+
+Verdict: the implementation description is broadly accurate for the log-store design and routing, but some prose overstates the zero-copy behavior of the simple read path. The benchmark tables remain benchmark-derived claims, not code-derived facts.
