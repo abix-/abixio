@@ -181,12 +181,14 @@ Remaining:
 
 ## See also
 
-- [Pre-opened temp file pool](write-pool.md) -- an alternative write
-  path being benchmarked against the log store. Same
+- [Pre-opened temp file pool](write-pool.md) -- a replacement for the
+  log store currently being benchmarked. Same
   eliminate-syscalls-from-the-hot-path goal, different mechanism (one
   pre-opened file per object instead of many objects per segment).
-  The two are gated by `--write-tier` until benchmarks decide which
-  ships as the default.
+  The pool's main draw is that it has no GC: one file per object
+  means `unlink()` reclaims space natively, no compactor needed. The
+  two are gated by `--write-tier` until benchmarks decide which ships
+  as the default.
 - [RAM write cache](write-cache.md) -- orthogonal: writes to a DashMap
   in RAM with peer replication, flushes to whichever lower tier is
   active.

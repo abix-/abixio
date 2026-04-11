@@ -302,9 +302,9 @@ WRITE PATH (fastest to slowest):
   Tier 0: RAM write cache         ~0.001ms  (DashMap insert)
     |
     v (background, ~100ms)
-  Tier 1: Log-structured store    ~0.002ms  (segment append, <=64KB)
+  Tier 1: Log-structured store    ~0.002ms  (segment append, <=64KB only)
        OR
-  Tier 1: Pre-opened temp pool    ~0.002ms  (write to pre-opened slot)
+  Tier 1: Pre-opened temp pool    ~0.002ms  (write to pre-opened slot, all sizes)
     |
     v (rename worker drains)
   Tier 2: File tier               ~0.4ms    (mkdir + file create)

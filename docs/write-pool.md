@@ -1,22 +1,30 @@
 # Pre-opened temp file pool
 
-A write-path mechanism for the file tier. Each disk holds a small pool
-of already-open temp files. A PUT writes shard bytes to one slot's
-data file and meta JSON to its companion meta file, then acks. The
-mkdir, file creates, and the rename to the final destination all
-happen on a background worker after the client has been told the PUT
-succeeded. Two syscalls on the hot path instead of seven.
+An alternative write path designed to replace the
+[log store](write-log.md). Each disk holds a small pool of already-open
+temp files. A PUT writes shard bytes to one slot's data file and meta
+JSON to its companion meta file, then acks. The mkdir, file creates,
+and the rename to the destination all happen on a background worker
+after the client has been told the PUT succeeded. Two syscalls on the
+hot path instead of seven.
 
-This is a sibling to [the log store](write-log.md) and the
-[RAM write cache](write-cache.md). Each tier optimizes a different
-write pattern. The pool exists to extend log-store-class write speed
-to objects that the log store doesn't handle today (>64KB, versioned,
-streaming).
+The motivation is GC simplicity. The log store keeps many objects per
+segment file, which means reclaiming space from overwritten or deleted
+objects requires a segment compactor that scans live needles, copies
+them to a new segment, and unlinks the old one. The pool keeps one
+file per object, so reclaiming space is just `unlink()` -- the
+filesystem handles it natively, no compactor needed.
+
+The pool and the log store are alternatives at the same tier level.
+The [RAM write cache](write-cache.md) sits above whichever one is
+enabled. Which mechanism ships as the default is decided by benchmark;
+see the comparison plan at the end of this doc.
 
 ## Why
 
-Today's file tier (objects > 64KB, all versioned writes, the streaming
-`LocalShardWriter` path) does this on every PUT, per disk:
+The current file-per-object write path -- which the log store already
+bypasses for objects <=64KB and the pool aims to replace entirely --
+does this on every PUT, per disk:
 
 ```
 tokio::fs::create_dir_all(obj_dir)              <- mkdir + parent walk + MFT write
@@ -34,20 +42,21 @@ log store append:                0.002ms   544K obj/s
 
 The 626us delta is filesystem metadata work, not the data itself. The
 log store eliminated it for tiny objects by appending to one
-always-open segment. The pool extends the same insight to arbitrary
-sizes: keep some files open in advance, just write to them on PUT,
-move them to their final location later.
+always-open segment. The pool applies the same insight at the
+granularity of one file per object: keep the files open in advance,
+write to them on PUT, move them to their final location later. This
+works for any size, including the small objects the log store
+currently handles.
 
 ## How it works
 
 ### Per-disk slot pool
 
 On `LocalVolume::new`, each disk creates a pool of N pre-opened slots
-in `.abixio.tmp/preopen/`. Default N is 32. Each slot is a pair of
-files:
+in `.abixio.sys/tmp/`. Default N is 32. Each slot is a pair of files:
 
 ```
-.abixio.tmp/preopen/
+.abixio.sys/tmp/
   slot-0000.data.tmp     <- pre-opened, empty, will receive shard bytes
   slot-0000.meta.tmp     <- pre-opened, empty, will receive meta JSON
   slot-0001.data.tmp
@@ -181,7 +190,7 @@ The two renames are not jointly atomic. There are three possible
 crash points:
 
 1. **Crash before the first rename.** Both temp files intact in
-   `.abixio.tmp/preopen/`. Recovery scans, reads `bucket` and `key`
+   `.abixio.sys/tmp/`. Recovery scans, reads `bucket` and `key`
    from `slot-N.meta.tmp`, runs both renames. Recovered.
 2. **Crash between the two renames.** `shard.dat` is at the
    destination, `meta.tmp` is still in the temp dir. Recovery scans
@@ -200,7 +209,7 @@ under process crash.**
 The recovery procedure on `LocalVolume::new`, before creating the
 pool:
 
-1. List `.abixio.tmp/preopen/` and group files by slot id.
+1. List `.abixio.sys/tmp/` and group files by slot id.
 2. For each `slot-N.meta.tmp` that is non-empty and parseable as
    `ObjectMetaFile`:
    a. Read `bucket` and `key` (and `versions[0].version_id` if
@@ -213,7 +222,7 @@ pool:
      but the meta write didn't complete. The PUT was never acked.
      Delete.
    - `slot-N.meta.tmp` that fails to parse: incomplete write. Delete.
-4. Delete any other leftovers in `.abixio.tmp/preopen/`.
+4. Delete any other leftovers in `.abixio.sys/tmp/`.
 5. Create N fresh slot pairs and populate the pool.
 
 This is **stateless**: the temp meta files themselves are the source
@@ -285,7 +294,7 @@ not a required path.
    must measure read latency before deciding to drop the log store.
 
 2. **Two files per slot doubles the temp dir file count.** N=32 means
-   64 files in `.abixio.tmp/preopen/`. Plus up to 256 in-flight
+   64 files in `.abixio.sys/tmp/`. Plus up to 256 in-flight
    pairs pending rename. Maximum ~640 files per disk. NTFS handles
    this fine; not a concern.
 
@@ -319,12 +328,19 @@ not a required path.
 
 ## Coexistence with the log store
 
-The pool is an alternative to the log store, not a strict
-replacement. The log store keeps multiple needles per file, which
-is better for tiny-object reads (better page cache density, faster
-recovery). The pool keeps one file per object, which makes deletion
-and space reclamation trivial (`unlink()` handles everything; no
-segment compactor needed) and applies to any size, not just <=64KB.
+The pool is designed as a replacement for the log store. The main
+motivation is GC: one file per object means `unlink()` reclaims space
+natively, with no segment compactor, no live needle scan, no
+copy-forward pass. The log store needs phase 8 GC -- the pool needs
+zero new code.
+
+The one known trade-off in the other direction is GET latency for
+very small objects. The log store does HashMap lookup + slice from
+an already-mmap'd segment in ~10us. The pool does File::open + mmap
+in ~100us. The benchmark plan below quantifies the gap on real
+workloads. If the gap is small in practice, the log store goes away.
+If the gap is large for hot tiny objects, we can keep the log store
+enabled for those and use the pool for everything else.
 
 Until benchmarks decide which one to ship as the default, both
 coexist behind a runtime flag:
@@ -348,7 +364,7 @@ make a data-driven call before deleting the loser.
 | 4 | Wire `open_shard_writer` to use the pool | streaming PUT fast path |
 | 5 | Read path integration in all five readers | reads see pending writes |
 | 6 | Crash recovery scan in `LocalVolume::new` | restart safety |
-| 7 | Admin endpoint `GET /_admin/preopen/status` | operator visibility |
+| 7 | Admin endpoint `GET /_admin/pool/status` | operator visibility |
 | 8 | Tests: unit + integration + crash kill | confidence |
 | 9 | Benchmark all three tiers | data-driven decision |
 
@@ -401,14 +417,14 @@ decide.
   `delete_object` to consult the pool and `pending_renames`. Spawn
   the rename worker. Run crash recovery in `new()`. Add
   `enable_write_pool(depth)` mirroring `enable_log_store()`.
-- `src/storage/pathing.rs` -- helpers `preopen_dir(root)`,
-  `preopen_data_path(root, slot_id)`, `preopen_meta_path(root,
-  slot_id)`.
+- `src/storage/pathing.rs` -- helpers `pool_dir(root)`,
+  `pool_data_path(root, slot_id)`, `pool_meta_path(root, slot_id)`.
+  All return paths under `.abixio.sys/tmp/`.
 - `src/main.rs` -- new `--write-tier` CLI flag. Pass shutdown signal
   into the rename worker (reuse the `tokio::sync::watch` channel
   used by the heal worker).
 - `src/admin/handlers.rs` -- new endpoint
-  `GET /_admin/preopen/status` returning per-disk pool depth, queue
+  `GET /_admin/pool/status` returning per-disk pool depth, queue
   depth, pending count, and replenish errors.
 - `src/config.rs` -- add `write_tier` field.
 - `tests/s3_integration.rs` -- pool integration tests.
@@ -439,7 +455,7 @@ decide.
 - Streaming multipart upload (5x 5MB parts + complete), verify the
   completed object byte-equals the source.
 - PUT then DELETE before the worker drains, verify no orphan file
-  remains in `.abixio.tmp/preopen/` and the object 404s.
+  remains in `.abixio.sys/tmp/` and the object 404s.
 - Kill the process between the two renames using a test harness,
   restart, verify the destination has both shard.dat and meta.json
   and the object is readable.
