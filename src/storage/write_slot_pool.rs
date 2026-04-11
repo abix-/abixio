@@ -98,6 +98,73 @@ impl WriteSlotPool {
     pub fn pool_dir(&self) -> &Path {
         &self.pool_dir
     }
+
+    /// Replenish a consumed slot by creating fresh files at the
+    /// slot_id paths and pushing the new `WriteSlot` back into the
+    /// queue. Called by the rename worker after a successful rename.
+    pub async fn replenish_slot(&self, slot_id: u32) -> Result<(), StorageError> {
+        let slot = create_slot(&self.pool_dir, slot_id).await?;
+        self.slots
+            .push(slot)
+            .map_err(|_| StorageError::Internal("pool queue full on replenish".into()))
+    }
+}
+
+/// A request to finalize a slot by renaming its files to the
+/// destination paths. Sent on the rename channel by the (eventual)
+/// PUT path; consumed by `run_rename_worker`.
+#[derive(Debug, Clone)]
+pub struct RenameRequest {
+    pub slot_id: u32,
+    pub data_src: PathBuf,
+    pub meta_src: PathBuf,
+    pub dest_dir: PathBuf,
+    pub data_dest: PathBuf,
+    pub meta_dest: PathBuf,
+}
+
+/// Process a single rename request: mkdir destination, two atomic
+/// renames, replenish the slot. Public so the bench harness can
+/// invoke it directly when measuring parallel-worker scaling.
+pub async fn process_rename_request(
+    pool: &WriteSlotPool,
+    req: &RenameRequest,
+) -> Result<(), StorageError> {
+    tokio::fs::create_dir_all(&req.dest_dir).await?;
+    tokio::fs::rename(&req.data_src, &req.data_dest).await?;
+    tokio::fs::rename(&req.meta_src, &req.meta_dest).await?;
+    pool.replenish_slot(req.slot_id).await?;
+    Ok(())
+}
+
+/// Run the rename worker until the channel closes or `shutdown`
+/// fires. Errors are logged via `tracing` and the worker continues
+/// -- a single failed rename should not kill the worker.
+///
+/// Matches the existing heal worker shutdown pattern at
+/// `src/heal/worker.rs:181-226`.
+pub async fn run_rename_worker(
+    pool: Arc<WriteSlotPool>,
+    mut rx: tokio::sync::mpsc::Receiver<RenameRequest>,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => break,
+            msg = rx.recv() => {
+                let Some(req) = msg else { break; };
+                if let Err(e) = process_rename_request(&pool, &req).await {
+                    tracing::warn!(
+                        slot_id = req.slot_id,
+                        data_src = %req.data_src.display(),
+                        error = %e,
+                        "rename worker request failed",
+                    );
+                }
+            }
+        }
+    }
 }
 
 /// Create one slot pair on disk and return the open file handles.
@@ -174,5 +241,151 @@ mod tests {
         assert!(slot.meta_path.exists());
         assert!(slot.data_path.to_string_lossy().contains("slot-0000.data.tmp"));
         assert!(slot.meta_path.to_string_lossy().contains("slot-0000.meta.tmp"));
+    }
+
+    #[tokio::test]
+    async fn replenish_slot_creates_fresh_files_at_same_path() {
+        use tokio::io::AsyncWriteExt;
+        let tmp = TempDir::new().unwrap();
+        let pool = WriteSlotPool::new(tmp.path(), 1).await.unwrap();
+
+        // Pop slot 0, write some data, "consume" it by deleting the files,
+        // then replenish. The new slot should appear at the same paths
+        // and the files should be fresh (empty).
+        let slot = pool.try_pop().unwrap();
+        let data_path = slot.data_path.clone();
+        let meta_path = slot.meta_path.clone();
+        let WriteSlot { mut data_file, mut meta_file, .. } = slot;
+        data_file.write_all(b"junk").await.unwrap();
+        meta_file.write_all(b"more junk").await.unwrap();
+        drop(data_file);
+        drop(meta_file);
+        std::fs::remove_file(&data_path).unwrap();
+        std::fs::remove_file(&meta_path).unwrap();
+        assert_eq!(pool.available(), 0);
+
+        pool.replenish_slot(0).await.unwrap();
+        assert_eq!(pool.available(), 1);
+
+        let slot = pool.try_pop().unwrap();
+        assert_eq!(slot.slot_id, 0);
+        assert!(slot.data_path.exists());
+        assert!(slot.meta_path.exists());
+        // Fresh files should be empty
+        let data_meta = std::fs::metadata(&slot.data_path).unwrap();
+        let meta_meta = std::fs::metadata(&slot.meta_path).unwrap();
+        assert_eq!(data_meta.len(), 0);
+        assert_eq!(meta_meta.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn worker_drains_single_request_and_replenishes_pool() {
+        use tokio::io::AsyncWriteExt;
+        let tmp = TempDir::new().unwrap();
+        let pool_dir = tmp.path().join("pool");
+        let dest_dir = tmp.path().join("dest");
+        let pool = WriteSlotPool::new(&pool_dir, 1).await.unwrap();
+
+        // Pop the slot, write data, build a rename request
+        let slot = pool.try_pop().unwrap();
+        let slot_id = slot.slot_id;
+        let data_src = slot.data_path.clone();
+        let meta_src = slot.meta_path.clone();
+        let WriteSlot { mut data_file, mut meta_file, .. } = slot;
+        data_file.write_all(b"hello").await.unwrap();
+        meta_file.write_all(b"world").await.unwrap();
+        drop(data_file);
+        drop(meta_file);
+        assert_eq!(pool.available(), 0);
+
+        let req = RenameRequest {
+            slot_id,
+            data_src,
+            meta_src,
+            dest_dir: dest_dir.clone(),
+            data_dest: dest_dir.join("shard.dat"),
+            meta_dest: dest_dir.join("meta.json"),
+        };
+
+        // Run the worker via the public function
+        let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(8);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let pool_clone = Arc::clone(&pool);
+        let handle = tokio::spawn(async move {
+            run_rename_worker(pool_clone, rx, shutdown_rx).await;
+        });
+
+        tx.send(req).await.unwrap();
+        drop(tx); // close channel -> worker exits after draining
+        handle.await.unwrap();
+
+        // Verify destination files exist with the right contents
+        let data = std::fs::read(dest_dir.join("shard.dat")).unwrap();
+        assert_eq!(data, b"hello");
+        let meta = std::fs::read(dest_dir.join("meta.json")).unwrap();
+        assert_eq!(meta, b"world");
+
+        // Verify pool is back to depth 1 (replenished)
+        assert_eq!(pool.available(), 1);
+    }
+
+    #[tokio::test]
+    async fn worker_continues_after_failed_rename() {
+        use tokio::io::AsyncWriteExt;
+        let tmp = TempDir::new().unwrap();
+        let pool_dir = tmp.path().join("pool");
+        let dest_dir = tmp.path().join("dest");
+        let pool = WriteSlotPool::new(&pool_dir, 2).await.unwrap();
+
+        // Slot 0: bad request (data_src doesn't exist) -- should fail
+        // Slot 1: good request -- should succeed AFTER the failure
+        let slot0 = pool.try_pop().unwrap();
+        let slot1 = pool.try_pop().unwrap();
+
+        // Slot 0 setup: delete the data file before sending so rename fails
+        std::fs::remove_file(&slot0.data_path).unwrap();
+        let bad_req = RenameRequest {
+            slot_id: slot0.slot_id,
+            data_src: slot0.data_path.clone(),
+            meta_src: slot0.meta_path.clone(),
+            dest_dir: dest_dir.clone(),
+            data_dest: dest_dir.join("a.dat"),
+            meta_dest: dest_dir.join("a.meta"),
+        };
+        drop(slot0);
+
+        // Slot 1 setup: write some data
+        let WriteSlot { mut data_file, mut meta_file, slot_id, data_path, meta_path, .. } = slot1;
+        data_file.write_all(b"good data").await.unwrap();
+        meta_file.write_all(b"good meta").await.unwrap();
+        drop(data_file);
+        drop(meta_file);
+        let good_req = RenameRequest {
+            slot_id,
+            data_src: data_path,
+            meta_src: meta_path,
+            dest_dir: dest_dir.clone(),
+            data_dest: dest_dir.join("b.dat"),
+            meta_dest: dest_dir.join("b.meta"),
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(8);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let pool_clone = Arc::clone(&pool);
+        let handle = tokio::spawn(async move {
+            run_rename_worker(pool_clone, rx, shutdown_rx).await;
+        });
+
+        tx.send(bad_req).await.unwrap();
+        tx.send(good_req).await.unwrap();
+        drop(tx);
+        handle.await.unwrap();
+
+        // Good request should have succeeded despite the bad one
+        assert!(dest_dir.join("b.dat").exists());
+        assert!(dest_dir.join("b.meta").exists());
+        // Pool should have at least slot 1 replenished
+        // (slot 0 was not replenished because the rename failed before that step)
+        assert!(pool.available() >= 1);
     }
 }

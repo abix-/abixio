@@ -945,6 +945,307 @@ async fn bench_pool_l1_5_json_serializers() {
 }
 
 // ============================================================================
+// Pool L2: rename worker drain rate (Phase 3)
+// ============================================================================
+//
+// Phase 3 measures the rename worker in isolation. Builds a pool, fills
+// some slots, sends RenameRequests on a channel, runs the worker, times
+// how long it takes to drain. Four scenarios:
+//
+//   1. Cold drain at N=32, N=256, N=1024 (single worker)
+//   2. Cold drain with pre-created dest dirs (isolates mkdir cost)
+//   3. Steady-state with target rates (finds saturation point)
+//   4. Parallel workers at N_workers=1, 2, 4 (does it scale?)
+//
+// Run with:
+//   k3sc cargo-lock test --release --test layer_bench -- --ignored \
+//       --nocapture bench_pool_l2_worker_drain
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn bench_pool_l2_worker_drain() {
+    use abixio::storage::write_slot_pool::{
+        process_rename_request, run_rename_worker, RenameRequest, WriteSlot, WriteSlotPool,
+    };
+    use tokio::io::AsyncWriteExt;
+
+    // Helper: pop all slots from a pool, write a small payload to each,
+    // build the matching RenameRequests pointing to a destination tree.
+    async fn fill_pool_and_build_requests(
+        pool: &Arc<WriteSlotPool>,
+        n: usize,
+        dest_root: &std::path::Path,
+        precreate_dest_dirs: bool,
+    ) -> Vec<RenameRequest> {
+        let mut requests = Vec::with_capacity(n);
+        for i in 0..n {
+            let slot = pool
+                .try_pop()
+                .expect("pool depth must match n in this bench");
+            let WriteSlot {
+                slot_id,
+                mut data_file,
+                mut meta_file,
+                data_path,
+                meta_path,
+            } = slot;
+            data_file.write_all(b"x").await.unwrap();
+            meta_file.write_all(b"y").await.unwrap();
+            drop(data_file);
+            drop(meta_file);
+
+            let dest_dir = dest_root.join(format!("obj_{}", i));
+            if precreate_dest_dirs {
+                tokio::fs::create_dir_all(&dest_dir).await.unwrap();
+            }
+            requests.push(RenameRequest {
+                slot_id,
+                data_src: data_path,
+                meta_src: meta_path,
+                dest_dir: dest_dir.clone(),
+                data_dest: dest_dir.join("shard.dat"),
+                meta_dest: dest_dir.join("meta.json"),
+            });
+        }
+        requests
+    }
+
+    eprintln!("\n=== Pool L2: rename worker drain rate ===\n");
+
+    // ----------------------------------------------------------------
+    // Scenario 1: cold drain at multiple depths
+    // ----------------------------------------------------------------
+    eprintln!("  -- Scenario 1: cold drain (mkdir + 2 renames + replenish) --");
+    for &n in &[32usize, 256, 1024] {
+        let tmp = TempDir::new().unwrap();
+        let pool_dir = tmp.path().join("pool");
+        let dest_root = tmp.path().join("dest");
+        let pool = WriteSlotPool::new(&pool_dir, n as u32).await.unwrap();
+
+        let requests = fill_pool_and_build_requests(&pool, n, &dest_root, false).await;
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(n + 16);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let pool_clone = Arc::clone(&pool);
+        let worker = tokio::spawn(async move {
+            run_rename_worker(pool_clone, rx, shutdown_rx).await;
+        });
+
+        // Prefill the channel before timing so we measure the worker
+        // alone, not the producer.
+        for req in requests {
+            tx.send(req).await.unwrap();
+        }
+        drop(tx); // closing the channel signals the worker to exit on drain
+
+        let t = Instant::now();
+        worker.await.unwrap();
+        let elapsed = t.elapsed();
+
+        let ops_per_sec = n as f64 / elapsed.as_secs_f64();
+        let us_per_op = elapsed.as_secs_f64() * 1_000_000.0 / n as f64;
+        eprintln!(
+            "  N={:<5}  workers=1   drain {:>9.2}ms   {:>7.0} ops/sec   {:>5.0}us/op",
+            n,
+            elapsed.as_secs_f64() * 1000.0,
+            ops_per_sec,
+            us_per_op,
+        );
+        // sanity: pool fully replenished
+        assert_eq!(pool.available(), n);
+    }
+
+    // ----------------------------------------------------------------
+    // Scenario 2: drain with dest dirs pre-created (isolates mkdir cost)
+    // ----------------------------------------------------------------
+    eprintln!();
+    eprintln!("  -- Scenario 2: drain with pre-created dest dirs (no mkdir) --");
+    {
+        let n = 256usize;
+        let tmp = TempDir::new().unwrap();
+        let pool_dir = tmp.path().join("pool");
+        let dest_root = tmp.path().join("dest");
+        let pool = WriteSlotPool::new(&pool_dir, n as u32).await.unwrap();
+
+        let requests = fill_pool_and_build_requests(&pool, n, &dest_root, true).await;
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(n + 16);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let pool_clone = Arc::clone(&pool);
+        let worker = tokio::spawn(async move {
+            run_rename_worker(pool_clone, rx, shutdown_rx).await;
+        });
+
+        for req in requests {
+            tx.send(req).await.unwrap();
+        }
+        drop(tx);
+
+        let t = Instant::now();
+        worker.await.unwrap();
+        let elapsed = t.elapsed();
+
+        let ops_per_sec = n as f64 / elapsed.as_secs_f64();
+        let us_per_op = elapsed.as_secs_f64() * 1_000_000.0 / n as f64;
+        eprintln!(
+            "  N={:<5}  workers=1   drain {:>9.2}ms   {:>7.0} ops/sec   {:>5.0}us/op",
+            n,
+            elapsed.as_secs_f64() * 1000.0,
+            ops_per_sec,
+            us_per_op,
+        );
+        assert_eq!(pool.available(), n);
+    }
+
+    // ----------------------------------------------------------------
+    // Scenario 3: steady-state throughput at target rates
+    // ----------------------------------------------------------------
+    eprintln!();
+    eprintln!("  -- Scenario 3: steady state (producer rate vs worker drain) --");
+    for &target_rate in &[500u64, 1000, 1500, 5000] {
+        let n_total = 1000usize;
+        let tmp = TempDir::new().unwrap();
+        let pool_dir = tmp.path().join("pool");
+        let dest_root = tmp.path().join("dest");
+        let pool_depth = 64u32;
+        let pool = WriteSlotPool::new(&pool_dir, pool_depth).await.unwrap();
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(2048);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        // Worker
+        let pool_worker = Arc::clone(&pool);
+        let worker = tokio::spawn(async move {
+            run_rename_worker(pool_worker, rx, shutdown_rx).await;
+        });
+
+        // Producer with rate-limited send
+        let pool_producer = Arc::clone(&pool);
+        let dest_root_clone = dest_root.clone();
+        let interval_ns = 1_000_000_000u64 / target_rate;
+        let producer = tokio::spawn(async move {
+            let mut next_send = Instant::now();
+            for i in 0..n_total {
+                // Wait for a slot (or fall through if pool is starved -- we
+                // spin briefly so the bench doesn't deadlock)
+                let slot = loop {
+                    if let Some(s) = pool_producer.try_pop() {
+                        break s;
+                    }
+                    tokio::task::yield_now().await;
+                };
+                let WriteSlot {
+                    slot_id,
+                    mut data_file,
+                    mut meta_file,
+                    data_path,
+                    meta_path,
+                } = slot;
+                data_file.write_all(b"x").await.unwrap();
+                meta_file.write_all(b"y").await.unwrap();
+                drop(data_file);
+                drop(meta_file);
+                let dest_dir = dest_root_clone.join(format!("obj_{}", i));
+                let req = RenameRequest {
+                    slot_id,
+                    data_src: data_path,
+                    meta_src: meta_path,
+                    dest_dir: dest_dir.clone(),
+                    data_dest: dest_dir.join("shard.dat"),
+                    meta_dest: dest_dir.join("meta.json"),
+                };
+                tx.send(req).await.unwrap();
+
+                // Rate limit
+                next_send += Duration::from_nanos(interval_ns);
+                let now = Instant::now();
+                if now < next_send {
+                    tokio::time::sleep(next_send - now).await;
+                } else {
+                    next_send = now;
+                }
+            }
+            drop(tx);
+        });
+
+        let t = Instant::now();
+        producer.await.unwrap();
+        worker.await.unwrap();
+        let elapsed = t.elapsed();
+
+        let actual_rate = n_total as f64 / elapsed.as_secs_f64();
+        let saturated = actual_rate < target_rate as f64 * 0.9;
+        eprintln!(
+            "  target {:>5}/sec   actual {:>5.0}/sec   total {:>6}ms   {}",
+            target_rate,
+            actual_rate,
+            elapsed.as_secs_f64() * 1000.0,
+            if saturated { "SATURATED" } else { "ok" }
+        );
+    }
+
+    // ----------------------------------------------------------------
+    // Scenario 4: parallel workers (does drain rate scale?)
+    // ----------------------------------------------------------------
+    eprintln!();
+    eprintln!("  -- Scenario 4: parallel workers --");
+    for &n_workers in &[1usize, 2, 4] {
+        let n = 256usize;
+        let tmp = TempDir::new().unwrap();
+        let pool_dir = tmp.path().join("pool");
+        let dest_root = tmp.path().join("dest");
+        let pool = WriteSlotPool::new(&pool_dir, n as u32).await.unwrap();
+
+        let requests = fill_pool_and_build_requests(&pool, n, &dest_root, false).await;
+
+        // Multi-consumer queue: wrap mpsc receiver in a tokio Mutex.
+        // Each worker locks, recv()s, unlocks, processes.
+        let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(n + 16);
+        let rx = Arc::new(tokio::sync::Mutex::new(rx));
+
+        for req in requests {
+            tx.send(req).await.unwrap();
+        }
+        drop(tx);
+
+        let pool_arc = Arc::clone(&pool);
+        let mut handles = Vec::with_capacity(n_workers);
+        let t = Instant::now();
+        for _ in 0..n_workers {
+            let p = Arc::clone(&pool_arc);
+            let r = Arc::clone(&rx);
+            handles.push(tokio::spawn(async move {
+                loop {
+                    let msg = {
+                        let mut guard = r.lock().await;
+                        guard.recv().await
+                    };
+                    let Some(req) = msg else { break; };
+                    if let Err(e) = process_rename_request(&p, &req).await {
+                        eprintln!("rename failed: {}", e);
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.await.unwrap();
+        }
+        let elapsed = t.elapsed();
+
+        let ops_per_sec = n as f64 / elapsed.as_secs_f64();
+        eprintln!(
+            "  workers={}   drain {:>8.2}ms   {:>7.0} ops/sec",
+            n_workers,
+            elapsed.as_secs_f64() * 1000.0,
+            ops_per_sec,
+        );
+        assert_eq!(pool.available(), n);
+    }
+
+    eprintln!();
+}
+
+// ============================================================================
 // bench_perf: structured multi-size benchmark with JSON output and comparison
 // ============================================================================
 //
