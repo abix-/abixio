@@ -3457,6 +3457,43 @@ fn print_l4_comparison(rows: &[L4Row], workload: &[(usize, usize)]) {
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Bimodal bucket counts for one stage's 1000 samples.
+/// fast: < 300us (pool fast path or pure HTTP baseline)
+/// mid:  300-500us (rare outliers, usually empty)
+/// slow: > 500us (file tier fallback territory)
+#[derive(Debug, Clone, Copy, Default)]
+struct L45Buckets {
+    fast: usize,
+    mid: usize,
+    slow: usize,
+}
+
+fn bucket_samples(samples: &[Duration]) -> L45Buckets {
+    let mut b = L45Buckets::default();
+    for s in samples {
+        let us = s.as_micros();
+        if us < 300 {
+            b.fast += 1;
+        } else if us < 500 {
+            b.mid += 1;
+        } else {
+            b.slow += 1;
+        }
+    }
+    b
+}
+
+fn print_l45_row(name: &str, samples: &[Duration], size: usize) -> L4Stats {
+    let mut s = samples.to_vec();
+    let stats = L4Stats::from(&mut s, size);
+    let b = bucket_samples(samples);
+    eprintln!(
+        "  {:<30} avg {:>8.1}us  p50 {:>8.1}us  p99 {:>9.1}us   fast {:>4}  mid {:>3}  slow {:>4}",
+        name, stats.avg_us, stats.p50_us, stats.p99_us, b.fast, b.mid, b.slow,
+    );
+    stats
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[ignore]
 async fn bench_pool_l4_5_stack_breakdown() {
@@ -3464,73 +3501,143 @@ async fn bench_pool_l4_5_stack_breakdown() {
     eprintln!("  client -> reqwest -> hyper -> [increasing stack layers]");
     eprintln!("  1 disk, ftt=0, 127.0.0.1 TCP loopback");
     eprintln!();
+    eprintln!("  Bimodal buckets: fast = samples <300us, slow = samples >500us");
+    eprintln!("  Fast path = pool hit OR pure-HTTP baseline; slow path = file-tier write");
+    eprintln!();
 
     let iters = 1000usize;
     let size = 4 * 1024;
 
-    let stage_a = run_l45_stage_a(size, iters).await;
-    eprintln!(
-        "  Stage A  hyper_bare              avg {:>8.1}us  p50 {:>8.1}us  p99 {:>9.1}us",
-        stage_a.avg_us, stage_a.p50_us, stage_a.p99_us,
+    let samples_a = run_l45_stage_a(size, iters).await;
+    let stage_a = print_l45_row("Stage A  hyper_bare", &samples_a, size);
+
+    let samples_b = run_l45_stage_b(size, iters).await;
+    let stage_b = print_l45_row("Stage B  hyper_manual_handler", &samples_b, size);
+
+    let samples_c = run_l45_stage_c(size, iters).await;
+    let stage_c = print_l45_row("Stage C  abixio_null_backend", &samples_c, size);
+
+    let samples_d = run_l45_stage_d(size, iters).await;
+    let stage_d = print_l45_row("Stage D  file_tier", &samples_d, size);
+
+    let samples_e = run_l45_stage_e(size, iters).await;
+    let stage_e = print_l45_row("Stage E  pool_tier (depth 32)", &samples_e, size);
+
+    // Stage E_100: pool depth 100. Realistic "bigger pool" configuration.
+    // Shows whether increasing depth beyond the Phase 6 default (32) helps
+    // at the end-to-end HTTP layer. Spoiler: at steady state under
+    // sustained sequential load, it just delays the first empty event.
+    let samples_e_100 = run_l45_stage_e_depth(size, iters, 100).await;
+    let stage_e_100 = print_l45_row("Stage E* pool_tier (depth 100)", &samples_e_100, size);
+
+    // Stage E': pool depth 32, but drain_pending_writes every 32 iters
+    // to keep the pool full. This is the methodology Phase 5.6 used.
+    // It shows what the pool costs WHEN A SLOT IS ALWAYS AVAILABLE,
+    // which is the honest "pool fast path" number at the HTTP layer.
+    let samples_e_prime = run_l45_stage_e_drained(size, iters).await;
+    let stage_e_prime = print_l45_row("Stage E' pool_tier_drained(32)", &samples_e_prime, size);
+
+    // Stage E'': pool depth 1024, no drain. With more slots than iters,
+    // the pool never runs empty within the bench, so every PUT hits the
+    // fast path. This shows what "infinite pool" looks like for the
+    // 1000-iter bench. Note: this is NOT a production-achievable number;
+    // it just confirms the fast path cost at the HTTP layer.
+    let samples_e_big = run_l45_stage_e_big(size, iters).await;
+    let stage_e_big = print_l45_row("Stage E'' pool_tier_big(1024)", &samples_e_big, size);
+
+    // Stage E_unbounded: pool depth 32, channel buffer 100_000. Tests
+    // the hypothesis that `tx.send(req).await` backpressure is the
+    // bottleneck. With a 100k channel, the client never blocks on
+    // send, even under sustained sequential load.
+    let samples_e_unbounded = run_l45_stage_e_unbounded(size, iters).await;
+    let stage_e_unbounded = print_l45_row(
+        "Stage E+ pool_tier(depth32,ch100k)",
+        &samples_e_unbounded,
+        size,
     );
 
-    let stage_b = run_l45_stage_b(size, iters).await;
-    eprintln!(
-        "  Stage B  hyper_manual_handler    avg {:>8.1}us  p50 {:>8.1}us  p99 {:>9.1}us",
-        stage_b.avg_us, stage_b.p50_us, stage_b.p99_us,
-    );
-
-    let stage_c = run_l45_stage_c(size, iters).await;
-    eprintln!(
-        "  Stage C  abixio_null_backend     avg {:>8.1}us  p50 {:>8.1}us  p99 {:>9.1}us",
-        stage_c.avg_us, stage_c.p50_us, stage_c.p99_us,
-    );
-
-    let stage_d = run_l45_stage_d(size, iters).await;
-    eprintln!(
-        "  Stage D  file_tier               avg {:>8.1}us  p50 {:>8.1}us  p99 {:>9.1}us",
-        stage_d.avg_us, stage_d.p50_us, stage_d.p99_us,
-    );
-
-    let stage_e = run_l45_stage_e(size, iters).await;
-    eprintln!(
-        "  Stage E  pool_tier               avg {:>8.1}us  p50 {:>8.1}us  p99 {:>9.1}us",
-        stage_e.avg_us, stage_e.p50_us, stage_e.p99_us,
+    // Stage E_full: pool depth 1024 AND channel buffer 100_000. With
+    // more slots than iters AND unbounded channel, the pool never
+    // empties AND tx.send never blocks. This is the purest "what
+    // does the pool fast path cost at HTTP" measurement we can get
+    // without modifying production code.
+    let samples_e_full = run_l45_stage_e_full(size, iters).await;
+    let stage_e_full = print_l45_row(
+        "Stage E# pool_tier(depth1024,ch100k)",
+        &samples_e_full,
+        size,
     );
 
     eprintln!();
     eprintln!("=== Layer attribution (p50 subtraction) ===");
     eprintln!();
     eprintln!(
-        "  hyper + TCP + reqwest floor                (A)         {:>8.1}us",
+        "  hyper + TCP + reqwest floor                (A)           {:>8.1}us",
         stage_a.p50_us,
     );
     eprintln!(
-        "  + body read + minimal write_shard          (B - A)     {:>8.1}us",
+        "  + body read + minimal write_shard          (B - A)       {:>8.1}us",
         stage_b.p50_us - stage_a.p50_us,
     );
     eprintln!(
-        "  + s3s + AbixioS3 + VolumePool dispatch     (C - A)     {:>8.1}us  <-- the 'missing 900us'",
+        "  + s3s + AbixioS3 + VolumePool dispatch     (C - A)       {:>8.1}us",
         stage_c.p50_us - stage_a.p50_us,
     );
     eprintln!(
-        "  + real file-tier storage work              (D - C)     {:>8.1}us",
+        "  + real file-tier storage work              (D - C)       {:>8.1}us",
         stage_d.p50_us - stage_c.p50_us,
     );
+    eprintln!();
+    eprintln!("=== Pool starvation analysis ===");
+    eprintln!();
     eprintln!(
-        "  pool savings vs file                       (D - E)     {:>8.1}us",
-        stage_d.p50_us - stage_e.p50_us,
+        "  Pool tier, no drain (depth 32)      (E)                  {:>8.1}us",
+        stage_e.p50_us,
+    );
+    eprintln!(
+        "  Pool tier, no drain (depth 100)     (E*)                 {:>8.1}us",
+        stage_e_100.p50_us,
+    );
+    eprintln!(
+        "  Pool tier, drained every 32 iters   (E', depth 32)       {:>8.1}us",
+        stage_e_prime.p50_us,
+    );
+    eprintln!(
+        "  Pool tier, depth 1024, no drain     (E'', never empty)   {:>8.1}us",
+        stage_e_big.p50_us,
+    );
+    eprintln!(
+        "  Pool tier, channel 100k, depth 32   (E+, unbounded ch)   {:>8.1}us",
+        stage_e_unbounded.p50_us,
+    );
+    eprintln!(
+        "  Pool tier, channel 100k, depth 1024 (E#, fully unblocked){:>8.1}us",
+        stage_e_full.p50_us,
+    );
+    eprintln!();
+    eprintln!(
+        "  Pool starvation cost                (E - E')             {:>8.1}us",
+        stage_e.p50_us - stage_e_prime.p50_us,
+    );
+    eprintln!(
+        "  Fast path cost at HTTP layer        (E'' - C)            {:>8.1}us",
+        stage_e_big.p50_us - stage_c.p50_us,
+    );
+    eprintln!(
+        "  Pool savings vs file tier at HTTP   (D - E'')            {:>8.1}us",
+        stage_d.p50_us - stage_e_big.p50_us,
     );
     eprintln!();
     eprintln!("=== Cross-check ===");
-    eprintln!("  Phase 8 file tier 4KB p50:  ~1406us   (this run stage D p50: {:.1}us)", stage_d.p50_us);
-    eprintln!("  Phase 8 pool tier 4KB p50:  ~942us    (this run stage E p50: {:.1}us)", stage_e.p50_us);
+    eprintln!("  Phase 8 file tier 4KB p50:  ~1406us   (this run Stage D p50:   {:.1}us)", stage_d.p50_us);
+    eprintln!("  Phase 8 pool tier 4KB p50:  ~942us    (this run Stage E p50:   {:.1}us)", stage_e.p50_us);
+    eprintln!("  Phase 5.6 pool fast-path:   ~11us     (this run Stage E'' p50: {:.1}us HTTP)", stage_e_big.p50_us);
     eprintln!();
 }
 
 // ---------- Stage A: hyper_bare -----------------------------------------
 
-async fn run_l45_stage_a(size: usize, iters: usize) -> L4Stats {
+async fn run_l45_stage_a(size: usize, iters: usize) -> Vec<Duration> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -3562,13 +3669,12 @@ async fn run_l45_stage_a(size: usize, iters: usize) -> L4Stats {
 
     let samples = run_l45_client_loop(addr, size, iters).await;
     server.abort();
-    let mut s = samples;
-    L4Stats::from(&mut s, size)
+    samples
 }
 
 // ---------- Stage B: hyper_manual_handler -------------------------------
 
-async fn run_l45_stage_b(size: usize, iters: usize) -> L4Stats {
+async fn run_l45_stage_b(size: usize, iters: usize) -> Vec<Duration> {
     use abixio::storage::metadata::{ErasureMeta, ObjectMeta};
     use http_body_util::BodyExt;
 
@@ -3624,26 +3730,24 @@ async fn run_l45_stage_b(size: usize, iters: usize) -> L4Stats {
 
     let samples = run_l45_client_loop(addr, size, iters).await;
     server.abort();
-    let mut s = samples;
-    L4Stats::from(&mut s, size)
+    samples
 }
 
 // ---------- Stage C: abixio_null_backend --------------------------------
 
-async fn run_l45_stage_c(size: usize, iters: usize) -> L4Stats {
+async fn run_l45_stage_c(size: usize, iters: usize) -> Vec<Duration> {
     let backends: Vec<Box<dyn Backend>> = vec![Box::new(NullBackend::new()) as Box<dyn Backend>];
     let pool = Arc::new(VolumePool::new(backends).unwrap());
     pool.make_bucket("bench").await.unwrap();
     let (addr, handle) = spawn_abixio_stack(Arc::clone(&pool)).await;
     let samples = run_l45_client_loop(addr, size, iters).await;
     handle.abort();
-    let mut s = samples;
-    L4Stats::from(&mut s, size)
+    samples
 }
 
 // ---------- Stage D: file_tier ------------------------------------------
 
-async fn run_l45_stage_d(size: usize, iters: usize) -> L4Stats {
+async fn run_l45_stage_d(size: usize, iters: usize) -> Vec<Duration> {
     let (_base, paths) = setup(1);
     let volume = LocalVolume::new(&paths[0]).unwrap();
     let backends: Vec<Box<dyn Backend>> = vec![Box::new(volume) as Box<dyn Backend>];
@@ -3652,16 +3756,19 @@ async fn run_l45_stage_d(size: usize, iters: usize) -> L4Stats {
     let (addr, handle) = spawn_abixio_stack(Arc::clone(&pool)).await;
     let samples = run_l45_client_loop(addr, size, iters).await;
     handle.abort();
-    let mut s = samples;
-    L4Stats::from(&mut s, size)
+    samples
 }
 
-// ---------- Stage E: pool_tier ------------------------------------------
+// ---------- Stage E: pool_tier (variable depth, no drain) --------------
 
-async fn run_l45_stage_e(size: usize, iters: usize) -> L4Stats {
+async fn run_l45_stage_e(size: usize, iters: usize) -> Vec<Duration> {
+    run_l45_stage_e_depth(size, iters, 32).await
+}
+
+async fn run_l45_stage_e_depth(size: usize, iters: usize, depth: u32) -> Vec<Duration> {
     let (_base, paths) = setup(1);
     let mut volume = LocalVolume::new(&paths[0]).unwrap();
-    volume.enable_write_pool(32).await.unwrap();
+    volume.enable_write_pool(depth).await.unwrap();
     let backends: Vec<Box<dyn Backend>> = vec![Box::new(volume) as Box<dyn Backend>];
     let pool = Arc::new(VolumePool::new(backends).unwrap());
     pool.make_bucket("bench").await.unwrap();
@@ -3672,8 +3779,139 @@ async fn run_l45_stage_e(size: usize, iters: usize) -> L4Stats {
         backend.drain_pending_writes().await;
     }
     handle.abort();
-    let mut s = samples;
-    L4Stats::from(&mut s, size)
+    samples
+}
+
+// ---------- Stage E': pool_tier (depth 32, drain every 32 iters) --------
+//
+// Forces the pool to stay full between batches so every measured sample
+// hits the pool fast path. This is the HTTP-layer equivalent of Phase
+// 5.6's `bench_pool_l3_integrated_put` methodology. It measures what
+// the pool costs WHEN A SLOT IS ALWAYS AVAILABLE, separating "pool
+// hot path cost" from "pool starvation fallback to file tier."
+
+async fn run_l45_stage_e_drained(size: usize, iters: usize) -> Vec<Duration> {
+    let (_base, paths) = setup(1);
+    let mut volume = LocalVolume::new(&paths[0]).unwrap();
+    volume.enable_write_pool(32).await.unwrap();
+    let backends: Vec<Box<dyn Backend>> = vec![Box::new(volume) as Box<dyn Backend>];
+    let pool = Arc::new(VolumePool::new(backends).unwrap());
+    pool.make_bucket("bench").await.unwrap();
+    let (addr, handle) = spawn_abixio_stack(Arc::clone(&pool)).await;
+
+    let client = reqwest::Client::builder()
+        .pool_idle_timeout(Duration::from_secs(60))
+        .pool_max_idle_per_host(4)
+        .build()
+        .unwrap();
+
+    // Warmup + initial drain so the first measured iter starts with
+    // a full pool.
+    let warmup = vec![0x42u8; size];
+    for i in 0..5 {
+        let url = format!("http://{}/bench/warmup_{}", addr, i);
+        let _ = client.put(&url).body(warmup.clone()).send().await;
+    }
+    for backend in pool.disks() {
+        backend.drain_pending_writes().await;
+    }
+
+    let data = vec![0xA5u8; size];
+    let mut samples = Vec::with_capacity(iters);
+    for i in 0..iters {
+        let url = format!("http://{}/bench/put_{}", addr, i);
+        let t = Instant::now();
+        let resp = client.put(&url).body(data.clone()).send().await.unwrap();
+        let _ = resp.bytes().await.unwrap();
+        samples.push(t.elapsed());
+        // Drain between batches so the next iter starts with a full
+        // pool. The drain wait is OUTSIDE the sample timer.
+        if (i + 1) % 32 == 0 {
+            for backend in pool.disks() {
+                backend.drain_pending_writes().await;
+            }
+        }
+    }
+
+    for backend in pool.disks() {
+        backend.drain_pending_writes().await;
+    }
+    handle.abort();
+    samples
+}
+
+// ---------- Stage E'': pool_tier (depth 1024, no drain) ----------------
+//
+// With more slots than iterations, the pool never runs empty within the
+// bench. Every PUT hits the fast path regardless of worker rate. This
+// shows what the pool's hot path costs at the HTTP layer without
+// starvation contamination, complementing Stage E' which achieves the
+// same by draining between batches.
+
+async fn run_l45_stage_e_big(size: usize, iters: usize) -> Vec<Duration> {
+    let (_base, paths) = setup(1);
+    let mut volume = LocalVolume::new(&paths[0]).unwrap();
+    volume.enable_write_pool(1024).await.unwrap();
+    let backends: Vec<Box<dyn Backend>> = vec![Box::new(volume) as Box<dyn Backend>];
+    let pool = Arc::new(VolumePool::new(backends).unwrap());
+    pool.make_bucket("bench").await.unwrap();
+    let (addr, handle) = spawn_abixio_stack(Arc::clone(&pool)).await;
+    let samples = run_l45_client_loop(addr, size, iters).await;
+    for backend in pool.disks() {
+        backend.drain_pending_writes().await;
+    }
+    handle.abort();
+    samples
+}
+
+// ---------- Stage E_unbounded: channel buffer 100k, depth 32 ----------
+//
+// Hypothesis: `tx.send(req).await` backpressure on the default 256-slot
+// channel is the bottleneck, NOT starvation. With a 100k channel, the
+// client never blocks on send even under sustained sequential load.
+// If this stage's p50 is close to Stage C (121us + pool work), channel
+// backpressure was the culprit. If it's still near ~1000us, there's
+// another bottleneck we haven't found yet.
+
+async fn run_l45_stage_e_unbounded(size: usize, iters: usize) -> Vec<Duration> {
+    let (_base, paths) = setup(1);
+    let mut volume = LocalVolume::new(&paths[0]).unwrap();
+    volume.enable_write_pool_with_channel(32, 100_000).await.unwrap();
+    let backends: Vec<Box<dyn Backend>> = vec![Box::new(volume) as Box<dyn Backend>];
+    let pool = Arc::new(VolumePool::new(backends).unwrap());
+    pool.make_bucket("bench").await.unwrap();
+    let (addr, handle) = spawn_abixio_stack(Arc::clone(&pool)).await;
+    let samples = run_l45_client_loop(addr, size, iters).await;
+    for backend in pool.disks() {
+        backend.drain_pending_writes().await;
+    }
+    handle.abort();
+    samples
+}
+
+// ---------- Stage E_full: depth 1024 + channel 100k ----------
+//
+// With more slots than iters AND unbounded channel, neither starvation
+// nor channel backpressure can slow down the client. Every PUT hits
+// the pool fast path with zero blocking. p50 here is the pool's TRUE
+// hot-path cost at the HTTP layer. If it's still high, the bottleneck
+// is inside write_shard itself (the try_join file writes, simd_json,
+// or something else we haven't identified).
+
+async fn run_l45_stage_e_full(size: usize, iters: usize) -> Vec<Duration> {
+    let (_base, paths) = setup(1);
+    let mut volume = LocalVolume::new(&paths[0]).unwrap();
+    volume.enable_write_pool_with_channel(1024, 100_000).await.unwrap();
+    let backends: Vec<Box<dyn Backend>> = vec![Box::new(volume) as Box<dyn Backend>];
+    let pool = Arc::new(VolumePool::new(backends).unwrap());
+    pool.make_bucket("bench").await.unwrap();
+    let (addr, handle) = spawn_abixio_stack(Arc::clone(&pool)).await;
+    let samples = run_l45_client_loop(addr, size, iters).await;
+    for backend in pool.disks() {
+        backend.drain_pending_writes().await;
+    }
+    handle.abort();
+    samples
 }
 
 // ---------- Shared: full abixio stack (s3s + AbixioS3 + dispatch) -------

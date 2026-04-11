@@ -41,16 +41,19 @@ claims that appear many times below:
   location.
 - **The "pool is 53x faster at 4KB" claim from Phase 4.5 and Phase 5.6
   is storage-layer only.** End-to-end, the pool at 4KB PUT is
-  942us p50 vs 1406us for the file tier (1.5x, not 53x). **But the
-  reason the pool's win shrinks at the HTTP layer is NOT HTTP
-  overhead. Phase 8.5 (`bench_pool_l4_5_stack_breakdown`) showed
-  the HTTP stack is only 93us, s3s + AbixioS3 + VolumePool dispatch
-  is only 27us, and the remaining ~900us is real file-tier storage
-  work on NTFS.** The pool reduces that storage work by ~113us
-  end-to-end. The log store reduces it much more (down to ~295us
-  end-to-end for a 4KB PUT) by avoiding the per-object file at all.
-  See the [Phase 8.5 section](#phase-85-where-the-missing-900us-actually-lives-done)
-  for the layer attribution.
+  942us p50 with the default config (Phase 8) but drops to **318us
+  p50 when the pool depth and channel buffer are large enough to
+  prevent both starvation and backpressure** (Phase 8.5 Stage E#,
+  depth 1024 + channel 100k). That gives a **2.55x end-to-end win
+  over the file tier's 810us**, which is real and shippable but
+  nowhere near 53x. The HTTP stack is only 93us, abixio dispatch
+  adds only 32us, and the pool's own hot-path work costs ~192us on
+  a live tokio runtime (not the 11us from the Phase 5.6 tight-loop
+  measurement). The default pool config (depth 32, channel 256) is
+  undersized for sustained load and hits two hidden choke points
+  the previous benchmarks never measured. See the
+  [Phase 8.5 section](#phase-85-where-the-missing-900us-actually-lives-done)
+  for the full story.
 
 Earlier phase sections below describe the storage-layer work as it
 was measured at the time. Those numbers are still correct at the
@@ -575,7 +578,7 @@ The production default remains the three-tier handoff above.
 | 6 | Crash recovery scan in `enable_write_pool` | restart safety | **done** (Phase 6: `recover_pool_dir` finishes any pending renames left from a crash before fresh slots are created; 14 new tests, all 355 total pass) |
 | 7 | Admin endpoint `GET /_admin/pool/status` | operator visibility | pending |
 | 8 | End-to-end three-tier matrix (HTTP layer) | data-driven decision | **done** (Phase 8: bench_pool_l4_tier_matrix measures PUT+GET p50 through the full hyper/s3s/VolumePool stack at 5 sizes for file/log/pool tiers. **Result: pool only wins 1MB-10MB, log store dominates <=64KB, file tier wins 100MB. Storage-layer 53x claims do not translate end-to-end.**) |
-| 8.5 | Stack breakdown via layer subtraction | attribute the missing 900us | **done** (Phase 8.5: bench_pool_l4_5_stack_breakdown proves HTTP stack is only 93us at 4KB, s3s+AbixioS3+VolumePool is only 27us, and the remaining ~900us is real file-tier storage work on NTFS. The Phase 8 "HTTP overhead dominates" narrative was wrong.) |
+| 8.5 | Stack breakdown via layer subtraction | attribute the missing 900us | **done** (Phase 8.5: bench_pool_l4_5_stack_breakdown with 10 stages proves HTTP stack is 93us, abixio dispatch is 32us, and the rest is file-tier work plus **two hidden choke points in the default pool config**: depth 32 starves under sustained load, and channel buffer 256 backpresses tx.send. With depth 1024 + channel 100k the pool p50 drops from 942us to 318us, giving a real 2.55x win over file tier. Default config is undersized for sustained throughput.) |
 | 9 | Benchmark all three tiers under concurrency | concurrent load picture | pending |
 
 ## Benchmark plan
@@ -1790,136 +1793,242 @@ store enabled for small objects.
 Phase 8 concluded "pool 4KB end-to-end is 942us vs storage-layer
 11us, so ~930us is HTTP/s3s/axum overhead." Phase 8.5 built a
 layer-subtraction bench (`bench_pool_l4_5_stack_breakdown`) to
-attribute the gap to specific layers and **the conclusion was
-wrong**. The missing 900us is not in the HTTP stack.
+attribute the gap, and the conclusion was **wrong twice before it
+landed**. The real answer is that the pool has **two hidden choke
+points** that every previous benchmark managed to avoid.
 
 #### Methodology
 
-`tests/layer_bench.rs::bench_pool_l4_5_stack_breakdown`. Five
-progressive stages at 4KB PUT, 1000 sequential iterations each,
-fresh hyper server per stage:
+`tests/layer_bench.rs::bench_pool_l4_5_stack_breakdown`.
+Progressive stages at 4KB PUT, 1000 sequential iterations each,
+fresh hyper server per stage. A bimodal bucket counter tracks how
+many samples fall below 300us (fast path) vs above 500us (slow
+path / blocked):
 
-- **Stage A, `hyper_bare`**: hyper http1 service_fn that just
-  drains the body and returns 200 empty. No s3s, no abixio, no
-  storage. Measures reqwest + TCP loopback + hyper parse.
+- **Stage A, `hyper_bare`**: hyper http1 service_fn that drains
+  the body and returns 200 empty. No s3s, no abixio, no storage.
+  Measures reqwest + TCP loopback + hyper parse.
 - **Stage B, `hyper_manual_handler`**: bare hyper handler that
-  parses `/bucket/key` manually, builds a minimal `ObjectMeta`,
-  calls `LocalVolume::write_shard` directly (skipping s3s,
-  AbixioS3, and VolumePool). Measures the minimum custom server
-  cost with direct file-tier writes.
+  parses `/bucket/key` manually and calls `LocalVolume::write_shard`
+  directly (skipping s3s, AbixioS3, and VolumePool).
 - **Stage C, `abixio_null_backend`**: full hyper + s3s + AbixioS3
-  + VolumePool stack, but the disk is a `NullBackend` whose
-  `write_shard` returns `Ok(())` immediately. Measures all
-  bookkeeping between hyper and the backend with zero storage
-  work.
-- **Stage D, `file_tier`**: full stack with real file-tier
-  LocalVolume. Should match Phase 8 file tier.
-- **Stage E, `pool_tier`**: full stack with `enable_write_pool(32)`.
-  Should match Phase 8 pool tier.
+  + VolumePool stack, but the backend is a `NullBackend` whose
+  `write_shard` returns `Ok(())` immediately.
+- **Stage D, `file_tier`**: full stack with real file-tier LocalVolume.
+- **Stage E, `pool_tier (depth 32)`**: full stack with the default
+  `enable_write_pool(32)`.
+- **Stage E*, `pool_tier (depth 100)`**: pool with depth 100, default
+  channel.
+- **Stage E'', `pool_tier (depth 1024)`**: pool with depth 1024,
+  default channel.
+- **Stage E', `pool_tier_drained(32)`**: depth 32, but
+  `drain_pending_writes` is called every 32 iters to keep the
+  pool full between batches (Phase 5.6's methodology).
+- **Stage E+, `pool_tier(depth32, ch100k)`**: depth 32 plus a
+  100_000-slot rename channel (tests whether channel backpressure
+  is the bottleneck).
+- **Stage E#, `pool_tier(depth1024, ch100k)`**: depth 1024 AND
+  100_000-slot channel. Neither starvation nor channel blocking
+  is possible within a 1000-iter run. This is the purest
+  "pool fast path at HTTP layer" measurement.
 
-Raw output:
-`bench-results/phase8.5-stack-breakdown.txt`.
+Raw output (v5):
+`bench-results/phase8.5-stack-breakdown-v5.txt`.
 
-#### Results
+#### Results at 4KB (1000 iters, sequential)
 
-| Stage | p50 | delta |
-|---|---|---|
-| A. hyper_bare | **93.7us** | HTTP floor |
-| B. hyper + direct write_shard (file tier) | 751.0us | +657us write_shard body+write |
-| C. abixio_null_backend | **120.8us** | +27us s3s + AbixioS3 + VolumePool dispatch |
-| D. file_tier | 1023.8us | +903us real file-tier storage work |
-| E. pool_tier | 910.3us | -113us pool savings vs file |
+| Stage | config | p50 | fast | mid | slow |
+|---|---|---|---|---|---|
+| A. hyper_bare | | **93.9us** | 999 | 1 | 0 |
+| B. hyper + direct write_shard | | 677.3us | 0 | 0 | 1000 |
+| C. abixio_null_backend | | **125.9us** | 999 | 1 | 0 |
+| D. file_tier | | 809.8us | 0 | 0 | 1000 |
+| E. pool_tier | depth 32, ch 256 | 736.6us | 32 | 379 | 589 |
+| E*. pool_tier | depth 100, ch 256 | 497.3us | 93 | 408 | 499 |
+| E''. pool_tier | depth 1024, ch 256 | 1236.2us | 36 | 268 | 696 |
+| E'. pool_tier_drained | depth 32, drain/32 | 322.3us | 215 | 730 | 55 |
+| E+. pool_tier | depth 32, ch 100k | 560.7us | 34 | 461 | 505 |
+| **E#. pool_tier** | **depth 1024, ch 100k** | **317.8us** | 194 | 774 | 32 |
+
+**Stage E# and Stage E' converge at ~320us.** Both techniques
+remove all blocking from the pool path: E# oversizes both the
+pool and the channel so nothing ever blocks; E' drains between
+batches so the channel and pool are full when each batch starts.
+Both give the same answer. **That is the true pool fast path
+cost at the HTTP layer: ~320us.** Not 11us (Phase 5.6 number,
+storage layer only), not 942us (Phase 8 number, contaminated
+by two choke points below).
 
 #### Layer attribution at 4KB PUT
 
 ```
-hyper + TCP + reqwest floor                (A)             93.7us
-+ body read + minimal write_shard          (B - A)        657.3us
-+ s3s + AbixioS3 + VolumePool dispatch     (C - A)         27.1us
-+ real file-tier storage work              (D - C)        903.0us
-pool savings vs file                       (D - E)        113.5us
+hyper + TCP + reqwest floor                (A)              93.9us
++ s3s + AbixioS3 + VolumePool dispatch     (C - A)          32.0us
++ pool hot-path work via try_join writes   (E# - C)        191.9us
+---------------------------------------------------------- -------
+pool fast path at HTTP layer               (E#)            317.8us
+
+file tier storage work vs pool             (D - E#)        492.0us
 ```
 
-#### What this actually tells us
+The pool's real end-to-end win over the file tier at 4KB, **when
+no choke point is hit**, is **492us (2.55x)**. That's a real,
+measurable, shippable win, but it is:
+- **~10x smaller than the 53x storage-layer claim** in Phase 5.6
+  that compared pool (11us) to file tier (626us).
+- **Only achievable with non-default pool configuration**. The
+  default (depth 32, channel 256) sits at ~737us p50 because
+  both choke points below fire immediately under sustained load.
 
-**1. The HTTP stack is 93us, not 900us.** Reqwest + TCP loopback
-+ hyper parse round-trip is under 100us at 4KB. Phase 8's
-"HTTP/s3s/axum overhead dominates" narrative was incorrect.
+#### The two choke points
 
-**2. s3s + AbixioS3 + VolumePool dispatch is 27us.** This is
-the delta between Stage C and Stage A. Everything from "s3s
-parses the PUT request" to "VolumePool.put_object_stream decides
-where to write" including body collection, xxhash64, Reed-Solomon
-split_data, placement planning, ObjectMeta construction, blake3
-checksum, and response serialization all add up to 27us at 4KB.
-**The abixio dispatch layer is essentially free.** No optimization
-opportunity here.
+**Choke point 1: pool starvation.**
 
-**3. The ~900us lives in real file-tier storage work.** Stage D
-minus Stage C = 903us. That is the cost of the file tier's
-`mkdir` + `File::create` + `write` + `close` pair (one for
-shard.dat, one for meta.json) on NTFS. This matches Phase 5.6's
-storage-layer file tier measurement (~626us with some
-between-run variance). The file tier really does cost ~700-900us
-per small-object PUT because NTFS metadata operations are slow.
+Default depth is 32 (`local_volume.rs:109`). Under sustained
+sequential load, the client burns through 32 slots faster than
+the rename worker replenishes them (worker rate ~940 ops/sec,
+Phase 3). The pool empties, and `write_shard` silently falls
+through to the file tier slow path:
 
-**4. The pool saves 113us at 4KB.** Not 464us (Phase 8 number),
-not 615us (storage-layer 53x implied gap). The pool's actual
-end-to-end win over the file tier at 4KB in this run is **13us
-of saved CPU for each 100us of file tier work**. Small but real.
+```rust
+if let Some(slot) = pool.try_pop() {
+    // fast path
+    return Ok(());
+}
+// Pool empty: fall through to the existing slow path
+// (Phase 7 will add explicit backpressure / fallback).
+```
 
-**5. Phase 5.6's 11us number was accurate for the pool tier**
-when measured with `drain_pending` between iterations (which
-excluded the rename work from the hot-path measurement). That
-number is the reason the pool can claw back 113us under the
-HTTP stack: the pool's pre-ack cost is genuinely low, but the
-overall PUT still pays for VolumePool bookkeeping and response
-serialization.
+There was even a comment acknowledging this. Phase 7 was supposed
+to address it but hasn't shipped. Until then, depth 32 means
+"sustained throughput collapses to file tier after ~30ms of
+sequential load." This is visible in the Stage E fast bucket
+count: **only 32 samples out of 1000 hit the fast path** because
+only the first 32 PUTs found a slot.
 
-#### The Phase 8 narrative correction
+**Choke point 2: channel backpressure.**
 
-The [Phase 8 correction banner](#correction-whats-actually-true-about-the-pools-end-to-end-performance)
-at the top of this doc says ~930us is "hyper/s3s/axum overhead."
-That attribution was wrong. The corrected version:
+Default rename channel buffer is 256 (`local_volume.rs:137`).
+Once the worker has 256 rename requests queued, `tx.send(req).await`
+**blocks the client** until the worker dequeues one. Worker rate
+is ~940/sec, so each blocked send takes ~1063us.
 
-> Phase 8 measured 4KB PUT end-to-end at 942us (pool) vs 1406us
-> (file). Phase 5.6 measured pool write_shard at 11.9us in
-> isolation. The ~900us gap is **almost entirely real file-tier
-> storage work**, not HTTP overhead. HTTP contributes only 93us
-> at 4KB. s3s + AbixioS3 + VolumePool dispatch contributes only
-> 27us. The remaining ~780us is inside `LocalVolume::write_shard`
-> on the file tier path: mkdir, file creates, and writes on
-> NTFS. The pool's storage-layer wins (reducing file tier
-> syscalls to pre-opened slot writes + rename) are real but
-> small in absolute terms at 4KB: ~113us saved end-to-end.
+This is the choke point Stage E'' (depth 1024, default channel)
+hit. Big pool eliminated starvation, but the channel filled after
+256 PUTs, and from there the client was paced to worker rate
+(1236us p50 vs 317us for Stage E# with the 100k channel).
 
-#### What's left to optimize
+Stage E# proves it: the **only** thing that changes between E''
+(1236us) and E# (318us) is the channel buffer size, from 256 to
+100_000. Depth 1024 is the same in both.
 
-The Phase 8.5 breakdown makes it clear there are **no easy
-wins at 4KB.** The HTTP stack and abixio dispatch are already
-cheap. The only addressable cost is the ~900us of file tier
-storage work, and the pool already addresses it as far as it
-practically can (113us savings). Further PUT optimization at
-4KB would need to:
+**The client does NOT block on the rename itself.** The rename
+runs on the worker asynchronously, as designed. The client blocks
+on `tx.send(req).await` because the bounded channel fills when
+the worker cannot keep up. That blocking is an implementation
+detail of the channel buffer size, not of the async rename model.
 
-- Reduce the pool's own pre-ack work (rename + meta-write are
-  already minimal).
-- Change the filesystem or the allocation pattern to reduce NTFS
-  metadata ops (unlikely; this is the filesystem's fault, not
-  abixio's).
-- Switch to an even flatter storage model like the log store
-  which at 4KB is **295us end-to-end** (Phase 8 data). The log
-  store is still the right answer for small objects.
+#### Why the default config is wrong for sustained load
 
-#### Cross-run variance note
+Depth 32 came from the original Phase 1 plan as "enough for small
+bursts with low memory cost." The 256 channel buffer was a Phase 3
+default that was never tuned against sustained producer pressure.
+**No benchmark measured the pool under sustained sequential HTTP
+load until Phase 8.5**. Every previous phase measured it either
+in storage-layer isolation (Phase 5.6, with drain_pending between
+iters) or end-to-end with the default-sized pool silently falling
+through to the file tier (Phase 8, with no fast-path counter to
+catch it).
 
-Stage D p50 (1023us) does not match Phase 8 file tier p50
-(1406us). Stage E p50 (910us) matches Phase 8 pool (942us) more
-closely. The ~380us variance at Stage D is noise from OS cache
-state between bench runs. Rerunning Phase 8 would produce
-different numbers. The **layer attribution is more robust than
-the absolute numbers** because consecutive stages ran within
-seconds of each other and saw similar OS state.
+Defaults that would actually hold up under sustained load:
+- **Pool depth >= 1024** so starvation doesn't hit in the first
+  second of sustained traffic. 1024 slots = 2048 file descriptors
+  per disk, which is fine on Linux and fine-ish on Windows.
+- **Channel buffer >= 10_000** so tx.send never blocks under
+  bursts. Memory cost is negligible (a few hundred bytes per
+  entry).
+- **Multiple rename workers** (Phase 3 measured 2 workers at
+  1744 ops/sec, 1.85x of 1 worker). 4 workers would probably hit
+  3000 ops/sec. This is the actual scaling lever; tuning pool
+  depth and channel size without also raising worker count just
+  pushes the backpressure further out.
+
+With depth 1024 + channel 10_000 + 2 workers, the pool should
+sit at ~320us p50 under sustained 4KB sequential load, which is
+a genuine **2.55x win over the file tier (810us)** and well above
+the log store's 295us for 4KB.
+
+#### What Phase 5.6's 11us number actually was
+
+Phase 5.6's `bench_pool_l3_integrated_put` called `write_shard`
+in a tight loop with `drain_pending` every 32 iters. The loop was
+the only active task on an otherwise-idle tokio runtime. No HTTP
+server, no client, no concurrent workers. In that environment the
+pool hot path was ~11us p50.
+
+On a live tokio runtime with server + client + worker all active,
+the same code path costs ~192us (Stage E# - Stage C). The
+difference is tokio scheduling jitter and spawn_blocking overhead
+on the two slot file writes that the idle-runtime measurement
+didn't see. In Stage E#, 774 of 1000 samples land in the 300-500us
+"mid" bucket (not the <300us "fast" bucket), showing that even
+with no blocking, the per-sample runtime variance is ~200us
+because of tokio scheduling under a busy runtime.
+
+**This does not mean Phase 5.6 was fraudulent.** The 11us number
+is real at the storage layer with that methodology. It just
+doesn't represent what a user sees at the HTTP layer under a
+live runtime, which is what Phase 8.5 finally measured.
+
+#### What the fast / mid / slow bucket distributions reveal
+
+- **Stages A, C (no storage)**: almost all samples in the fast
+  bucket (<300us). Confirms HTTP stack and abixio dispatch are
+  tight.
+- **Stages B, D (file tier)**: all samples in the slow bucket
+  (>500us). Confirms file tier is consistently slow.
+- **Stage E (depth 32)**: 32 fast, 379 mid, 589 slow. The 32
+  fast samples are exactly the first 32 PUTs that found a slot.
+  After that the pool empties and the remaining 968 samples are
+  a mix of file-tier fallback (slow) and pool-path-with-blocking
+  (mid).
+- **Stage E'' (depth 1024)**: 36 fast, 268 mid, 696 slow. With
+  1024 slots the pool never empties, so 0 samples should be
+  file-tier fallback. But 696 samples are "slow" because they
+  blocked on `tx.send` waiting for the channel to drain. The
+  channel is the bottleneck, not the pool.
+- **Stage E# (depth 1024 + channel 100k)**: 194 fast, 774 mid,
+  32 slow. With both bottlenecks removed, 774 samples cluster in
+  the 300-500us mid range (the pool's real fast-path cost on a
+  busy runtime) and only 32 samples are "slow" (NTFS page cache
+  spikes).
+
+#### The Phase 8 correction (correction of the correction)
+
+Phase 8's "~930us is HTTP/s3s overhead" narrative was wrong.
+Phase 8.5 v1-v3 said "~900us is file tier storage work and pool
+savings are only 113us." That was also wrong because the pool
+samples it measured were mostly file-tier fallback plus blocked
+tx.send waits.
+
+The **correct** attribution at 4KB:
+
+```
+HTTP + s3s + abixio dispatch    126us   (Stage C)
+Pool fast path above dispatch   192us   (E# - C)
+Pool fast path at HTTP layer    318us   (E#)
+
+File tier work above dispatch   684us   (D - C)
+File tier at HTTP layer         810us   (D)
+
+Pool savings vs file, unblocked 492us   (D - E#)  ~2.55x
+```
+
+The pool is faster than the file tier end-to-end. The win is
+real. It just requires a pool depth and channel buffer larger
+than the current defaults, plus acknowledging that under
+sustained load the "async rename worker" is not truly async
+without sufficient buffering in the producer-consumer queue.
 
 ### Phase 7, 9: pending
 

@@ -107,6 +107,18 @@ impl LocalVolume {
     /// (`open_shard_writer`), reads, crash recovery, and the CLI flag
     /// land in later phases. See `docs/write-pool.md` for status.
     pub async fn enable_write_pool(&mut self, depth: u32) -> Result<(), StorageError> {
+        self.enable_write_pool_with_channel(depth, 256).await
+    }
+
+    /// Same as `enable_write_pool` but lets the caller pick the
+    /// rename worker's channel buffer size. Used by benches to
+    /// measure what happens when channel backpressure is removed.
+    /// Production should stick with the default 256.
+    pub async fn enable_write_pool_with_channel(
+        &mut self,
+        depth: u32,
+        channel_buffer: usize,
+    ) -> Result<(), StorageError> {
         if self.write_pool.is_some() {
             return Ok(());
         }
@@ -134,7 +146,7 @@ impl LocalVolume {
         }
 
         let pool = WriteSlotPool::new(&pool_dir, depth).await?;
-        let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(256);
+        let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(channel_buffer);
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
 
         // Phase 5: shared pending-renames table -- write_shard inserts,
