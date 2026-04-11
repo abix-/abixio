@@ -4,7 +4,8 @@
 
 - [ ] log-structured storage: remaining phases -- GC (phase 8), heal worker log-awareness (phase 7), versioned object support, chunked-transfer PUT support. S3 integration working for Content-Length PUTs <= 64KB. see docs/write-log.md
 - [ ] mc client throughput gap -- AbixIO serves 1GB at 1220 MB/s via curl but only 354 MB/s through mc. MinIO gets 970 MB/s through the same mc. profile with mc --debug, diff headers, find the bottleneck
-- [ ] unwrap() plague -- 252 calls in src/. every one is a process crash
+- [ ] unwrap() plague -- 374 calls in src/ (was 252, growing). hot files: local_volume.rs 75, cluster/mod.rs 27, heal/worker.rs 21 + 1 panic!. failure-path code is the one path that must not panic
+- [ ] uncommitted debug header in src/s3_route.rs (x-debug-s3s-ms) -- own comment says "remove in production". feature-gate or revert
 - [x] EC GET regression -- fixed. zero-alloc fast path slices directly from mmap. 4-disk GET: 803->1236 MB/s
 - [x] log-structured storage -- needle.rs + segment.rs + log_store.rs + S3 integration. small PUTs with Content-Length <= 64KB route through log store end-to-end. verified with curl. 4 appends vs 12 fs ops per 4KB object on 4 disks
 - [ ] RemoteVolume::bucket_exists() returns false unconditionally -- cluster bucket ops partially broken
@@ -26,7 +27,8 @@
 - [ ] version-id response headers -- x-amz-version-id and x-amz-delete-marker still "Pending" in s3-compliance.md
 - [ ] bucket delete fails when versioned objects exist
 - [ ] client relay returns chunk signatures in body (server not stripping chunked-transfer encoding)
-- [ ] README test count wrong -- says 171, actual is 298. update it
+- [ ] doc test counts disagree -- README says 320, docs/index.md says 171, actual #[test] count is 329. fix README and docs/index.md, then add a CI check that asserts both match reality so drift fails the build
+- [ ] docs/index.md "Current reality" block dated 2026-04-06 is stale -- says 171 tests, lists conditional/versioning headers as missing (both done). refresh it
 - [x] wire versioning response headers (x-amz-version-id, x-amz-delete-marker) through s3s DTOs
 - [x] implement conditional requests (If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since) in s3_service.rs
 - [x] lifecycle endpoints store config but never enforce -- now stores and returns actual rules; enforcement still missing
