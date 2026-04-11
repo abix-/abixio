@@ -54,9 +54,9 @@ Client sends `POST /{bucket}/{key}?uploadId=X` with XML body listing parts:
 </CompleteMultipartUpload>
 ```
 
-Server reads each part's shards from all disks, erasure-decodes to reconstruct
-the original part data, concatenates all parts in order, then writes the final
-object using the normal PUT path (erasure-encode + meta.json).
+Server validates the requested parts, moves each staged part shard and its
+per-part metadata into the final object directory on each disk, then writes a
+final `meta.json` containing the multipart parts manifest.
 
 Current implementation note:
 
@@ -154,7 +154,7 @@ Note: abixio does not currently enforce these limits. Any part size works.
 | Metadata format | Binary msgpack (xl.meta) | JSON (upload.json + part.N.meta) |
 | Part encoding | Erasure-encoded per part | Erasure-encoded per part |
 | Upload ID | base64(deployment.uuid) | Plain UUID |
-| Final assembly | References parts in-place | Reads + concatenates + re-encodes |
+| Final assembly | References parts in-place | Moves staged part shards into final object directories and writes multipart metadata |
 | Part size enforcement | Yes | Not yet |
 
 ## Client behavior
@@ -169,3 +169,21 @@ Note: abixio does not currently enforce these limits. Any part size works.
 - `src/s3_service.rs`: 6 S3 trait methods (create, upload_part, complete, abort, list_parts, list_uploads)
 - s3s handles XML serialization of multipart responses via smithy-generated DTOs
 - `tests/s3_integration.rs`: multipart integration coverage; use current `cargo test` output for exact counts
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| The six multipart S3 endpoints are implemented in `s3_service.rs` | Verified | `src/s3_service.rs:1004-1159`, `tests/s3_integration.rs` |
+| CreateMultipartUpload writes `upload.json` with UUID upload ID and UUID data dir | Verified | `src/multipart/mod.rs:13-66` |
+| UploadPart erasure-encodes each part and stores per-part metadata | Verified | `src/multipart/mod.rs:68-141` |
+| Re-uploading the same part number overwrites the previous part data for that part number | Verified | `put_part()` writes fixed `part.N` / `part.N.meta` paths; test coverage in `tests/s3_integration.rs:1972-2003` |
+| CompleteMultipartUpload reconstructs all parts and re-runs the normal PUT path | Corrected | Current code moves staged `part.N` files into the final object directory and writes multipart `meta.json`; it does not decode and re-encode the whole object (`src/multipart/mod.rs:186-366`) |
+| Multipart uses its own local planner and fixed `volume_ids`/`epoch_id` metadata rather than the newer placement-aware object path | Verified | `src/multipart/mod.rs:83-126` |
+| Completed multipart objects are represented as normal object directories with multipart part manifest metadata | Verified | `src/multipart/mod.rs:270-352`, `src/storage/metadata.rs:is_multipart`, `src/storage/volume_pool.rs:450-515` |
+| S3 multipart size limits are documented but not currently enforced | Verified | No limit enforcement appears in `src/multipart/mod.rs`; tests cover empty/single/small parts in `tests/s3_integration.rs` |
+| The MinIO comparison row claiming abixio "reads + concatenates + re-encodes" was accurate | Corrected | Current final assembly no longer matches that description (`src/multipart/mod.rs`) |
+
+Verdict: multipart support is real and well covered, but the page had drifted behind the implementation. The biggest correction is that completion now moves staged part shards into place and writes multipart metadata instead of rebuilding the entire object through the normal PUT path.

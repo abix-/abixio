@@ -70,7 +70,9 @@ The FTT header is returned on GET and HEAD like all S3 custom metadata.
 ### Validation
 
 - FTT must be >= 0 and < total disk count
-- Invalid values return HTTP 400 `InvalidRequest`
+- Invalid numeric values return HTTP 400 `InvalidArgument`
+- Non-numeric `x-amz-meta-ec-ftt` values are currently ignored rather than
+  rejected by the request parser
 
 ## Bucket FTT
 
@@ -97,3 +99,18 @@ changing bucket FTT or adding disks does not affect existing objects.
 - [healing.md](healing.md) for how the heal worker uses per-object FTT
 - [comparison.md](comparison.md) for how this differs from MinIO's model
 - [storage-layout.md](storage-layout.md) for on-disk metadata format
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| Per-object FTT is supplied via `x-amz-meta-ec-ftt` and overrides bucket FTT | Verified | `src/s3_service.rs:357`, `src/storage/volume_pool.rs:156-163`, tests in `tests/s3_integration.rs:2851-3205` |
+| Resolved EC params are stored in each object's metadata and used by reads/heal | Verified | `src/storage/volume_pool.rs`, `src/heal/worker.rs`, `src/storage/erasure_decode.rs` |
+| Invalid numeric FTT values return a 400-class error | Verified | `src/storage/volume_pool.rs:19-28`, error mapping in `src/s3_service.rs`, tests in `tests/s3_integration.rs:2890-2914`, `3180-3193` |
+| The exact error code is `InvalidRequest` | Corrected | Current mapping is `InvalidArgument`, not `InvalidRequest` (`src/s3_service.rs:187-190`) |
+| Non-numeric `x-amz-meta-ec-ftt` values are rejected | Needs nuance | Current parser uses `.parse::<usize>().ok()`, so non-numeric values are dropped and the request falls back to bucket/default FTT (`src/s3_service.rs:357`) |
+| Bucket FTT defaults to 1 except on single-disk deployments where it becomes 0 | Verified | `src/storage/volume_pool.rs:31-35`, `644` |
+
+Verdict: the overall per-object EC model is accurate. The main nuance is that invalid numeric and non-numeric header cases behave differently today, and the documented S3 error name was stale.

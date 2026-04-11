@@ -111,7 +111,7 @@ Example with 4 disks, FTT=2 (2 data + 2 parity shards):
 Read each disk and use `erasure.index` from that disk's metadata to identify
 which shard it holds. Classify each shard position:
 
-- **Good**: meta matches consensus AND `sha256(shard.dat) == meta.checksum`
+- **Good**: meta matches consensus AND `blake3(shard.dat) == meta.checksum`
 - **NeedsRepair**: meta missing, doesn't match consensus, or checksum mismatch
 
 ```
@@ -138,13 +138,11 @@ mathematical relationship between data and parity shards.
 
 ### Step 6: Write Repaired Shards
 
-For each shard marked `NeedsRepair`, write the reconstructed data to the
-correct disk atomically:
-
-1. Write `shard.dat` and `meta.json` to a temp directory
-2. Rename temp directory to the final object directory
-
-This is the same atomic write pattern used by normal PUTs.
+For each shard marked `NeedsRepair`, write the reconstructed shard back
+through the target backend's `write_shard()` path using consensus metadata
+with the repaired shard index and a fresh checksum. On a local volume, the
+exact write mechanics then depend on which local branch is enabled for that
+object size and versioning state.
 
 ## What Can and Cannot Be Healed
 
@@ -199,3 +197,21 @@ Current limitation:
 
 - shutdown signalling exists for background heal tasks, but the server does not
   yet implement a fully coordinated graceful HTTP drain-and-wait shutdown path
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| Healing has two paths: reactive MRF and background scanner | Verified | `src/heal/mrf.rs`, `src/heal/worker.rs`, `src/main.rs` |
+| MRF queue is bounded and deduplicated | Verified | `src/heal/mrf.rs` |
+| Current runtime uses a single MRF drain worker even though `--mrf-workers` remains exposed | Verified | `src/main.rs:141-148`, `src/config.rs` |
+| Scanner enqueues degraded objects into the MRF queue on its interval and respects per-object cooldown | Verified | `src/heal/scanner.rs`, `src/heal/worker.rs:230-287` |
+| Heal logic is per-object FTT aware and derives EC params from stored metadata | Verified | `src/heal/worker.rs:33-58` |
+| Metadata consensus uses `quorum_eq()` and must meet `data_n` quorum | Verified | `src/heal/worker.rs:136-158` |
+| Shard integrity uses blake3-based checksum verification, not SHA-256 | Corrected | `src/storage/bitrot.rs`, `src/heal/worker.rs:72-78` |
+| Repaired shards are always written via a temp-dir + rename sequence | Needs nuance | Heal code calls backend `write_shard()`; the exact local write mechanics then depend on log/pool/file branch selection (`src/heal/worker.rs:98-127`, `src/storage/local_volume.rs`) |
+| Example scenarios like missing/corrupt shard repair and unrecoverable objects are covered by tests | Verified | `src/heal/worker.rs` tests and `tests/admin_integration.rs:558-637` |
+
+Verdict: the healing architecture is sound and mostly accurate, but the old checksum wording and the claim that repair always uses one fixed temp-dir write pattern were too absolute for the current backend-routed implementation.

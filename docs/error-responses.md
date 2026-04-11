@@ -39,7 +39,7 @@ s3s provides all standard S3 error codes via the smithy-generated
 | `IncompleteBody` | 400 | Request body could not be read |
 | `InvalidArgument` | 400 | Invalid config, bad object key, bad version ID |
 | `InvalidBucketName` | 400 | Bucket name validation failure |
-| `InternalError` | 500 | Write/read quorum failure, bitrot, IO errors |
+| `InternalError` | 500 | Bitrot, generic IO/internal failures |
 | `ServiceUnavailable` | 503 | Node is fenced or cluster is not ready |
 | `NoSuchUpload` | 404 | Invalid or expired multipart upload ID |
 | `NoSuchBucketPolicy` | 404 | Bucket policy is missing |
@@ -61,8 +61,8 @@ Storage errors map to S3 error codes via `map_err()` in `src/s3_service.rs`:
 | `ObjectNotFound` | NoSuchKey |
 | `BucketExists` | BucketAlreadyOwnedByYou |
 | `BucketNotEmpty` | BucketNotEmpty |
-| `WriteQuorum` | InternalError |
-| `ReadQuorum` | InternalError |
+| `WriteQuorum` | ServiceUnavailable |
+| `ReadQuorum` | ServiceUnavailable |
 | `Bitrot` | InternalError |
 | `InvalidConfig(_)` | InvalidArgument |
 | `Io` | InternalError |
@@ -71,3 +71,19 @@ Storage errors map to S3 error codes via `map_err()` in `src/s3_service.rs`:
 | `InvalidVersionId(_)` | InvalidArgument |
 | `InvalidUploadId(_)` | NoSuchUpload |
 | `Internal(_)` | InternalError |
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| `x-amz-request-id` is added on every S3 response by the dispatch layer | Verified | `src/s3_route.rs:31-73` |
+| s3s generates the XML error bodies from smithy models | Verified by integration pattern | `src/s3_service.rs` returns `s3s::S3Error`; XML generation is handled in the `s3s` stack rather than abixio-owned serializers |
+| Unknown access keys map to `InvalidAccessKeyId` | Verified | `src/s3_auth.rs` |
+| `WriteQuorum` and `ReadQuorum` map to `InternalError` | Corrected | They currently map to `ServiceUnavailable` in `src/s3_service.rs:183-184` |
+| `Bitrot` and generic IO/internal failures map to `InternalError` | Verified | `src/s3_service.rs:185-192` |
+| Invalid upload IDs map to `NoSuchUpload` | Verified | `src/s3_service.rs:191` |
+| Unimplemented S3 operations fall back to s3s default trait behavior | Plausible and consistent with the service model | The service only overrides implemented trait methods; unimplemented operations therefore use s3s defaults, though this page did not re-test each 501 path directly |
+
+Verdict: the overall error model is accurate, but the quorum mapping on this page was stale. Current code treats quorum failures as `503 ServiceUnavailable`, not `500 InternalError`.

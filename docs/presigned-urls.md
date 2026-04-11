@@ -61,3 +61,18 @@ URLs.
 | Max expiration | 604800 seconds (7 days, enforced by s3s) |
 | Clock skew tolerance | per s3s defaults |
 | Algorithm | AWS4-HMAC-SHA256 (SigV4) |
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| abixio delegates presigned URL validation to the `s3s` auth layer | Verified | `src/s3_auth.rs`, `src/s3_route.rs`, `src/main.rs` service wiring |
+| `AbixioAuth` only provides secret-key lookup and does not implement SigV4 crypto itself | Verified | `src/s3_auth.rs` |
+| Unknown access keys map to `InvalidAccessKeyId` | Verified | `src/s3_auth.rs:19-27` |
+| The server generates presigned URLs | Not implemented | No presign generation code exists in the server; this page correctly says generation is client-side |
+| Presigned URLs, header auth, and chunked auth are all supported through the same s3s auth stack | Verified in architecture/wiring, not exhaustively re-tested here | Service is built on `s3s` auth and the compliance docs/tests cover the broader auth path, but this page was not re-validated with fresh presigned integration tests in this pass |
+| Exact clock-skew tolerance and max-expiration behavior are implemented in abixio code | Delegated to s3s | This page should treat those limits as s3s-defined behavior, not abixio-owned logic |
+
+Verdict: this page is directionally accurate. The main nuance is that almost all real presigned-URL behavior is owned by `s3s`, while abixio's direct responsibility is only credential lookup.

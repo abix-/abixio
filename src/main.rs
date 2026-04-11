@@ -2,6 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use clap::Parser;
+use tokio_rustls::TlsAcceptor;
 
 use abixio::admin::HealStats;
 use abixio::admin::handlers::{AdminConfig, AdminHandler};
@@ -15,8 +16,8 @@ use abixio::s3_route::AbixioDispatch;
 use abixio::storage::Backend;
 use abixio::storage::local_volume::LocalVolume;
 use abixio::storage::remote_volume::RemoteVolume;
-use abixio::storage::volume_pool::VolumePool;
 use abixio::storage::storage_server::StorageServer;
+use abixio::storage::volume_pool::VolumePool;
 
 #[tokio::main]
 async fn main() {
@@ -31,16 +32,12 @@ async fn main() {
     let volume_paths = cfg.volume_paths();
 
     // resolve node identity from volume.json or peer exchange
-    let identity = resolve_identity(
-        &volume_paths,
-        &cfg.listen,
-        &cfg.nodes,
-    )
-    .await
-    .unwrap_or_else(|err| {
-        eprintln!("error: {}", err);
-        std::process::exit(1);
-    });
+    let identity = resolve_identity(&volume_paths, &cfg.listen, &cfg.nodes)
+        .await
+        .unwrap_or_else(|err| {
+            eprintln!("error: {}", err);
+            std::process::exit(1);
+        });
 
     tracing::info!(
         node_id = %identity.node_id,
@@ -98,15 +95,26 @@ async fn main() {
     }
 
     let total_backends = backends.len();
-    let local_count = identity.node_volumes.iter()
+    let local_count = identity
+        .node_volumes
+        .iter()
         .filter(|nv| nv.node_id == identity.node_id)
         .map(|nv| nv.volume_paths.len())
         .sum::<usize>();
     let remote_count = total_backends - local_count;
-    tracing::info!(local = local_count, remote = remote_count, total = total_backends, "backends ready");
+    tracing::info!(
+        local = local_count,
+        remote = remote_count,
+        total = total_backends,
+        "backends ready"
+    );
 
     let default_ftt = abixio::storage::volume_pool::default_ftt(backends.len());
-    tracing::info!(ftt = default_ftt, disks = backends.len(), "default bucket FTT");
+    tracing::info!(
+        ftt = default_ftt,
+        disks = backends.len(),
+        "default bucket FTT"
+    );
 
     let mut set = match VolumePool::new(backends) {
         Ok(s) => s,
@@ -222,7 +230,7 @@ async fn main() {
 
     // run server with graceful shutdown
     tokio::select! {
-        result = serve(dispatch, addr) => {
+        result = serve(dispatch, addr, cfg.tls_cert.clone(), cfg.tls_key.clone()) => {
             if let Err(e) = result {
                 eprintln!("error: {}", e);
                 std::process::exit(1);
@@ -235,31 +243,89 @@ async fn main() {
     }
 }
 
-async fn serve(dispatch: Arc<AbixioDispatch>, addr: SocketAddr) -> anyhow::Result<()> {
+async fn serve(
+    dispatch: Arc<AbixioDispatch>,
+    addr: SocketAddr,
+    tls_cert: Option<String>,
+    tls_key: Option<String>,
+) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!("abixio listening on {}", addr);
+    let tls_acceptor = match (tls_cert, tls_key) {
+        (Some(cert), Some(key)) => Some(TlsAcceptor::from(load_tls_config(&cert, &key)?)),
+        (None, None) => None,
+        _ => unreachable!("config validation enforces cert/key pairing"),
+    };
+    tracing::info!(tls = tls_acceptor.is_some(), "abixio listening on {}", addr);
 
     loop {
         let (stream, _) = listener.accept().await?;
         stream.set_nodelay(true)?;
-        let io = hyper_util::rt::TokioIo::new(stream);
         let dispatch = dispatch.clone();
+        let tls_acceptor = tls_acceptor.clone();
 
         tokio::spawn(async move {
             let service = hyper::service::service_fn(move |req| {
                 let dispatch = dispatch.clone();
                 async move { Ok::<_, hyper::Error>(dispatch.dispatch(req).await) }
             });
-            if let Err(e) = hyper::server::conn::http1::Builder::new()
-                .writev(true)
-                .max_buf_size(4 * 1024 * 1024)
-                .serve_connection(io, service)
-                .await
-            {
-                tracing::error!("connection error: {}", e);
+            match tls_acceptor {
+                Some(acceptor) => match acceptor.accept(stream).await {
+                    Ok(tls_stream) => {
+                        let io = hyper_util::rt::TokioIo::new(tls_stream);
+                        if let Err(e) = hyper::server::conn::http1::Builder::new()
+                            .writev(true)
+                            .max_buf_size(4 * 1024 * 1024)
+                            .serve_connection(io, service)
+                            .await
+                        {
+                            tracing::error!("connection error: {}", e);
+                        }
+                    }
+                    Err(e) => tracing::error!("tls handshake error: {}", e),
+                },
+                None => {
+                    let io = hyper_util::rt::TokioIo::new(stream);
+                    if let Err(e) = hyper::server::conn::http1::Builder::new()
+                        .writev(true)
+                        .max_buf_size(4 * 1024 * 1024)
+                        .serve_connection(io, service)
+                        .await
+                    {
+                        tracing::error!("connection error: {}", e);
+                    }
+                }
             }
         });
     }
+}
+
+fn load_tls_config(
+    cert_path: &str,
+    key_path: &str,
+) -> anyhow::Result<Arc<tokio_rustls::rustls::ServerConfig>> {
+    use std::fs::File;
+    use std::io::BufReader;
+    use tokio_rustls::rustls::ServerConfig;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+
+    let mut cert_reader = BufReader::new(File::open(cert_path)?);
+    let certs: Vec<CertificateDer<'static>> =
+        rustls_pemfile::certs(&mut cert_reader).collect::<Result<Vec<_>, _>>()?;
+    anyhow::ensure!(
+        !certs.is_empty(),
+        "no TLS certificates found in {}",
+        cert_path
+    );
+
+    let mut key_reader = BufReader::new(File::open(key_path)?);
+    let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_reader)?
+        .ok_or_else(|| anyhow::anyhow!("no TLS private key found in {}", key_path))?;
+
+    Ok(Arc::new(
+        ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)?,
+    ))
 }
 
 fn parse_listen_addr(s: &str) -> SocketAddr {

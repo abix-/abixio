@@ -16,6 +16,7 @@ body with an `error` field.
 | `/_admin/heal` | GET | MRF queue and scanner statistics |
 | `/_admin/heal?bucket=X&key=Y` | POST | Trigger manual heal for one object |
 | `/_admin/object?bucket=X&key=Y` | GET | Shard-level object inspection |
+| `/_admin/flush` | POST | Flush RAM write-cache entries to lower storage tiers |
 | `/_admin/bucket/{name}/ftt` | GET | Get bucket FTT config |
 | `/_admin/bucket/{name}/ftt?ftt=N` | PUT | Set bucket FTT |
 | `/_admin/cluster/status` | GET | Cluster summary and current topology |
@@ -438,3 +439,21 @@ See [per-object-ec.md](per-object-ec.md) for the full EC precedence chain
 - `src/storage/internode_auth.rs`: JWT sign/validate for internode RPC
 - `tests/admin_integration.rs`: admin integration tests
 - `tests/e2e.py`: end-to-end Python test covering admin endpoints
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| `/_admin/status`, `disks`, `heal`, `object`, bucket FTT, and cluster endpoints exist | Verified | `src/admin/handlers.rs`, `tests/admin_integration.rs` |
+| `/_admin/flush` exists but was undocumented above | Corrected | `src/admin/handlers.rs:118-121` |
+| `/_admin/object` exposes shard status, placement metadata, and per-object EC info | Verified | `src/admin/handlers.rs:224-322`, `tests/admin_integration.rs:453-467`, `936-958` |
+| `/_admin/object` and `/_admin/heal` reject missing params and traversal attempts with 400 | Verified | `src/admin/handlers.rs:225-236`, `393-408`, `tests/admin_integration.rs:509-529`, `1031-1091` |
+| `/_admin/heal` returns `healthy`, `repaired`, or `unrecoverable` JSON | Verified | `src/admin/handlers.rs:413-434`, `tests/admin_integration.rs:532-623` |
+| Manual heal and bucket FTT mutation are blocked when the cluster is fenced | Verified | `src/admin/handlers.rs:339-344`, `394-396` |
+| Admin heal status reports configured `mrf_workers`, even though the current runtime spawns a single drain worker | Verified | `src/admin/handlers.rs:202-220`, `src/main.rs:141-148` |
+| Internode storage RPC requires JWT auth, clock-skew header, and volume-path header unless `--no-auth` is set | Verified | `src/storage/storage_server.rs`, `src/storage/remote_volume.rs`, `src/storage/internode_auth.rs` |
+| The example JSON bodies on this page were re-captured from a live server in this pass | Not re-captured in this pass | Field shapes were checked against structs and tests, but example payloads were not re-recorded verbatim |
+
+Verdict: the admin API surface is mostly accurate, but it was missing the `/_admin/flush` endpoint and needs the documented nuance that `mrf_workers` is currently configuration/reporting state rather than actual parallel worker count in `main.rs`.

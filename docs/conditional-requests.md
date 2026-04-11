@@ -2,9 +2,9 @@
 
 How abixio handles S3 conditional request headers on GET and HEAD operations.
 
-> **Status: not yet implemented in s3s migration.** s3s parses these headers
-> into the GetObjectInput/HeadObjectInput DTOs, but `s3_service.rs` does not
-> evaluate them yet. This is a known gap tracked in docs/todo.md.
+> **Status: implemented for GET and HEAD.** `s3_service.rs` evaluates the
+> conditional headers after loading object metadata and before returning the
+> response body or HEAD metadata.
 
 ## Supported headers
 
@@ -33,9 +33,26 @@ s3s delivers these headers as fields on `GetObjectInput` and `HeadObjectInput`:
 The `get_object` and `head_object` methods in `src/s3_service.rs` need to check
 these fields after reading object metadata and before returning the body.
 
+That check is now implemented via `check_conditionals()` in
+`src/s3_service.rs`.
+
 ## Applies to
 
 - `GET /{bucket}/{key}`: conditional GET
 - `HEAD /{bucket}/{key}`: conditional HEAD
 
 Does NOT apply to PUT, DELETE, or other operations.
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| Conditional GET/HEAD is not yet implemented | Corrected | `check_conditionals()` is called from both `get_object()` and `head_object()` in `src/s3_service.rs:444-451`, `505-512` |
+| Supported headers are `If-Match`, `If-None-Match`, `If-Modified-Since`, and `If-Unmodified-Since` | Verified | `src/s3_service.rs:242-300` |
+| Conditional checks run after object metadata is loaded and before the response is returned | Verified | `src/s3_service.rs` GET/HEAD paths |
+| These conditionals apply to GET and HEAD, not PUT/DELETE | Verified in current implementation | Only GET/HEAD call `check_conditionals()` |
+| Behavior is covered by tests | Verified | `tests/s3_integration.rs:732-815` |
+
+Verdict: this page had gone stale. Conditional GET and HEAD are implemented now; the remaining work is documentation cleanup, not code support.

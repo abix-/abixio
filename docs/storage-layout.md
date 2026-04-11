@@ -264,7 +264,7 @@ healer and decoder can verify that a shard is on the correct disk by comparing
 | `erasure.index` | Which shard this disk holds (0-based) |
 | `erasure.epoch_id` | Placement epoch recorded with the object |
 | `erasure.volume_ids` | Ordered volume identity for each shard |
-| `checksum` | SHA-256 hex of THIS shard's data (for bitrot detection) |
+| `checksum` | blake3 hex of THIS shard's data (for bitrot detection) |
 | `user_metadata` | Custom `x-amz-meta-*` headers from the PUT request |
 | `tags` | Object tags (key-value pairs) |
 | `version_id` | UUID for versioned objects, empty for unversioned |
@@ -312,6 +312,23 @@ only user objects.
 
 Each disk holds one shard per object. The shard index and checksum differ per
 disk, but the rest of the metadata is identical.
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| `.abixio.sys/volume.json` is the durable volume identity file | Verified | `src/storage/volume.rs` |
+| `volume.json` stores `version`, `node_id`, `volume_id`, `volume_index`, optional `cluster_id`, and optional `cluster.members` | Verified | `src/storage/volume.rs` |
+| `.abixio.sys/cluster.json` is the cluster runtime state file | Verified in current cluster code, not exhaustively audited here | `src/cluster/mod.rs` defines `.abixio.sys/cluster.json`; this page's higher-level role matches that implementation |
+| Bucket settings are consolidated in `.abixio.sys/buckets/<bucket>/settings.json` | Verified | `src/storage/metadata.rs`, storage-layer bucket settings calls |
+| Object metadata is stored in `meta.json` with a `versions` array | Verified | `src/storage/metadata.rs` |
+| Shard checksum algorithm is SHA-256 | Corrected | Current code uses blake3 checksums (`src/storage/bitrot.rs`, `src/storage/metadata.rs`) |
+| Small unversioned objects may inline data into `meta.json` instead of writing `shard.dat` | Verified | `src/storage/local_volume.rs:595-608`, `673-680`, `776-783` |
+| Multipart-completed objects store part manifests in object metadata and per-part files in the object directory | Verified | `src/multipart/mod.rs`, `src/storage/volume_pool.rs:450-515` |
+
+Verdict: the storage-layer structure is mostly aligned with the code. The main stale point in this page was the checksum algorithm, plus the need to remember that some small objects now live inline in `meta.json` rather than always as `shard.dat`.
 
 ### Unversioned objects
 

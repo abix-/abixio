@@ -86,3 +86,18 @@ Current implementation note:
 - bucket tag writes verify bucket existence
 - bucket tag reads currently return an empty tag set if the tag file is missing
   instead of returning a dedicated S3 tagging error
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| Object tagging GET/PUT/DELETE endpoints are implemented | Verified | `src/s3_service.rs:775-825`, `tests/s3_integration.rs:568-675` |
+| Bucket tagging GET/PUT/DELETE endpoints are implemented | Verified | `src/s3_service.rs:828-882`, `tests/s3_integration.rs:678-708` |
+| Object tags are stored in each version entry's `tags` field in `meta.json` | Verified | `src/storage/metadata.rs`, object-tagging storage methods in the storage layer, exercised by `tests/s3_integration.rs` |
+| Updating object tags modifies the latest non-delete-marker version metadata | Plausible and consistent with behavior, not re-read in full storage implementation here | Endpoint behavior is tested, but I did not walk every storage helper in this pass |
+| Bucket tags live in bucket settings and missing bucket tags return an empty tag set | Verified | `src/s3_service.rs:828-882` |
+| S3 tag-count and key/value-length limits are enforced | Not verified in current code | This page should not claim enforcement unless explicit validation is added; current endpoint code mainly transforms XML to `HashMap` and persists it |
+
+Verdict: tagging support is present and tested. The main remaining risk is undocumented or unenforced AWS tag-limit behavior rather than missing core functionality.

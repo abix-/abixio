@@ -9,6 +9,29 @@ that exists now, not the older design intent. Timings are measured-only:
 if a step has no benchmark or trace in the repo, it is described but not
 given a numeric budget.
 
+## Table of contents
+
+- [Scope](#scope)
+- [Top-level flow](#top-level-flow)
+- [Entry and request shaping](#entry-and-request-shaping)
+  - [1. HTTP ingress](#1-http-ingress)
+  - [2. S3 protocol and AbixIO request setup](#2-s3-protocol-and-abixio-request-setup)
+- [Routing decision matrix](#routing-decision-matrix)
+- [Layer-by-layer write path](#layer-by-layer-write-path)
+  - [3. Validation and bucket existence](#3-validation-and-bucket-existence)
+  - [4. Small-object body collection](#4-small-object-body-collection)
+  - [5. EC resolution, hashing, and placement](#5-ec-resolution-hashing-and-placement)
+- [Storage branches](#storage-branches)
+  - [Branch A: RAM write cache](#branch-a-ram-write-cache)
+  - [Branch B: Local log store](#branch-b-local-log-store)
+  - [Branch C: Local write pool](#branch-c-local-write-pool)
+  - [Branch D: Local file tier](#branch-d-local-file-tier)
+  - [Branch E: Remote backend](#branch-e-remote-backend)
+- [Ack semantics by branch](#ack-semantics-by-branch)
+- [Where the time goes](#where-the-time-goes)
+- [How other docs should use this page](#how-other-docs-should-use-this-page)
+- [Accuracy Report](#accuracy-report)
+
 ## Scope
 
 This document covers:
@@ -58,27 +81,22 @@ The main code anchors are:
 
 ### 1. HTTP ingress
 
+| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
+|---|---|---|---|---|---|---|
+| raw HTTP ingress floor | `94us` p50 | n/a | `762 MB/s` | n/a | bare `hyper` / reqwest->hyper transport, before S3 semantics | `docs/benchmarks.md` Phase 8.5 Stage A; `docs/layer-optimization.md` L5 |
+
 `hyper` accepts the request, parses HTTP/1.1, and exposes the body as a
 stream. This is the lowest measured floor in the stack.
 
-Performance at this layer:
-
-- `94us` p50 request floor for 4KB PUT in the Phase 8.5 breakdown
-- `762 MB/s` raw HTTP PUT throughput at 10MB in the L5 benchmark
-
-Measured timing:
-
-| Layer | Timing | Source |
-|---|---|---|
-| bare `hyper` request floor at 4KB PUT | `94us` p50 | `docs/benchmarks.md`, Phase 8.5 Stage A |
-
-Measured throughput:
-
-| Step | Throughput | Source |
-|---|---|---|
-| raw HTTP PUT (`reqwest -> hyper`) | `762 MB/s` at 10MB | `docs/layer-optimization.md`, L5 |
-
 ### 2. S3 protocol and AbixIO request setup
+
+| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
+|---|---|---|---|---|---|---|
+| `hyper + s3s + AbixioS3` dispatch | `126us` p50 | n/a | n/a | n/a | total protocol/dispatch overhead with null backend | `docs/benchmarks.md` Phase 8.5 Stage C |
+| incremental protocol overhead above bare `hyper` | `32us` p50 | n/a | n/a | n/a | Stage C minus Stage A | `docs/benchmarks.md` Phase 8.5 |
+| server-side request processing | `0.28ms` | n/a | n/a | n/a | from `x-debug-s3s-ms` live responses | `docs/benchmarks.md` server-side profiling |
+| full in-process S3 PUT path | n/a | n/a | `272 MB/s` | `310 MB/s` | `s3s` + full storage pipeline, no auth | `docs/layer-optimization.md` L6 |
+| full client path | n/a | n/a | n/a | `695 MB/s` | `aws-sdk-s3` + auth + full stack | `docs/layer-optimization.md` L7 |
 
 `s3s` parses S3 headers and dispatches into `AbixioS3::put_object`.
 `src/s3_service.rs` then:
@@ -90,28 +108,6 @@ Measured throughput:
 - sets `skip_md5` when `Content-MD5` is absent
 - forwards the body stream and optional `content_length` into
   `VolumePool::put_object_stream`
-
-Performance at this layer:
-
-- `126us` p50 total for `hyper + s3s + AbixioS3` at 4KB PUT
-- `32us` p50 incremental dispatch/protocol overhead over bare `hyper`
-- `272 MB/s` at 10MB and `310 MB/s` at 1GB for the in-process S3 PUT path
-- `695 MB/s` at 1GB for the full client path with `aws-sdk-s3`
-
-Measured timing:
-
-| Layer | Timing | Source |
-|---|---|---|
-| `hyper` + `s3s` + `AbixioS3` dispatch overhead at 4KB PUT | `126us` p50 total | `docs/benchmarks.md`, Phase 8.5 Stage C |
-| incremental cost of `s3s` + AbixIO dispatch above bare `hyper` | `32us` p50 | `docs/benchmarks.md`, Phase 8.5 Stage C vs Stage A |
-| server-side 4KB PUT processing seen from `x-debug-s3s-ms` | `0.28ms` | `docs/benchmarks.md`, Server-side profiling |
-
-Measured throughput:
-
-| Step | Throughput | Source |
-|---|---|---|
-| S3 PUT through `s3s` + full pipeline | `272 MB/s` at 10MB, `310 MB/s` at 1GB | `docs/layer-optimization.md`, L6 |
-| full client path through `aws-sdk-s3` | `695 MB/s` at 1GB | `docs/layer-optimization.md`, L7 |
 
 ## Routing decision matrix
 
@@ -148,6 +144,10 @@ places for different reasons.
 
 ### 3. Validation and bucket existence
 
+| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
+|---|---|---|---|---|---|---|
+| validation + bucket existence | not isolated | not isolated | not isolated | not isolated | included inside protocol and storage-layer measurements, no standalone benchmark | current benchmark corpus |
+
 Before any data write, `VolumePool::put_object_stream` validates:
 
 - bucket name
@@ -157,17 +157,11 @@ Before any data write, `VolumePool::put_object_stream` validates:
 
 If the bucket does not exist, the write stops here.
 
-Performance at this layer:
-
-- no standalone benchmark exists for validation alone
-- its cost is included inside the protocol and storage-layer timings
-
-Timing:
-
-- measured indirectly inside the Stage C and Stage D numbers above
-- no separate timing is published for validation alone
-
 ### 4. Small-object body collection
+
+| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
+|---|---|---|---|---|---|---|
+| small-object branch decision + collect body | `~0.02ms` | n/a | not isolated | n/a | historical trace for the buffered small-object path only | `docs/write-cache.md` request trace |
 
 For non-versioned requests with a declared `content_length <= 64KB`,
 the body stream is fully collected into a `Vec<u8>`. This is what makes
@@ -177,23 +171,16 @@ choosing its durable tier.
 This collection step does not happen for versioned or streaming/large
 requests. Those stay on the streaming encode path.
 
-Performance at this layer:
-
-- historical 4KB request trace attributes about `0.02ms` to the small-object
-  branch decision plus collection step
-- no standalone throughput benchmark exists for body collection alone
-
-Measured timing:
-
-| Step | Timing | Source |
-|---|---|---|
-| `volume_pool` small-object path decision + collect step in historical 4KB trace | `~0.02ms` | `docs/write-cache.md`, request trace |
-
-Measured throughput:
-
-- no standalone throughput benchmark exists for body collection alone
-
 ### 5. EC resolution, hashing, and placement
+
+| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
+|---|---|---|---|---|---|---|
+| request-level config / versioning work | `~0.05ms` | n/a | n/a | n/a | historical 4KB trace | `docs/write-cache.md` request trace |
+| RS encode + checksum work | `~0.03ms` | n/a | n/a | n/a | historical 4KB trace | `docs/write-cache.md` request trace |
+| placement planning | `~0.01ms` | n/a | n/a | n/a | historical 4KB trace | `docs/write-cache.md` request trace |
+| blake3 hashing | n/a | n/a | `4303 MB/s` | `4303 MB/s` | per-shard checksum ceiling | `docs/layer-optimization.md` L1 |
+| MD5 hashing | n/a | n/a | `703 MB/s` | `703 MB/s` | required-body-MD5 ceiling | `docs/layer-optimization.md` L1 |
+| RS encode 3+1 | n/a | n/a | `2762 MB/s` | `2762 MB/s` | erasure-coding ceiling | `docs/layer-optimization.md` L2 |
 
 Once the full small object is buffered, `VolumePool`:
 
@@ -208,33 +195,15 @@ For large/versioned writes, the same logical decisions still happen, but
 the data then flows through the streaming `encode_and_write` pipeline
 instead of the small buffered path.
 
-Performance at this layer:
-
-- blake3 hashing: `4303 MB/s`
-- MD5 hashing: `703 MB/s`
-- RS encode 3+1: `2762 MB/s`
-- historical 4KB request trace attributes `~0.05ms` to request-level config,
-  `~0.03ms` to RS encode and checksums, and `~0.01ms` to placement
-
-Measured timing:
-
-| Step | Timing | Source |
-|---|---|---|
-| `s3_service` versioning/config work in historical 4KB trace | `~0.05ms` | `docs/write-cache.md`, request trace |
-| RS encode + checksums in historical 4KB trace | `~0.03ms` | `docs/write-cache.md`, request trace |
-| placement in historical 4KB trace | `~0.01ms` | `docs/write-cache.md`, request trace |
-
-Measured throughput:
-
-| Step | Throughput | Source |
-|---|---|---|
-| blake3 hashing | `4303 MB/s` | `docs/layer-optimization.md`, L1 |
-| MD5 hashing | `703 MB/s` | `docs/layer-optimization.md`, L1 |
-| RS encode 3+1 | `2762 MB/s` | `docs/layer-optimization.md`, L2 |
-
 ## Storage branches
 
 ### Branch A: RAM write cache
+
+| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
+|---|---|---|---|---|---|---|
+| RAM-cache insert primitive | `~0.001ms` | same class | n/a | n/a | storage primitive only, not full request | `docs/write-cache.md` |
+| RAM-cache insert primitive rate | n/a | n/a | `1M+ obj/s` primitive rate | n/a | `DashMap` insert benchmark, not end-to-end PUT | `docs/write-cache.md` |
+| end-to-end RAM-cache branch | not published | not published | not published | not published | current repo lacks an isolated end-to-end benchmark for this branch | current benchmark corpus |
 
 This branch exists only on the small-object buffered path. After the
 object has already been validated, buffered, encoded, and assigned to
@@ -262,26 +231,14 @@ Final resting place:
 - that flush drains cached entries and calls backend `write_shard` for
   each shard, which then re-enters the normal local or remote shard path
 
-Performance at this layer:
-
-- `~0.001ms` for the storage primitive itself (`DashMap` insert)
-- roughly `1M+ obj/s` for the cache insert primitive in `docs/write-cache.md`
-- no full-request end-to-end throughput benchmark is published yet for the
-  RAM-cache branch
-
-Measured timing:
-
-| Step | Timing | Source |
-|---|---|---|
-| RAM cache insert itself | `~0.001ms` | `docs/write-cache.md`, request trace and baseline table |
-
-Measured throughput:
-
-- no full-request RAM-cache throughput benchmark is published yet
-- the measured storage primitive is a `DashMap` insert at roughly
-  `1M+ obj/s` in `docs/write-cache.md`
-
 ### Branch B: Local log store
+
+| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
+|---|---|---|---|---|---|---|
+| log-store branch end-to-end | `265us` p50 | `385us` p50 | n/a | n/a | full HTTP stack Phase 8.7 | `docs/benchmarks.md` |
+| log-store equivalent throughput | `14.7 MB/s` | `162.3 MB/s` | n/a | n/a | same p50 data expressed as throughput | derived from `docs/benchmarks.md` |
+| historical dedicated 4KB keep-alive benchmark | `0.91ms` | n/a | n/a | n/a | dedicated legacy benchmark view | `docs/write-log.md` |
+| historical dedicated 4KB keep-alive rate | n/a | n/a | `1096 obj/s` | n/a | dedicated legacy benchmark view | `docs/write-log.md` |
 
 If the cache is disabled or full, `VolumePool` writes shards to the
 selected backends. On a `LocalVolume`, small non-versioned objects can
@@ -305,29 +262,15 @@ Final resting place:
 
 - the append-only log segment itself is the final resting place
 
-Performance at this layer:
-
-- `265us` p50 at 4KB PUT end-to-end
-- `385us` p50 at 64KB PUT end-to-end
-- equivalent throughput: `14.7 MB/s` at 4KB, `162.3 MB/s` at 64KB
-- historical dedicated keep-alive benchmark: `1096 obj/s` at 4KB PUT
-
-Measured timing:
-
-| Metric | Timing | Source |
-|---|---|---|
-| 4KB log-tier PUT p50 through full HTTP stack | `265us` | `docs/benchmarks.md`, Phase 8.7 tier matrix |
-| 64KB log-tier PUT p50 through full HTTP stack | `385us` | `docs/benchmarks.md`, Phase 8.7 tier matrix |
-
-Measured throughput:
-
-| Metric | Throughput | Source |
-|---|---|---|
-| 4KB log-tier PUT equivalent | `14.7 MB/s` | derived from Phase 8.7 p50 in `docs/benchmarks.md` |
-| 64KB log-tier PUT equivalent | `162.3 MB/s` | derived from Phase 8.7 p50 in `docs/benchmarks.md` |
-| historical 4KB keep-alive benchmark | `1096 obj/s` | `docs/write-log.md` |
-
 ### Branch C: Local write pool
+
+| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
+|---|---|---|---|---|---|---|
+| pool branch end-to-end | `454us` p50 | `586us` p50 | n/a | n/a | full HTTP stack Phase 8.7 | `docs/benchmarks.md` |
+| pool equivalent throughput | `8.6 MB/s` | `106.5 MB/s` | n/a | n/a | same p50 data expressed as throughput | derived from `docs/benchmarks.md` |
+| best measured pool fast path | `318us` p50 | n/a | n/a | n/a | Stage E# with tuned queue/depth | `docs/benchmarks.md` |
+| best measured pool fast-path throughput | `12.3 MB/s` | n/a | n/a | n/a | same Stage E# data expressed as throughput | derived from `docs/benchmarks.md` |
+| storage-layer integrated pool benchmark | `43.0us` p50 | `57.5us` p50 | `190.7 MB/s` at 64KB, `1265.9 MB/s` at 1MB, `2535.4 MB/s` at 10MB | `2781.8 MB/s` at 100MB | storage-layer only, not full HTTP path | `docs/layer-optimization.md` Pool L3 |
 
 If a `LocalVolume` has the pre-opened temp-file pool enabled and a slot
 is available, the shard write goes through the pool path.
@@ -353,33 +296,16 @@ Final resting place:
 - the final `bucket/key/.../shard.dat` and `meta.json` object paths,
   after the rename worker completes
 
-Performance at this layer:
-
-- `454us` p50 at 4KB PUT end-to-end
-- `586us` p50 at 64KB PUT end-to-end
-- equivalent throughput: `8.6 MB/s` at 4KB, `106.5 MB/s` at 64KB
-- best measured pool fast path: `318us` p50 equivalent to `12.3 MB/s` at 4KB
-- storage-layer integrated pool benchmark: `29.4 MB/s` at 4KB,
-  `190.7 MB/s` at 64KB, `1265.9 MB/s` at 1MB, `2535.4 MB/s` at 10MB
-
-Measured timing:
-
-| Metric | Timing | Source |
-|---|---|---|
-| 4KB pool-tier PUT p50 through full HTTP stack | `454us` | `docs/benchmarks.md`, Phase 8.7 tier matrix |
-| 64KB pool-tier PUT p50 through full HTTP stack | `586us` | `docs/benchmarks.md`, Phase 8.7 tier matrix |
-| best measured pool fast path at HTTP layer | `318us` p50 | `docs/benchmarks.md`, Phase 8.5 Stage E# |
-
-Measured throughput:
-
-| Metric | Throughput | Source |
-|---|---|---|
-| 4KB pool-tier PUT equivalent | `8.6 MB/s` | derived from Phase 8.7 p50 in `docs/benchmarks.md` |
-| 64KB pool-tier PUT equivalent | `106.5 MB/s` | derived from Phase 8.7 p50 in `docs/benchmarks.md` |
-| best measured pool fast path equivalent at 4KB | `12.3 MB/s` | derived from Phase 8.5 Stage E# in `docs/benchmarks.md` |
-| storage-layer integrated pool benchmark | `29.4 MB/s` at 4KB, `190.7 MB/s` at 64KB, `1265.9 MB/s` at 1MB, `2535.4 MB/s` at 10MB | `docs/layer-optimization.md`, Pool L3 |
-
 ### Branch D: Local file tier
+
+| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
+|---|---|---|---|---|---|---|
+| file-tier branch end-to-end | `935us` p50 | `1330us` p50 | n/a | n/a | full HTTP stack Phase 8.7 | `docs/benchmarks.md` |
+| file-tier equivalent throughput | `4.2 MB/s` | `47.0 MB/s` | n/a | n/a | same p50 data expressed as throughput | derived from `docs/benchmarks.md` |
+| full-stack file-tier reference | `810us` p50 | n/a | n/a | n/a | Phase 8.5 Stage D | `docs/benchmarks.md` |
+| storage pipeline/file-tier reference | n/a | n/a | `439 MB/s` | `489 MB/s` | L4 storage pipeline | `docs/layer-optimization.md` L4 |
+| skip-MD5 storage pipeline reference | n/a | n/a | n/a | `510 MB/s` | L4 skip-MD5 path | `docs/layer-optimization.md` layer-to-layer gaps |
+| raw local write ceiling underneath file tier | n/a | n/a | `1625 MB/s` | `1056 MB/s` | L3 page-cache write ceiling | `docs/layer-optimization.md` L3 |
 
 If the write does not hit RAM cache, log store, or write pool, it falls
 through to the file tier.
@@ -405,34 +331,11 @@ Final resting place:
 
 - the final object directory on disk
 
-Performance at this layer:
-
-- `935us` p50 at 4KB PUT end-to-end
-- `1330us` p50 at 64KB PUT end-to-end
-- equivalent throughput: `4.2 MB/s` at 4KB, `47.0 MB/s` at 64KB
-- L4 storage-pipeline reference: `439 MB/s` at 10MB, `489 MB/s` at 1GB
-- skip-MD5 L4 reference: `510 MB/s` at 1GB
-- raw local write ceiling underneath this branch: `1625 MB/s` at 10MB,
-  `1056 MB/s` at 1GB
-
-Measured timing:
-
-| Metric | Timing | Source |
-|---|---|---|
-| 4KB file-tier PUT p50 through full HTTP stack | `935us` | `docs/benchmarks.md`, Phase 8.7 tier matrix |
-| 64KB file-tier PUT p50 through full HTTP stack | `1330us` | `docs/benchmarks.md`, Phase 8.7 tier matrix |
-| full-stack file-tier 4KB reference in stack breakdown | `810us` p50 | `docs/benchmarks.md`, Phase 8.5 Stage D |
-
-Measured throughput:
-
-| Metric | Throughput | Source |
-|---|---|---|
-| 4KB file-tier PUT equivalent | `4.2 MB/s` | derived from Phase 8.7 p50 in `docs/benchmarks.md` |
-| 64KB file-tier PUT equivalent | `47.0 MB/s` | derived from Phase 8.7 p50 in `docs/benchmarks.md` |
-| storage-pipeline/file-tier reference | `439 MB/s` at 10MB, `489 MB/s` at 1GB | `docs/layer-optimization.md`, L4 |
-| raw disk write ceiling | `1625 MB/s` at 10MB, `1056 MB/s` at 1GB | `docs/layer-optimization.md`, L3 |
-
 ### Branch E: Remote backend
+
+| Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
+|---|---|---|---|---|---|---|
+| remote backend branch | not isolated | not isolated | not isolated | not isolated | current repo has no remote-only PUT benchmark; inherits target branch + internode HTTP overhead | current benchmark corpus |
 
 For a `RemoteVolume`, the local node does not write directly to the
 target disk. The current remote write shape is:
@@ -451,21 +354,6 @@ What ack means here:
   path for that shard
 - the final resting place is whichever local branch the remote target
   volume uses: log store, pool temp files awaiting rename, or file tier
-
-Performance at this layer:
-
-- no remote-only PUT throughput benchmark is published in the repo
-- this branch inherits the target node's local branch performance plus
-  internode HTTP overhead that is not yet isolated in the benchmarks
-
-Timing:
-
-- no remote-only timing breakdown is published in the repo
-- remote internode overhead is therefore described, not budgeted, here
-
-Measured throughput:
-
-- no remote-only PUT throughput benchmark is published in the repo
 
 ## Ack semantics by branch
 
@@ -503,15 +391,6 @@ visible PUT latency:
 | 1MB | `4360us` | `4057us` | `3797us` | pool | `docs/benchmarks.md`, Phase 8.7 |
 | 10MB | `28974us` | `31744us` | `33837us` | file | `docs/benchmarks.md`, Phase 8.7 |
 | 100MB | `149228us` | `164974us` | `165671us` | file | `docs/benchmarks.md`, Phase 8.7 |
-
-For large-object throughput, read the inline performance notes in each
-layer above as the canonical story:
-
-- transport floor: raw HTTP at `762 MB/s` for 10MB
-- full in-process S3 path: `272 MB/s` at 10MB, `310 MB/s` at 1GB
-- storage pipeline: `439 MB/s` at 10MB, `489-510 MB/s` at 1GB
-- full client path: `695 MB/s` at 1GB
-- external separate-process result: `498 MB/s` at 1GB
 
 ## How other docs should use this page
 

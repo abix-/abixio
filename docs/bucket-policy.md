@@ -32,8 +32,8 @@ Standard AWS IAM bucket policy JSON:
 ### Validation on PUT
 
 The s3s protocol layer delivers the raw policy body as a string. The current
-implementation stores it without validation. Policy JSON format and Version
-field validation are not enforced.
+implementation validates that the body is valid JSON and that the top-level
+`Version` field exists and is non-empty before storing it.
 
 ### Error cases
 
@@ -67,3 +67,18 @@ at request time.
 - `mc anonymous get-json ALIAS/BUCKET`: retrieves stored policy
 - `mc anonymous set download/public/upload/private ALIAS/BUCKET`: canned policies
 - `aws-sdk-s3`: `get_bucket_policy()`, `put_bucket_policy()`, `delete_bucket_policy()`
+
+## Accuracy Report
+
+Audited against the codebase on 2026-04-11.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| `GET`, `PUT`, and `DELETE` bucket policy endpoints are implemented | Verified | `src/s3_service.rs:1177-1241`, `tests/s3_integration.rs:2723-2838` |
+| PUT stores the raw policy body without validation | Corrected | Current code parses JSON and requires a non-empty `Version` field, returning `MalformedPolicy` on failure (`src/s3_service.rs:1206-1213`) |
+| Policy is stored in bucket settings under the `policy` field | Verified | `src/storage/metadata.rs`, `src/s3_service.rs:1214-1221` |
+| GET without a stored policy returns `NoSuchBucketPolicy` | Verified | `src/s3_service.rs:1186-1194`, `tests/s3_integration.rs:2761-2770` |
+| DELETE is idempotent and currently writes `policy = null` | Verified | `src/s3_service.rs:1227-1241`, `tests/s3_integration.rs:2822-2838` |
+| Policy enforcement is not implemented | Verified | No request-time policy evaluation path exists in `src/s3_service.rs` or dispatch/auth code |
+
+Verdict: bucket-policy storage and retrieval are implemented and tested. The main stale point was PUT validation: the server no longer stores arbitrary raw strings without checking JSON and `Version`.

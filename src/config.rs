@@ -10,6 +10,14 @@ pub struct Config {
     #[arg(long, default_value = ":10000")]
     pub listen: String,
 
+    /// TLS certificate path for HTTPS listener
+    #[arg(long)]
+    pub tls_cert: Option<String>,
+
+    /// TLS private key path for HTTPS listener
+    #[arg(long)]
+    pub tls_key: Option<String>,
+
     /// Volume paths (supports {N...M} range expansion)
     #[arg(long, value_delimiter = ',')]
     pub volumes: Vec<String>,
@@ -46,6 +54,18 @@ impl Config {
 
         if self.volumes.is_empty() {
             return Err("no volumes specified".to_string());
+        }
+        match (&self.tls_cert, &self.tls_key) {
+            (Some(cert), Some(key)) => {
+                if !PathBuf::from(cert).is_file() {
+                    return Err(format!("tls cert path does not exist: {}", cert));
+                }
+                if !PathBuf::from(key).is_file() {
+                    return Err(format!("tls key path does not exist: {}", key));
+                }
+            }
+            (None, None) => {}
+            _ => return Err("both --tls-cert and --tls-key must be provided together".to_string()),
         }
         for raw in &self.volumes {
             let path = PathBuf::from(raw);
@@ -188,6 +208,8 @@ mod tests {
     fn config_with(volumes: Vec<String>) -> Config {
         Config {
             listen: ":10000".to_string(),
+            tls_cert: None,
+            tls_key: None,
             nodes: Vec::new(),
             volumes,
             no_auth: false,
@@ -268,7 +290,10 @@ mod tests {
     #[test]
     fn expand_ranges_no_braces() {
         assert_eq!(expand_ranges("/data1"), vec!["/data1"]);
-        assert_eq!(expand_ranges("http://node:10000"), vec!["http://node:10000"]);
+        assert_eq!(
+            expand_ranges("http://node:10000"),
+            vec!["http://node:10000"]
+        );
     }
 
     #[test]
