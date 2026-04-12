@@ -536,20 +536,23 @@ based on what the object IS, not how it arrived.
 
 ### Fix: unified write path
 
-Merge the two paths into one. The unified path should:
+The streaming path uses `open_shard_writer()` which only returns a
+file-tier writer. That's the root cause. The log store and pool
+should implement `ShardWriter` so the streaming path routes to them
+directly, same as the buffered path routes to them via `write_shard()`.
 
-- Accept both streaming and buffered input
-- Buffer internally when total size is small (<=64KB), regardless of
-  whether content_length was declared
-- Once the object is complete and small: route through log store,
-  pool, or RAM cache, same as today's buffered path
-- Once the object exceeds the threshold: switch to streaming encode,
-  same as today's streaming path
+The unified path should:
+
+- Have one encode pipeline that works for both small and large objects
+- Route shard writes to the best tier based on object size, not based
+  on whether the client declared content_length
+- Make log store and pool available through the `ShardWriter` trait so
+  the streaming encode path can use them
 - Never duplicate the EC, hashing, or placement logic between two
   code paths
 
-This means one code path, one set of optimizations, consistent
-behavior regardless of how the client sends the request.
+No unnecessary buffering. The data flows straight through. The only
+difference is which writer it flows into.
 
 ## Where the time goes
 
