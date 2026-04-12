@@ -249,8 +249,8 @@ For RAM write cache design, see [write-cache.md](write-cache.md).
 Audited against the codebase on 2026-04-12.
 
 All benchmarks live in `abixio-ui/src/bench/`. Run via `abixio-ui bench`.
-See [benchmark-inventory.md](benchmark-inventory.md) for the file layout
-and [benchmark-requirements.md](benchmark-requirements.md) for the spec.
+See [benchmark-requirements.md](benchmark-requirements.md) for the file
+layout, layer map, and testing spec.
 
 The numeric results in the matrix tables above were measured on
 2026-04-11. They need re-running with `abixio-ui bench` to confirm
