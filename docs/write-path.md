@@ -114,21 +114,21 @@ Source: `abixio-ui bench --layers L1`, `bench-results/l1-http-ingress.json`
 
 | Size | p50 | p95 | p99 | throughput |
 |---|---|---|---|---|
-| 4KB | `98us` | `146us` | `159us` | `36.5 MB/s` |
-| 64KB | `208us` | `258us` | `272us` | `301.6 MB/s` |
-| 10MB | `32.1ms` | `47.2ms` | `47.4ms` | `291.6 MB/s` |
-| 100MB | `385.4ms` | `391.0ms` | `391.0ms` | `329.3 MB/s` |
-| 1GB | `2.09s` | `3.98s` | `3.98s` | `400.5 MB/s` |
+| 4KB | `100us` | `155us` | `182us` | `34.7 MB/s` |
+| 64KB | `179us` | `242us` | `303us` | `328.2 MB/s` |
+| 10MB | `43.6ms` | `47.4ms` | `48.4ms` | `267.6 MB/s` |
+| 100MB | `386.6ms` | `397.4ms` | `397.4ms` | `310.8 MB/s` |
+| 1GB | `1.62s` | `3.98s` | `3.98s` | `456.7 MB/s` |
 
 #### GET (hyper returns sized body, reqwest consumes it)
 
 | Size | p50 | p95 | p99 | throughput |
 |---|---|---|---|---|
-| 4KB | `88us` | `130us` | `152us` | `41.4 MB/s` |
-| 64KB | `134us` | `177us` | `190us` | `443.6 MB/s` |
-| 10MB | `32.3ms` | `46.9ms` | `47.5ms` | `334.0 MB/s` |
-| 100MB | `146.5ms` | `349.5ms` | `349.5ms` | `610.2 MB/s` |
-| 1GB | `1.55s` | `2.04s` | `2.04s` | `626.9 MB/s` |
+| 4KB | `90us` | `145us` | `170us` | `38.0 MB/s` |
+| 64KB | `166us` | `197us` | `230us` | `382.7 MB/s` |
+| 10MB | `30.6ms` | `46.5ms` | `47.6ms` | `352.4 MB/s` |
+| 100MB | `171.2ms` | `396.9ms` | `396.9ms` | `476.8 MB/s` |
+| 1GB | `1.61s` | `1.73s` | `1.73s` | `663.1 MB/s` |
 
 `hyper` accepts the request, parses HTTP/1.1, and exposes the body as
 a stream. At small sizes (4KB, 64KB), latency is dominated by TCP
@@ -154,18 +154,18 @@ Source: `abixio-ui bench --layers L2`, `bench-results/l2-s3proto-isolated.json`
 
 | Size | p50 | p95 | p99 | throughput |
 |---|---|---|---|---|
-| 4KB | `60us` | `104us` | `135us` | `57.5 MB/s` |
-| 64KB | `199us` | `312us` | `433us` | `293.6 MB/s` |
-| 10MB | `8.4ms` | `10.3ms` | `11.2ms` | `1159.6 MB/s` |
-| 100MB | `70.6ms` | `75.6ms` | `75.6ms` | `1419.9 MB/s` |
-| 1GB | `669.9ms` | `685.3ms` | `685.3ms` | `1517.8 MB/s` |
+| 4KB | `60us` | `105us` | `166us` | `56.8 MB/s` |
+| 64KB | `197us` | `299us` | `334us` | `293.2 MB/s` |
+| 10MB | `7.8ms` | `8.5ms` | `8.7ms` | `1275.5 MB/s` |
+| 100MB | `65.7ms` | `70.5ms` | `70.5ms` | `1499.4 MB/s` |
+| 1GB | `664.7ms` | `680.4ms` | `680.4ms` | `1536.8 MB/s` |
 
 #### GET (NullBackend returns empty, not meaningful at large sizes)
 
 | Size | p50 | p95 | p99 | throughput |
 |---|---|---|---|---|
-| 4KB | `52us` | `83us` | `112us` | `69.3 MB/s` |
-| 64KB | `53us` | `89us` | `125us` | `1089.4 MB/s` |
+| 4KB | `54us` | `76us` | `97us` | `69.7 MB/s` |
+| 64KB | `53us` | `79us` | `96us` | `1121.6 MB/s` |
 
 GET at 10MB+ is not meaningful because NullBackend returns zero bytes
 regardless of requested size. The GET latency at all sizes is just
