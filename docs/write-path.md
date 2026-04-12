@@ -124,13 +124,43 @@ while PUT requires the server to consume the incoming body stream.
 
 ### 2. S3 protocol and AbixIO request setup
 
-| Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
-|---     |---      |---             |---           |---     |
-| `hyper + s3s + AbixioS3` dispatch (null backend) | `126us` | `31.0 MB/s` | not measured | Phase 8.5 Stage C |
-| incremental protocol overhead above bare `hyper` (Stage C - Stage A) | `32us` | -- | not measured | Phase 8.5 |
-| server-side request processing via `x-debug-s3s-ms` live header | `0.28ms` | -- | not measured | benchmarks.md "Server-side profiling" |
-| full in-process S3 PUT path (s3s + storage pipeline, no auth) | n/a | n/a | `272 MB/s` at 10MB, `310 MB/s` at 1GB | `docs/layer-optimization.md` L6 |
-| full client path (aws-sdk-s3 + auth + full stack) | n/a | n/a | `695 MB/s` at 1GB | `docs/layer-optimization.md` L7 |
+S3 protocol overhead measured with NullBackend (s3s parses and
+dispatches but no real storage work happens). This isolates the cost
+of S3 header parsing, SigV4 verification, and AbixioS3 dispatch.
+
+Source: `abixio-ui bench --layers L2`, `bench-results/l2-s3proto.json`
+
+#### PUT (reqwest -> s3s -> NullBackend, body consumed)
+
+| Size | p50 | p95 | p99 | throughput |
+|---|---|---|---|---|
+| 4KB | `126us` | `203us` | `239us` | `27.7 MB/s` |
+| 64KB | `323us` | `394us` | `423us` | `190.9 MB/s` |
+| 10MB | `31.6ms` | `46.9ms` | `47.2ms` | `289.7 MB/s` |
+| 100MB | `136.9ms` | `150.1ms` | `150.1ms` | `727.9 MB/s` |
+| 1GB | `1.51s` | `1.52s` | `1.52s` | `680.3 MB/s` |
+
+#### S3 protocol overhead (L2 p50 minus L1 p50)
+
+| Size | L1 HTTP p50 | L2 S3 p50 | s3s overhead |
+|---|---|---|---|
+| 4KB | `98us` | `126us` | `28us` |
+| 64KB | `208us` | `323us` | `115us` |
+| 10MB | `32.1ms` | `31.6ms` | ~0 (within noise) |
+| 100MB | `385.4ms` | `136.9ms` | negative (L2 faster, see note) |
+| 1GB | `2.09s` | `1.51s` | negative (L2 faster, see note) |
+
+Note: at large sizes L2 PUT is faster than L1 PUT because L1 uses a
+fresh connection per size while L2 reuses a keep-alive connection
+across all sizes. The s3s overhead is real but hidden by connection
+reuse. At 4KB and 64KB where both layers are warmed up, the s3s
+dispatch adds 28-115us per request.
+
+#### GET (NullBackend returns empty, not meaningful at large sizes)
+
+GET throughput numbers at 10MB+ are not meaningful because
+NullBackend returns zero bytes regardless of requested size. The GET
+latency at all sizes is just s3s dispatch overhead (~114-219us).
 
 `s3s` parses S3 headers and dispatches into `AbixioS3::put_object`.
 `src/s3_service.rs` then:
