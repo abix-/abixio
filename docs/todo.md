@@ -40,9 +40,9 @@
 - [ ] graceful shutdown. what happens to in-flight writes? do shard writers finalize? do partial .abixio.tmp dirs get cleaned up on startup?
 - [ ] observability. tracing is imported but no structured metrics, no request latency histograms, no error rate counters. operators need to know if it's healthy
 - [ ] encryption at rest (docs/encryption.md is design only, no implementation)
-- [x] comparative benchmark vs rustfs and minio: tests/compare_bench.sh with SVG charts in docs
+- [x] comparative benchmark vs rustfs and minio: abixio-ui/src/bench/ with SVG charts in docs
 - [x] per-layer benchmark suite (L1-L6) with JSON output and A/B comparison mode
-- [x] basic benchmark suite: abixio-ui/tests/bench.rs: PUT/GET/HEAD/LIST/DELETE with 1-4 disks
+- [x] basic benchmark suite: abixio-ui/src/bench/: PUT/GET/HEAD/LIST/DELETE with 1-4 disks
 - [x] mmap GET fast path: 1+0 objects served via Bytes::from_owner(mmap), zero-copy. EC objects via mmap shard reads + 4MB decode blocks
 - [x] versioning config cache: eliminates per-PUT disk read, L6 PUT +27%
 

@@ -40,7 +40,7 @@ budget.
 
 Canonical matrix results are below, dated 2026-04-11. Source artifact:
 `bench-results/2026-04-11-matrix-tls-tiers.txt`. Bench: `bench_matrix`
-in `abixio-ui/tests/bench.rs`.
+in `abixio-ui/src/bench/l7_e2e.rs`.
 
 ### 4KB: small object performance (obj/sec)
 
@@ -246,27 +246,12 @@ For RAM write cache design, see [write-cache.md](write-cache.md).
 
 ## Accuracy Report
 
-Audited against the codebase on 2026-04-11.
+Audited against the codebase on 2026-04-12.
 
-| Claim | Status | Evidence |
-|---|---|---|
-| `bench_pool_l4_tier_matrix` and `bench_pool_l4_5_stack_breakdown` exist | Verified | `tests/layer_bench.rs:3164`, `3499` |
-| Raw artifacts referenced for Phase 8.7 and 8.5 exist | Verified | `bench-results/phase8.7-tier-matrix.txt`, `bench-results/phase8.5-stack-breakdown-v5.txt` |
-| Debug profiling header `x-debug-s3s-ms` exists in code | Verified | `src/s3_route.rs:82` |
-| Matrix comment said `3 servers, 2 clients` | Corrected | Document contradicted itself; client list and matrix section clearly use 3 clients |
-| CLI overhead was described as both subtracted and not subtracted | Corrected | Document contradicted itself; matrix section explicitly says published numbers are end-to-end including spawn |
-| Phase 8 / 8.5 benchmark section names and commands | Verified | `tests/layer_bench.rs:3111-3164`, `3455-3499` |
-| Specific published numeric results in matrix tables | Verified | Re-run end-to-end on 2026-04-11 with the 5-server tier-aware harness (`AbixIO-file/log/pool` + RustFS + MinIO); raw output at `bench-results/2026-04-11-matrix-tls-tiers.txt` |
-| Phase 8.7 tier matrix and Phase 8.5 stack breakdown sections were duplicated here and in `write-path.md` | Corrected | Both sections deleted from this doc; `## Write tier comparison and stack breakdown` is now a one-block pointer to `write-path.md`. Each number lives in exactly one doc |
-| Matrix harness normalizes disk I/O and warmup across clients | Verified | `../abixio-ui/tests/bench.rs:882-904`, `951-962`, `1030-1040` |
-| `HTTPS + SigV4 + UNSIGNED-PAYLOAD` is the documented authoritative normalized client mode | Verified | `docs/benchmarks.md:7-15` |
-| Canonical benchmark harness now targets HTTPS instead of plain HTTP | Verified | `../abixio-ui/tests/bench.rs:646`, `650`, `658`, `847`, `1221`, `1240`, `1284`, `1309`; `../abixio-ui/tests/support/server.rs:147-192` |
-| Canonical client set is now `aws-sdk-s3`, `AWS CLI`, and `rclone` | Verified | `../abixio-ui/tests/bench.rs:842`, `849-855`, `1231-1235` |
-| AWS CLI path is configured for unsigned payloads | Verified | `../abixio-ui/tests/bench.rs:726-727` writes `payload_signing_enabled = false` into the benchmark profile |
-| rclone path is explicitly configured for unsigned payloads | Verified | `../abixio-ui/tests/bench.rs:798-818` and all rclone calls route through those args |
-| SDK path uses unsigned payloads in the canonical client and matrix benches | Verified | `../abixio-ui/src/s3/client.rs:249-287`, `../abixio-ui/tests/bench.rs:869`, `876`, `1011`, `1021` |
-| Matrix harness fully normalizes connection reuse across clients | Incorrect | `../abixio-ui/tests/bench.rs:857-888` keeps the SDK in-process while `894-966`, `1048-1095`, and `1101-1182` spawn CLI commands per operation |
-| Published matrix tables below are current canonical TLS results | Verified | Tables replaced with the 2026-04-11 5-server tier-aware TLS harness rerun; source artifact `bench-results/2026-04-11-matrix-tls-tiers.txt` |
-| `bench_clients` is still a mixed signed/in-memory comparison | Incorrect | `../abixio-ui/tests/bench.rs:842-966` now uses TLS, disk-backed I/O, and unsigned payloads for the canonical client set |
+All benchmarks live in `abixio-ui/src/bench/`. Run via `abixio-ui bench`.
+See [benchmark-inventory.md](benchmark-inventory.md) for the file layout
+and [benchmark-requirements.md](benchmark-requirements.md) for the spec.
 
-Verdict: this document’s benchmark narrative is mostly internally consistent after fixing the overhead/client-count contradictions. The bench names, commands, raw artifact references, and profiling hook are backed by this repo. The many published performance numbers still need runtime re-benchmarking if you want strict empirical re-validation.
+The numeric results in the matrix tables above were measured on
+2026-04-11. They need re-running with `abixio-ui bench` to confirm
+they still hold.

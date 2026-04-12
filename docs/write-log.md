@@ -215,7 +215,7 @@ Audited against the codebase on 2026-04-11.
 | Crash recovery rebuilds the index by scanning segments on startup | Verified | `src/storage/log_store.rs:29-75`, `78-103` |
 | Tombstone/delete support exists for small deletes | Verified | `src/storage/log_store.rs:158-172` |
 | Log-store reads are zero-copy in all described paths | Needs nuance | The implementation has mmap-backed segments, but `LogStore::read_data_vec` still returns copied `Vec` data in the path described here (`src/storage/log_store.rs:195-210`) |
-| `tests/bench_4kb.py` is the source of the published 4KB performance numbers | Plausible but not re-run in this pass | The benchmark script exists and is referenced from docs/tests, but the numbers were not reproduced during this audit |
+| `abixio-ui/src/bench/` is the source of the published 4KB performance numbers | Plausible but not re-run in this pass | The benchmark script exists and is referenced from docs/tests, but the numbers were not reproduced during this audit |
 | Pool is “currently being benchmarked” to decide the default | Corrected | Newer docs already conclude the benchmark outcome in `docs/benchmarks.md` and `docs/write-pool.md` |
 | `--write-tier` currently gates the decision | Not code-verified in this pass | Other docs say the CLI flag is still pending; I did not verify `src/main.rs` wiring here |
 

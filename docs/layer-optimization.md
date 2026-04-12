@@ -53,7 +53,7 @@ adds a real S3 client with auth.
 - Windows 10 Home, single machine, all volumes on same NTFS drive (tmpdir)
 - Single-node, page-cache writes (no fsync), sequential requests
 - 10 iterations per measurement (50 for 4KB, 5 for 1GB, 30 for focused tests)
-- `bench_perf` in `tests/layer_bench.rs` with JSON output and A/B comparison
+- `bench_perf` in `abixio-ui/src/bench/` with JSON output and A/B comparison
 
 ---
 
@@ -665,7 +665,7 @@ All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).
 Small objects (<= 64KB) now use a log-structured storage path instead of
 the file-per-object layout. See [write-log.md](write-log.md) for full design.
 
-Measured with `tests/bench_4kb.py` (keep-alive, 1000 ops):
+Measured with `abixio-ui/src/bench/` (keep-alive, 1000 ops):
 
 | | File tier | Log store | Improvement |
 |--|----------|-----------|-------------|
@@ -735,7 +735,7 @@ genuinely faster than the timer can measure individually.
 `crossbeam_queue::ArrayQueue` is the right choice. No reason to revisit
 the queue structure.
 
-Bench: `tests/layer_bench.rs::bench_pool_l0_primitive`
+Bench: `abixio-ui/src/bench/::bench_pool_l0_primitive`
 Output: `bench-results/phase1-pool-primitive.txt`
 Run: `k3sc cargo-lock test --release --test layer_bench -- --ignored
 --nocapture bench_pool_l0_primitive`
@@ -747,7 +747,7 @@ Run: `k3sc cargo-lock test --release --test layer_bench -- --ignored
 ## Pool L1: slot writes with real I/O (Phase 2, in development)
 
 Phase 2 lands the `bench_pool_l1_slot_write` test in
-`tests/layer_bench.rs`. Five sizes x six write strategies, each
+`abixio-ui/src/bench/`. Five sizes x six write strategies, each
 optimization layered on independently so we can attribute the speedup
 to a specific change. Still no rename worker, no `pending_renames`,
 no integration with `LocalVolume`.
@@ -850,7 +850,7 @@ Two optimizations (#1 + #2). Optimization #3 dropped. Expected
 hot-path latency at 4KB: **~6us through the pool vs ~776us through
 the file tier. 130x faster.**
 
-Bench: `tests/layer_bench.rs::bench_pool_l1_slot_write`
+Bench: `abixio-ui/src/bench/::bench_pool_l1_slot_write`
 Output: `bench-results/phase2-slot-writes.txt`
 
 ### Next: Phase 2.5 (faster JSON serializer). Done, see Pool L1.5 below
@@ -934,7 +934,7 @@ Phase 4 will use `simd_json::serde::to_vec` as the meta serializer
 in the pool hot path, with `serde_json::to_vec` as the fallback if
 the target doesn't support SIMD acceleration. sonic-rs is dropped.
 
-Bench: `tests/layer_bench.rs::bench_pool_l1_5_json_serializers`
+Bench: `abixio-ui/src/bench/::bench_pool_l1_5_json_serializers`
 Output: `bench-results/phase2.5-json-serializers.txt`
 
 After Phase 2.5: **Phase 3 (rename worker in isolation). Done, see Pool L2 below.**
@@ -1068,7 +1068,7 @@ is many parallel PUT-side tasks.** Will revisit in Phase 7
   design depends on the queue absorbing bursts. The request side
   is much faster than the worker can keep up with.
 
-Bench: `tests/layer_bench.rs::bench_pool_l2_worker_drain`
+Bench: `abixio-ui/src/bench/::bench_pool_l2_worker_drain`
 Output: `bench-results/phase3-rename-worker.txt`
 
 ### Next: Phase 4 (integrate the pool into LocalVolume::write_shard). Done, see Pool L3 below
@@ -1197,7 +1197,7 @@ shows the wrong number leads to the wrong decision.
    64KB the file tier hits some per-file fixed cost ceiling that
    the pool walks straight past.
 
-Bench: `tests/layer_bench.rs::bench_pool_l3_integrated_put`
+Bench: `abixio-ui/src/bench/::bench_pool_l3_integrated_put`
 Output: `bench-results/phase4-integrated-put.txt`
 
 ### Next: Phase 4.5 (analyze and fix the integration overhead). Done, see Pool L3.5 below
@@ -1326,7 +1326,7 @@ step is ~4us. The remaining ~6us is genuine per-call code work
 machine) and isn't worth chasing further. The absolute cost is
 already tiny and the diminishing returns are real.
 
-Bench: `tests/layer_bench.rs::bench_pool_l3_5_integration_breakdown`
+Bench: `abixio-ui/src/bench/::bench_pool_l3_5_integration_breakdown`
 Output: `bench-results/phase4.5-integration-breakdown.txt`
 Re-run after fix: `bench-results/phase4.5-integrated-put-after-fix.txt`
 

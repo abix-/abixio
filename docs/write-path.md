@@ -83,7 +83,7 @@ The main code anchors are:
 
 | Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
 |---     |---      |---             |---           |---     |
-| raw HTTP ingress floor (bare `hyper` / reqwest->hyper) | `94us` | `41.5 MB/s` | not measured at 64KB / 1MB / 10MB / 100MB; `bench_pool_l4_5_stack_breakdown` is hardcoded to 4KB at `tests/layer_bench.rs:3509` | Phase 8.5 Stage A, raw at `bench-results/phase8.5-stack-breakdown-v5.txt` |
+| raw HTTP ingress floor (bare `hyper` / reqwest->hyper) | `94us` | `41.5 MB/s` | not measured at 64KB / 1MB / 10MB / 100MB; `bench_pool_l4_5_stack_breakdown` is hardcoded to 4KB at `abixio-ui/src/bench/:3509` | Phase 8.5 Stage A, raw at `bench-results/phase8.5-stack-breakdown-v5.txt` |
 | hyper transport ceiling (sustained, larger sizes) | n/a | n/a | `762 MB/s` at 10MB; layer L5 | `docs/layer-optimization.md` L5 |
 
 `hyper` accepts the request, parses HTTP/1.1, and exposes the body as
@@ -233,7 +233,7 @@ under the protocol floor at 4KB. Cf. the SDK-matrix bench finding in
 within 4% of each other at 4KB sdk PUT for exactly the same reason --
 the protocol floor dominates.
 
-Run `bench_pool_l4_tier_matrix` (`tests/layer_bench.rs`) to see the
+Run `bench_pool_l4_tier_matrix` (`abixio-ui/src/bench/`) to see the
 file/log/pool branches end-to-end at 4KB through 100MB. There is
 currently no equivalent bench that enables the RAM write cache in the
 process; adding one is on the TODO list.
@@ -565,7 +565,7 @@ per-object dispatch is still pending.
 
 The Phase 8.7 numbers above measure each tier through `reqwest -> hyper
 -> s3s -> VolumePool -> LocalVolume` with no auth (`bench_pool_l4_tier_matrix`
-in `tests/layer_bench.rs`). The SDK matrix bench in `benchmarks.md`
+in `abixio-ui/src/bench/`). The SDK matrix bench in `benchmarks.md`
 measures the same three tiers through `aws-sdk-s3 -> SigV4 -> hyper ->
 s3s -> ...` with auth enabled.
 

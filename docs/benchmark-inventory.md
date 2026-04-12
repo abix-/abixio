@@ -58,14 +58,3 @@ src/bench/
 | `--output` | path | none (no JSON saved) |
 | `--baseline` | path | none (no comparison) |
 
-## Deleted files
-
-Previously benchmarks were spread across two repos and multiple files.
-All have been consolidated into `abixio-ui/src/bench/`:
-
-- `abixio/tests/layer_bench.rs` (4194 lines, 15 test functions)
-- `abixio/tests/bench_4kb.py` (205 lines)
-- `abixio/tests/compare_bench.sh` (373 lines)
-- `abixio-ui/tests/bench.rs` (1744 lines, 8 test functions)
-- `abixio-ui/tests/support/server.rs` (288 lines)
-- `abixio-ui/tests/support/tls.rs` (96 lines)

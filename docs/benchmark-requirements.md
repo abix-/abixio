@@ -7,7 +7,7 @@ must satisfy these requirements.
 
 All benchmarks live in abixio-ui. One harness, one place.
 
-Test file: `abixio-ui/tests/bench.rs`
+Test files: `abixio-ui/src/bench/`
 
 abixio-ui depends on the abixio crate as a library, so it can
 directly import and call internal APIs (VolumePool, LocalVolume,
@@ -53,6 +53,7 @@ Comma-separated values to select multiple. Single value to narrow.
 | `--clients` | `sdk,aws-cli,rclone` | all |
 | `--ops` | `PUT,GET,HEAD,LIST,DELETE` | all |
 | `--iters` | number | auto-scaled by size |
+| `--tls` | `on,off,both` | on |
 
 Examples:
 

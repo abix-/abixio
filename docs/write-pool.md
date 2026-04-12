@@ -577,7 +577,7 @@ The production default remains the three-tier handoff above.
 ## Benchmark plan
 
 Run `cd abixio-ui && cargo test --release --test bench -- --ignored
---nocapture bench_matrix` and `tests/bench_4kb.py` three times, once
+--nocapture bench_matrix` and `abixio-ui/src/bench/` three times, once
 for each tier:
 
 | Setting | Tier behavior |
@@ -693,7 +693,7 @@ where the pool wins most.
 
 ### Phase 2: slot writes with real I/O (done)
 
-The bench function `bench_pool_l1_slot_write` in `tests/layer_bench.rs`
+The bench function `bench_pool_l1_slot_write` in `abixio-ui/src/bench/`
 runs five sizes (4KB / 64KB / 1MB / 10MB / 100MB) through six write
 strategies, with each optimization layered on independently so we can
 attribute the speedup. Output: `bench-results/phase2-slot-writes.txt`.
@@ -807,7 +807,7 @@ worker integration.
 ### Phase 2.5: faster JSON serializer (done)
 
 The bench function `bench_pool_l1_5_json_serializers` in
-`tests/layer_bench.rs` runs four serializers against the same
+`abixio-ui/src/bench/` runs four serializers against the same
 representative `ObjectMetaFile` (391 bytes compact) over 100k
 iterations, with round-trip parse validation through `serde_json`
 to confirm output compatibility. Output:
@@ -863,7 +863,7 @@ this bench on the production target before committing in Phase 4.
 ### Phase 3: rename worker in isolation (done)
 
 The bench function `bench_pool_l2_worker_drain` in
-`tests/layer_bench.rs` runs four scenarios against the new
+`abixio-ui/src/bench/` runs four scenarios against the new
 `run_rename_worker` and `WriteSlotPool::replenish_slot` code.
 Output: `bench-results/phase3-rename-worker.txt`. Re-run with:
 
@@ -1655,7 +1655,7 @@ time, and the story that came back is very different.
 
 #### Methodology
 
-`tests/layer_bench.rs::bench_pool_l4_tier_matrix`. Spawns a fresh
+`abixio-ui/src/bench/::bench_pool_l4_tier_matrix`. Spawns a fresh
 abixio server per (tier, size) cell, single disk with ftt=0 (no
 erasure), binds a random 127.0.0.1 port, runs sequential PUTs
 followed by sequential GETs through `reqwest::Client` against the
@@ -1772,7 +1772,7 @@ store enabled for small objects.
 
 #### Code changes
 
-- `tests/layer_bench.rs::bench_pool_l4_tier_matrix` (the bench
+- `abixio-ui/src/bench/::bench_pool_l4_tier_matrix` (the bench
   itself, 11 iteration cells, plus three comparison tables).
 - `src/storage/mod.rs`: added `async fn drain_pending_writes` to
   the `Backend` trait with a default no-op implementation. Lets
@@ -1792,7 +1792,7 @@ points** that every previous benchmark managed to avoid.
 
 #### Methodology
 
-`tests/layer_bench.rs::bench_pool_l4_5_stack_breakdown`.
+`abixio-ui/src/bench/::bench_pool_l4_5_stack_breakdown`.
 Progressive stages at 4KB PUT, 1000 sequential iterations each,
 fresh hyper server per stage. A bimodal bucket counter tracks how
 many samples fall below 300us (fast path) vs above 500us (slow
@@ -2338,7 +2338,7 @@ The remaining phases are:
 ### Benchmark comparison
 
 See the benchmark plan section above. Three runs of the bench matrix
-plus `bench_4kb.py`, one per tier setting. Decision criterion: which
+plus ``abixio-ui bench``, one per tier setting. Decision criterion: which
 tier shows the best PUT obj/sec at 4KB and the best PUT MB/s at 1MB
 and 10MB without regressing GET latency by more than 100us at any
 size.
