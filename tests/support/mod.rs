@@ -136,13 +136,13 @@ impl Backend for ControlledBackend {
         self.inner.delete_bucket(bucket).await
     }
 
-    fn bucket_exists(&self, bucket: &str) -> bool {
-        self.available() && self.inner.bucket_exists(bucket)
+    async fn bucket_exists(&self, bucket: &str) -> bool {
+        self.available() && self.inner.bucket_exists(bucket).await
     }
 
-    fn bucket_created_at(&self, bucket: &str) -> u64 {
+    async fn bucket_created_at(&self, bucket: &str) -> u64 {
         if self.available() {
-            self.inner.bucket_created_at(bucket)
+            self.inner.bucket_created_at(bucket).await
         } else {
             0
         }

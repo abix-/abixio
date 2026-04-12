@@ -628,8 +628,10 @@ impl Store for VolumePool {
 
     async fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
         pathing::validate_bucket_name(bucket)?;
-        if self.disks.iter().any(|d| d.bucket_exists(bucket)) {
-            return Err(StorageError::BucketExists);
+        for disk in &self.disks {
+            if disk.bucket_exists(bucket).await {
+                return Err(StorageError::BucketExists);
+            }
         }
         let mut successes = 0;
         for disk in &self.disks {
@@ -671,11 +673,12 @@ impl Store for VolumePool {
 
     async fn head_bucket(&self, bucket: &str) -> Result<bool, StorageError> {
         pathing::validate_bucket_name(bucket)?;
-        let count = self
-            .disks
-            .iter()
-            .filter(|d| d.bucket_exists(bucket))
-            .count();
+        let mut count = 0usize;
+        for disk in &self.disks {
+            if disk.bucket_exists(bucket).await {
+                count += 1;
+            }
+        }
         // bucket must exist on at least 1 disk
         Ok(count >= 1)
     }
@@ -686,7 +689,7 @@ impl Store for VolumePool {
                 Ok(names) => {
                     let mut buckets = Vec::with_capacity(names.len());
                     for name in names {
-                        let created_at = disk.bucket_created_at(&name);
+                        let created_at = disk.bucket_created_at(&name).await;
                         buckets.push(BucketInfo { name, created_at });
                     }
                     return Ok(buckets);

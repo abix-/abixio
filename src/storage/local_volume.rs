@@ -908,13 +908,13 @@ impl Backend for LocalVolume {
         })
     }
 
-    fn bucket_exists(&self, bucket: &str) -> bool {
+    async fn bucket_exists(&self, bucket: &str) -> bool {
         pathing::bucket_dir(&self.root, bucket)
             .map(|path| path.is_dir())
             .unwrap_or(false)
     }
 
-    fn bucket_created_at(&self, bucket: &str) -> u64 {
+    async fn bucket_created_at(&self, bucket: &str) -> u64 {
         let Ok(path) = pathing::bucket_dir(&self.root, bucket) else {
             return 0;
         };
@@ -1228,9 +1228,9 @@ mod tests {
     async fn bucket_lifecycle() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        assert!(!disk.bucket_exists("test"));
+        assert!(!disk.bucket_exists("test").await);
         disk.make_bucket("test").await.unwrap();
-        assert!(disk.bucket_exists("test"));
+        assert!(disk.bucket_exists("test").await);
     }
 
     #[tokio::test]
@@ -1248,7 +1248,7 @@ mod tests {
     async fn bucket_exists_missing() {
         let dir = TempDir::new().unwrap();
         let disk = LocalVolume::new(dir.path()).unwrap();
-        assert!(!disk.bucket_exists("nope"));
+        assert!(!disk.bucket_exists("nope").await);
     }
 
     #[tokio::test]

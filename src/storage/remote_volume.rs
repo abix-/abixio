@@ -258,14 +258,36 @@ impl Backend for RemoteVolume {
         if resp.status().is_success() { Ok(()) } else { Err(Self::parse_error(resp).await) }
     }
 
-    fn bucket_exists(&self, bucket: &str) -> bool {
-        // sync fallback -- this is called from non-async contexts (placement, init)
-        // TODO: make async when callers are async
-        false
+    async fn bucket_exists(&self, bucket: &str) -> bool {
+        let resp = match self
+            .get("/bucket-exists")
+            .query(&[("bucket", bucket)])
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return false,
+        };
+        if !resp.status().is_success() {
+            return false;
+        }
+        resp.json::<bool>().await.unwrap_or(false)
     }
 
-    fn bucket_created_at(&self, bucket: &str) -> u64 {
-        0
+    async fn bucket_created_at(&self, bucket: &str) -> u64 {
+        let resp = match self
+            .get("/bucket-created-at")
+            .query(&[("bucket", bucket)])
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(_) => return 0,
+        };
+        if !resp.status().is_success() {
+            return 0;
+        }
+        resp.json::<u64>().await.unwrap_or(0)
     }
 
     async fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {

@@ -247,7 +247,7 @@ impl StorageServer {
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
-        json_response(&vol.bucket_exists(&bucket))
+        json_response(&vol.bucket_exists(&bucket).await)
     }
 
     async fn handle_bucket_created_at(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
@@ -257,7 +257,7 @@ impl StorageServer {
         };
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
-        json_response(&vol.bucket_created_at(&bucket))
+        json_response(&vol.bucket_created_at(&bucket).await)
     }
 
     async fn handle_update_meta(&self, req: Request<hyper::body::Incoming>) -> Response<BoxBody> {

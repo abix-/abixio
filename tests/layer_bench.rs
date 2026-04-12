@@ -4091,11 +4091,11 @@ impl Backend for NullBackend {
         Ok(())
     }
 
-    fn bucket_exists(&self, _bucket: &str) -> bool {
+    async fn bucket_exists(&self, _bucket: &str) -> bool {
         self.bucket_created.load(Ordering::SeqCst)
     }
 
-    fn bucket_created_at(&self, _bucket: &str) -> u64 {
+    async fn bucket_created_at(&self, _bucket: &str) -> u64 {
         self.created_at
     }
 

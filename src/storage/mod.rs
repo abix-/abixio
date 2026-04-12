@@ -124,9 +124,9 @@ pub trait Backend: Send + Sync {
 
     async fn delete_bucket(&self, bucket: &str) -> Result<(), StorageError>;
 
-    fn bucket_exists(&self, bucket: &str) -> bool;
+    async fn bucket_exists(&self, bucket: &str) -> bool;
 
-    fn bucket_created_at(&self, bucket: &str) -> u64;
+    async fn bucket_created_at(&self, bucket: &str) -> u64;
 
     async fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError>;
 
