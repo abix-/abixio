@@ -224,6 +224,7 @@ impl VolumePool {
     where
         S: futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin,
     {
+        let validate_span = crate::timing::Span::new("validate");
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
         if let Some(vid) = version_id {
@@ -232,6 +233,7 @@ impl VolumePool {
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
+        drop(validate_span);
 
         // small object fast path: collect body, route through put_object
         // which calls write_shard on each disk -> log store for small objects
@@ -244,11 +246,15 @@ impl VolumePool {
                     // via write_shard (which routes to log store on LocalVolume)
                     use futures::StreamExt;
                     use md5::Digest;
+                    let collect_span = crate::timing::Span::new("collect_body");
                     let mut data = Vec::with_capacity(len);
                     while let Some(chunk) = body.next().await {
                         let chunk = chunk.map_err(StorageError::Io)?;
                         data.extend_from_slice(&chunk);
                     }
+                    drop(collect_span);
+
+                    let ec_span = crate::timing::Span::new("ec_encode");
                     let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
                     let total = data_n + parity_n;
                     let etag = if opts.skip_md5 {
@@ -306,6 +312,7 @@ impl VolumePool {
 
                     // convert shards to Bytes (ref-counted, zero-copy for cache AND disk)
                     let shard_bytes: Vec<bytes::Bytes> = shards.into_iter().map(bytes::Bytes::from).collect();
+                    drop(ec_span);
 
                     // try RAM write cache first (zero disk I/O)
                     if let Some(ref cache) = self.write_cache {
@@ -339,6 +346,7 @@ impl VolumePool {
                     }
 
                     // disk write fallback (cache was full)
+                    let storage_span = crate::timing::Span::new("storage_write");
                     let mut successes = 0;
                     for shard_idx in 0..total {
                         let disk_idx = distribution[shard_idx];
@@ -346,6 +354,7 @@ impl VolumePool {
                             successes += 1;
                         }
                     }
+                    drop(storage_span);
                     let write_quorum = if parity_n == 0 { data_n } else { data_n + 1 };
                     if successes < write_quorum {
                         return Err(StorageError::WriteQuorum);
@@ -366,7 +375,11 @@ impl VolumePool {
             }
         }
 
-        // large object or versioned: streaming encode path (existing)
+        // large object or versioned: streaming encode path (existing).
+        // Single span covers the whole encode_and_write which interleaves
+        // body reads with shard writes -- we can't cleanly attribute the
+        // sub-phases without instrumenting the streaming encode helper.
+        let _stream_span = crate::timing::Span::new("encode_and_write");
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
         let planner = self.placement_planner()?;
         encode_and_write(
@@ -472,11 +485,18 @@ impl Store for VolumePool {
         bucket: &str,
         key: &str,
     ) -> Result<(ObjectInfo, std::pin::Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, StorageError>> + Send>>), StorageError> {
+        let validate_span = crate::timing::Span::new("validate");
         pathing::validate_bucket_name(bucket)?;
         pathing::validate_object_key(key)?;
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
+        drop(validate_span);
+
+        // Single RAII guard for the rest of the function: lookup metadata,
+        // open the stream, hand it back. The actual body transfer happens
+        // AFTER this function returns when the stream is polled by s3s.
+        let _lookup_span = crate::timing::Span::new("lookup_open");
 
         // check RAM write cache first (zero-copy Bytes from memory)
         if let Some(ref cache) = self.write_cache {

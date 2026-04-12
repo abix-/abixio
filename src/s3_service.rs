@@ -351,6 +351,7 @@ impl S3 for AbixioS3 {
         &self,
         req: S3Request<PutObjectInput>,
     ) -> S3Result<S3Response<PutObjectOutput>> {
+        let setup_span = crate::timing::Span::new("setup");
         let input = req.input;
         let content_type = input.content_type.unwrap_or_default();
         let user_metadata = input.metadata.unwrap_or_default();
@@ -396,19 +397,23 @@ impl S3 for AbixioS3 {
         };
 
         let content_length = input.content_length.map(|cl| cl as usize);
-        let info = self
-            .store
-            .put_object_stream(
+        drop(setup_span); // record setup before we hand off to storage
+
+        let info = crate::timing::time(
+            "store",
+            self.store.put_object_stream(
                 &input.bucket,
                 &input.key,
                 stream,
                 opts,
                 version_id.as_deref(),
                 content_length,
-            )
-            .await
-            .map_err(map_err)?;
+            ),
+        )
+        .await
+        .map_err(map_err)?;
 
+        let _resp_span = crate::timing::Span::new("response_build");
         let mut output = PutObjectOutput {
             e_tag: Some(ETag::Strong(info.etag)),
             ..Default::default()
@@ -426,20 +431,25 @@ impl S3 for AbixioS3 {
         &self,
         req: S3Request<GetObjectInput>,
     ) -> S3Result<S3Response<GetObjectOutput>> {
+        let setup_span = crate::timing::Span::new("setup");
         let input = req.input;
         let has_range = input.range.is_some();
         let has_version = input.version_id.is_some();
 
         // range and versioned requests use buffered path (need random access or version lookup)
         if has_range || has_version {
+            drop(setup_span);
             return self.get_object_buffered(input).await;
         }
+        drop(setup_span);
 
         // streaming path: no buffering, chunks flow directly to response
-        let (info, stream) = self.store
-            .get_object_stream(&input.bucket, &input.key)
-            .await
-            .map_err(map_err)?;
+        let (info, stream) = crate::timing::time(
+            "store_open",
+            self.store.get_object_stream(&input.bucket, &input.key),
+        )
+        .await
+        .map_err(map_err)?;
 
         // evaluate conditional headers
         let last_mod = timestamp_to_s3(info.created_at);
@@ -458,21 +468,27 @@ impl S3 for AbixioS3 {
         // small/medium objects (<= 64MB): collect into ChunkedBytes for a leaner
         // response path (no SyncStream wrapper, no StreamWrapper, no error
         // conversion per frame). For 1+0 mmap, chunks yield instantly.
-        // large objects (> 64MB): stream to avoid buffering delay.
+        // large objects (> 64MB): stream to avoid buffering delay; the
+        // server-timing header captured at the dispatch layer will not
+        // include body transfer time for the streamed branch.
         let blob = if info.size <= 64 * 1024 * 1024 {
+            let collect_t0 = std::time::Instant::now();
             let mut chunks = Vec::new();
             let mut stream = std::pin::pin!(stream);
             while let Some(chunk) = stream.next().await {
                 chunks.push(chunk.map_err(map_err)?);
             }
+            crate::timing::record("body_collect", collect_t0.elapsed());
             StreamingBlob::new(ChunkedBytes::new(chunks, content_length as usize))
         } else {
+            crate::timing::record("body_streamed", std::time::Duration::ZERO);
             let mapped = stream.map(|r| {
                 r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
             });
             StreamingBlob::wrap(SyncStream(mapped))
         };
 
+        let _resp_span = crate::timing::Span::new("response_build");
         let mut output = GetObjectOutput {
             body: Some(blob),
             content_length: Some(content_length),

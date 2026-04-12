@@ -9,3 +9,4 @@ pub mod s3_auth;
 pub mod s3_route;
 pub mod s3_service;
 pub mod storage;
+pub mod timing;

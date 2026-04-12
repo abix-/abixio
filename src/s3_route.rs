@@ -59,10 +59,28 @@ impl AbixioDispatch {
             return error_response(hyper::StatusCode::NOT_FOUND, "no admin handler");
         }
 
-        // S3: pass s3s::Body through directly (streaming, no collection)
-        let t0 = std::time::Instant::now();
-        let resp = hyper::service::Service::call(&self.s3_service, req).await;
-        let s3s_time = t0.elapsed();
+        // S3: pass s3s::Body through directly (streaming, no collection).
+        // Wrap the s3s call in a per-request timing scope so anywhere in the
+        // call tree (s3_service, volume_pool, local_volume) can record its
+        // own layer via `crate::timing::record / Span / time(...)`.
+        let timing = std::sync::Arc::new(std::sync::Mutex::new(
+            crate::timing::RequestTiming::new(),
+        ));
+        let dispatch_t0 = std::time::Instant::now();
+        let resp = crate::timing::REQUEST_TIMING
+            .scope(timing.clone(), async {
+                let s3s_t0 = std::time::Instant::now();
+                let r = hyper::service::Service::call(&self.s3_service, req).await;
+                // s3s_total covers everything inside s3s including the
+                // AbixioS3 method dispatch. Inner layers (setup, store, ...)
+                // record themselves into the same task-local and overlap
+                // with this number; sum them to attribute s3s_total.
+                crate::timing::record("s3s_total", s3s_t0.elapsed());
+                r
+            })
+            .await;
+        let total = dispatch_t0.elapsed();
+
         let mut resp = match resp {
             Ok(resp) => wrap_s3s(resp),
             Err(e) => {
@@ -77,9 +95,19 @@ impl AbixioDispatch {
         if let Ok(val) = request_id.parse() {
             resp.headers_mut().insert("x-amz-request-id", val);
         }
-        // timing header for profiling (remove in production)
-        if let Ok(val) = format!("{:.3}ms", s3s_time.as_secs_f64() * 1000.0).parse() {
+        // x-debug-s3s-ms: legacy total-time field, kept for back-compat
+        if let Ok(val) = format!("{:.3}ms", total.as_secs_f64() * 1000.0).parse() {
             resp.headers_mut().insert("x-debug-s3s-ms", val);
+        }
+        // server-timing: W3C per-layer breakdown for the same request.
+        // Browsers, curl -v, and most HTTP clients render this natively.
+        if let Ok(g) = timing.lock() {
+            let st = g.to_server_timing();
+            if !st.is_empty() {
+                if let Ok(val) = st.parse() {
+                    resp.headers_mut().insert("server-timing", val);
+                }
+            }
         }
         resp
     }
