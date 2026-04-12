@@ -493,3 +493,15 @@ Pool development phases (Phase 1 through Phase 8.7) are documented in
 phase-by-phase benchmarks, slot write strategy comparisons, JSON
 serializer shootout, rename worker scaling tests, and the end-to-end
 three-tier matrix that shaped the current defaults.
+
+## Open questions
+
+- **Windows rename semantics.** `tokio::fs::rename` uses
+  `std::fs::rename`, which on Windows uses `MoveFileEx` with
+  `MOVEFILE_REPLACE_EXISTING`. Verify this behaves atomically when
+  the destination already exists from a half-completed crash.
+- **fsync.** Default no, matching the log store and write cache.
+  Document the power-loss trade-off.
+- **Pre-allocation (fallocate / SetEndOfFile).** Default off. Worth
+  benchmarking to see if pre-allocating slot files shows >=10%
+  improvement at any common size.
