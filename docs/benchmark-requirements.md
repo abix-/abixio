@@ -89,6 +89,7 @@ Comma-separated values to select multiple. Single value to narrow.
 | `--ops` | `PUT,GET,HEAD,LIST,DELETE` | all |
 | `--iters` | number | auto-scaled by size |
 | `--tls` | `on,off,both` | on |
+| `--tmp-dir` | path | system temp dir |
 
 Examples:
 
