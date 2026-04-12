@@ -1347,6 +1347,93 @@ Phase 5 adds the in-memory `pending_renames` table so reads can
 find an object that's still in flight. After Phase 5 the pool is
 production-safe for non-versioned writes.
 
+## Pool L4: read path integration (Phase 5, done)
+
+Phase 5 adds the in-memory `pending_renames` DashMap so reads can find
+objects still in flight. PUT inserts into `pending_renames` before ack.
+All five readers (`read_shard`, `mmap_shard`, `stat_object`,
+`list_objects`, `delete_object`) check `pending_renames` before falling
+through to the file tier. After Phase 5 the pool is production-safe for
+non-versioned writes.
+
+## Pool L4.5: shrink PendingEntry + stable medians (Phase 5.5/5.5+, done)
+
+Phase 5.5 tried to trim the `PendingEntry` struct by removing the meta
+clone. Turned out the meta clone was not the cost. Phase 5.5+ ran 10k
+iterations and showed Phase 5.5 was identical to Phase 4.5 at p50.
+The perceived "regression" from Phase 5 was 100% measurement noise from
+insufficient iteration counts.
+
+Methodology lesson: 100-iteration medians are not stable enough for
+sub-microsecond measurements. 10k iters required for trustworthy 4KB
+numbers.
+
+## Pool L5: move file drops off the hot path (Phase 5.6, done)
+
+The slot's file handles (`data_file`, `meta_file`) were being dropped
+on the request thread after the writes completed. On Windows/NTFS, file
+close can take 10-50us depending on page cache state. Phase 5.6 moves
+the slot into the `RenameRequest` so the worker thread drops the handles
+after the rename, not the request thread.
+
+Result: 4KB avg 3x better, 10MB p99 12x better. Pool now 53x file tier
+at 4KB and 4.6x at 100MB (storage layer measurement).
+
+## Pool L6: crash recovery scan (Phase 6, done)
+
+`recover_pool_dir` runs before `WriteSlotPool::new` on startup. Scans
+`.abixio.sys/tmp/` for orphaned slot files from a previous crash. For
+each slot with a parseable meta.tmp, finishes the pending rename. For
+unparseable or orphaned files, deletes them. 14 new tests added, all
+355 total pass.
+
+## Pool L7: end-to-end three-tier matrix (Phase 8, done)
+
+`bench_pool_l4_tier_matrix` measures PUT+GET p50 through the full
+hyper/s3s/VolumePool stack at 5 sizes (4KB through 100MB) for
+file/log/pool tiers. This is the measurement that proved storage-layer
+53x claims do not translate end-to-end.
+
+Key finding: at 4KB, the ~930us HTTP+s3s+SDK floor dominates. The pool's
+storage-layer win is invisible under the protocol overhead. The pool
+only wins at 1MB-10MB where storage work is a larger fraction of total
+request time.
+
+## Pool L7.5: stack breakdown (Phase 8.5, done)
+
+`bench_pool_l4_5_stack_breakdown` with 10 progressive stages (bare
+hyper through full pool) proved:
+
+- HTTP stack floor: 93us
+- abixio dispatch overhead: 32us
+- Two hidden choke points in default pool config:
+  - depth 32 starves under sustained sequential load
+  - channel buffer 256 backpresses `tx.send`
+
+With depth 1024 + channel 100k the pool p50 dropped from 942us to
+318us, giving a real 2.55x win over file tier. Default config was
+undersized for sustained throughput.
+
+## Pool L8: DRY optimizations into file tier (Phase 8.6, done)
+
+Applied pool optimizations across all write paths:
+- Swapped `write_meta_file` to simd-json across all 9 call sites
+- Collapsed file tier's 3x path validation to 1
+- Added `tokio::try_join!` for concurrent shard+meta writes on non-inline file tier
+
+Modest direct performance impact, largest maintenance win.
+
+## Pool L8.5: raise defaults + multi-worker rename (Phase 8.7, done)
+
+`RenameDispatch` round-robin across N worker channels. Defaults changed:
+- Channel buffer: 256 -> 10,000 per worker
+- Worker count: 1 -> 2
+
+Pool 4KB p50 dropped from 942us to 454us (2.1x vs file tier).
+Pool 64KB p50 dropped from 1037us to 586us (2.3x vs file tier).
+
+Phase 7 (admin endpoint) and Phase 9 (concurrency bench) still pending.
+
 ---
 
 ## Competitive analysis: MinIO and RustFS
