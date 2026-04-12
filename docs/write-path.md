@@ -514,6 +514,31 @@ reference.
 | file tier | final object files are written in their destination directory | yes, modulo OS page-cache durability model |
 | remote backend | target node completed its local shard write path | depends on the target branch |
 
+## Raw disk floor (L5)
+
+Isolated L5 disk I/O. Direct tokio::fs calls, no storage pipeline,
+no HTTP, no hashing, no EC. This is the filesystem ceiling. Nothing
+in the stack can write faster than this.
+
+Source: `abixio-ui bench --layers L5`, `bench-results/l5-disk.json`
+
+| Size | write p50 | write+fsync p50 | read p50 | write MB/s | read MB/s |
+|---|---|---|---|---|---|
+| 4KB | `236us` | `2.5ms` | `66us` | `15.7` | `52.8` |
+| 64KB | `258us` | `2.6ms` | `82us` | `227.1` | `732.2` |
+| 10MB | `4.8ms` | `10.8ms` | `3.6ms` | `2009.5` | `2682.1` |
+| 100MB | `91.9ms` | `79.7ms` | `35.2ms` | `1082.6` | `2859.3` |
+| 1GB | `1.03s` | `1.02s` | `404.6ms` | `996.6` | `2584.2` |
+
+Write without fsync goes to OS page cache (RAM). Write+fsync forces
+to physical disk. AbixIO does not fsync individual writes (same as
+MinIO and RustFS). At 1GB the two converge because the OS flushes
+dirty pages during the write.
+
+The gap between L5 write (236us at 4KB) and L3 file tier PUT (847us
+at 4KB) is the storage pipeline overhead: EC encoding, hashing,
+metadata serialization, mkdir, and multiple file creates per shard.
+
 ## Where the time goes
 
 Isolated L3 tier comparison. Direct VolumePool API, no HTTP, no s3s.
