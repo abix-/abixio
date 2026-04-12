@@ -86,17 +86,41 @@ The main code anchors are:
 
 ### 1. HTTP ingress
 
-| Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
-|---     |---      |---             |---           |---     |
-| raw HTTP ingress floor (bare `hyper` / reqwest->hyper) | `94us` | `41.5 MB/s` | not measured at 64KB / 1MB / 10MB / 100MB; `bench_pool_l4_5_stack_breakdown` is hardcoded to 4KB at `abixio-ui/src/bench/:3509` | Phase 8.5 Stage A, raw at `bench-results/phase8.5-stack-breakdown-v5.txt` |
-| hyper transport ceiling (sustained, larger sizes) | n/a | n/a | `762 MB/s` at 10MB; layer L1 | `docs/layer-optimization.md` L1 |
+Raw HTTP transport floor: bare `hyper` server, `reqwest` client,
+loopback 127.0.0.1. No S3, no storage. This is the lowest possible
+latency the stack can achieve at each size.
+
+Source: `abixio-ui bench --layers L1`, `bench-results/l1-http-ingress.json`
+
+#### PUT (reqwest -> hyper, body consumed and discarded)
+
+| Size | p50 | p95 | p99 | throughput |
+|---|---|---|---|---|
+| 4KB | `98us` | `146us` | `159us` | `36.5 MB/s` |
+| 64KB | `208us` | `258us` | `272us` | `301.6 MB/s` |
+| 10MB | `32.1ms` | `47.2ms` | `47.4ms` | `291.6 MB/s` |
+| 100MB | `385.4ms` | `391.0ms` | `391.0ms` | `329.3 MB/s` |
+| 1GB | `2.09s` | `3.98s` | `3.98s` | `400.5 MB/s` |
+
+#### GET (hyper returns sized body, reqwest consumes it)
+
+| Size | p50 | p95 | p99 | throughput |
+|---|---|---|---|---|
+| 4KB | `88us` | `130us` | `152us` | `41.4 MB/s` |
+| 64KB | `134us` | `177us` | `190us` | `443.6 MB/s` |
+| 10MB | `32.3ms` | `46.9ms` | `47.5ms` | `334.0 MB/s` |
+| 100MB | `146.5ms` | `349.5ms` | `349.5ms` | `610.2 MB/s` |
+| 1GB | `1.55s` | `2.04s` | `2.04s` | `626.9 MB/s` |
 
 `hyper` accepts the request, parses HTTP/1.1, and exposes the body as
-a stream. This is the lowest measured floor in the stack. Per-layer
-attribution at sizes other than 4KB is a TODO -- it requires
-generalizing `bench_pool_l4_5_stack_breakdown` to take a size
-parameter (the underlying `run_l45_stage_*` helpers already accept
-one).
+a stream. At small sizes (4KB, 64KB), latency is dominated by TCP
+round-trip and HTTP framing, not data transfer. At large sizes (100MB,
+1GB), throughput reaches 400-630 MB/s, which is the hyper/Windows
+loopback ceiling.
+
+GET is faster than PUT at every size because the hyper server builds
+the response body from a pre-allocated `Bytes` buffer (zero-copy),
+while PUT requires the server to consume the incoming body stream.
 
 ### 2. S3 protocol and AbixIO request setup
 
