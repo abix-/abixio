@@ -270,7 +270,30 @@ RustFS and MinIO binaries auto-detected at `C:\tools\rustfs.exe` and
 - MB/s: throughput (primary metric for large objects)
 - latency: per-request time in microseconds or milliseconds
 
-## Requirement 5: Fairness
+## Requirement 5: Flush before read
+
+PUT and GET must be measured separately. After all PUTs complete and
+before any timed GETs begin, the bench must flush all pending work
+to its final resting place:
+
+- **Pool tier**: drain all pending renames so temp files are moved
+  to their final object paths
+- **Write cache**: flush cached entries to disk
+- **Log store**: no flush needed (data is already in the segment)
+- **File tier**: no flush needed (data is already at final path)
+
+This ensures GET measures the actual read performance of the storage
+format, not the transitional state of data in temp files or RAM cache.
+
+The flush/drain time itself should be measured separately so we know
+how long each tier takes to reach its final resting place. This is a
+durability metric, not a throughput metric.
+
+The L3 bench currently implements this correctly: it calls
+`drain_pending_writes()` and `flush_write_cache()` between PUT and
+GET timing loops.
+
+## Requirement 6: Fairness
 
 Authoritative normalized client mode: HTTPS + SigV4 + UNSIGNED-PAYLOAD.
 Cross-client numbers are only directly comparable when the harness holds

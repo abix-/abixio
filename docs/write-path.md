@@ -545,6 +545,11 @@ Isolated L3 tier comparison. Direct VolumePool API, no HTTP, no s3s.
 1 disk, ftt=0, no write cache, Defender-excluded tmp dir. All paths
 use the unified write path (streaming encode + tier-aware ShardWriter).
 
+PUT and GET are measured separately. After all PUTs complete, pool
+pending renames are drained and write cache is flushed before any
+timed GETs begin. This ensures GET measures read performance from
+the final storage location, not from transitional temp files.
+
 Source: `abixio-ui bench --layers L3`, `bench-results/l3-storage.json`
 
 #### PUT p50 latency by tier (put_stream)
