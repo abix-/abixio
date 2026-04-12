@@ -268,18 +268,23 @@ impl VolumePool {
                     } else {
                         opts.content_type.clone()
                     };
-                    // RS encode
-                    let mut shards = super::erasure_encode::split_data(&data, data_n);
-                    if parity_n > 0 {
-                        let shard_size = shards[0].len();
-                        for _ in 0..parity_n {
-                            shards.push(vec![0u8; shard_size]);
+                    // RS encode (skip for 1+0: data IS the shard)
+                    let shards: Vec<Vec<u8>> = if data_n == 1 && parity_n == 0 {
+                        vec![data.clone()]
+                    } else {
+                        let mut shards = super::erasure_encode::split_data(&data, data_n);
+                        if parity_n > 0 {
+                            let shard_size = shards[0].len();
+                            for _ in 0..parity_n {
+                                shards.push(vec![0u8; shard_size]);
+                            }
+                            let rs = reed_solomon_erasure::galois_8::ReedSolomon::new(data_n, parity_n)
+                                .map_err(|e| StorageError::InvalidConfig(format!("rs: {}", e)))?;
+                            rs.encode(&mut shards)
+                                .map_err(|e| StorageError::InvalidConfig(format!("rs encode: {}", e)))?;
                         }
-                        let rs = reed_solomon_erasure::galois_8::ReedSolomon::new(data_n, parity_n)
-                            .map_err(|e| StorageError::InvalidConfig(format!("rs: {}", e)))?;
-                        rs.encode(&mut shards)
-                            .map_err(|e| StorageError::InvalidConfig(format!("rs encode: {}", e)))?;
-                    }
+                        shards
+                    };
                     let planner = self.placement_planner()?;
                     let placement = planner.plan(bucket, key, data_n, parity_n)
                         .map_err(StorageError::InvalidConfig)?;

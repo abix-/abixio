@@ -112,6 +112,73 @@ where
         .map(|s| s.volume_id.clone())
         .collect();
 
+    // 1+0 fast path: single disk, no parity, no RS encode.
+    // Stream body chunks directly to the one writer. No shard buffers,
+    // no split_data_into, no block accumulation. Just pass bytes through.
+    if data_n == 1 && parity_n == 0 {
+        let disk_idx = distribution[0];
+        let mut writer = disks[disk_idx].open_shard_writer(bucket, key, version_id).await?;
+        let mut md5_hasher = if opts.skip_md5 { None } else { Some(Md5::new()) };
+        let mut xxh = xxhash_rust::xxh64::Xxh64::new(0);
+        let mut blake3_hasher = blake3::Hasher::new();
+        let mut total_size: u64 = 0;
+
+        while let Some(chunk) = body.next().await {
+            let chunk = chunk.map_err(StorageError::Io)?;
+            if let Some(ref mut h) = md5_hasher { h.update(&chunk); }
+            xxh.update(&chunk);
+            blake3_hasher.update(&chunk);
+            total_size += chunk.len() as u64;
+            writer.write_chunk(&chunk).await?;
+        }
+
+        let etag = opts
+            .precomputed_etag
+            .clone()
+            .unwrap_or_else(|| match md5_hasher {
+                Some(h) => hex::encode(h.finalize()),
+                None => format!("{:016x}{:016x}", xxh.digest(), total_size),
+            });
+        let checksum = blake3_hasher.finalize().to_hex().to_string();
+        let vid_str = version_id.unwrap_or("").to_string();
+
+        let meta = ObjectMeta {
+            size: total_size,
+            etag: etag.clone(),
+            content_type: content_type.clone(),
+            created_at,
+            erasure: ErasureMeta {
+                ftt: 0,
+                index: 0,
+                epoch_id: placement.epoch_id,
+                volume_ids: volume_ids.clone(),
+            },
+            checksum,
+            user_metadata: opts.user_metadata.clone(),
+            tags: opts.tags.clone(),
+            version_id: vid_str.clone(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+            inline_data: None,
+        };
+        writer.finalize(&meta).await?;
+
+        return Ok(ObjectInfo {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            size: total_size,
+            etag,
+            content_type,
+            created_at,
+            user_metadata: opts.user_metadata,
+            tags: opts.tags,
+            version_id: vid_str,
+            is_delete_marker: false,
+        });
+    }
+
+    // EC path: multiple shards, RS encode required
     let rs = if parity_n > 0 {
         Some(
             ReedSolomon::new(data_n, parity_n)
