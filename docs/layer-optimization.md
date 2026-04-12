@@ -1,10 +1,14 @@
 # Layer optimization
 
-Systematic per-layer performance analysis of the AbixIO PUT and GET paths.
-Each layer is treated as an independent optimization problem: measure it,
-identify the ceiling, find the bottleneck, test a fix, record the result.
+**Authoritative for:** optimization history. Per-layer performance
+analysis, before/after numbers, experiments (including failures),
+pool development phases (L0-L3.5), competitive analysis vs MinIO
+and RustFS, allocation audit. If you need to know why a design
+decision was made or what alternatives were tried, this is the only doc.
 
-Last updated: 2026-04-09, commit `9a22d2a`.
+**Not covered here:** how writes work now (see [write-path.md](write-path.md)),
+on-disk format (see [storage-layout.md](storage-layout.md)),
+benchmark results (see [benchmarks.md](benchmarks.md)).
 
 ## Table of contents
 

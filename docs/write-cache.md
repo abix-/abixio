@@ -1,19 +1,18 @@
 # Write cache
 
-RAM write cache for the small-object buffered write path. In the current
-repo it is a local `DashMap` cache that acks from RAM and can later be
-flushed to disk through `VolumePool::flush_write_cache()`. The older
-peer-replication and automatic-destage sections below are still useful as
-design direction, but they are not fully implemented behavior today.
+**Authoritative for:** RAM write cache internals. DashMap data structure,
+flush strategy, safety model, peer replication protocol design, and
+implementation plan. If you need to know how the cache works internally,
+this is the only doc.
 
-For the canonical end-to-end PUT path, ack semantics, and timing sources,
-see [write-path.md](write-path.md).
+**Not covered here:** how a PUT reaches the cache (see [write-path.md](write-path.md)),
+optimization history (see [layer-optimization.md](layer-optimization.md)),
+benchmark results (see [benchmarks.md](benchmarks.md)).
 
-The design comes from our own latency measurements (see request trace
-below): the disk write itself is microseconds, but every write through
-the file tier still touches the filesystem. Acking from RAM with peer
-replication for durability removes the filesystem from the hot path
-entirely.
+The cache acks from RAM with zero disk I/O on the write hot path.
+Background flush destages to disk asynchronously. The current
+implementation is local-only (single node DashMap). Peer replication
+sections below are design direction, not implemented behavior.
 
 ## Why
 
@@ -113,42 +112,20 @@ Uses persistent HTTP connection between nodes (keep-alive). The peer
 inserts into its own DashMap and responds. No disk write on the peer.
 Pure RAM on both sides.
 
-## Performance
-
-End-to-end PUT and GET numbers for the RAM cache branch live in
-[write-path.md::Branch A](write-path.md#branch-a-ram-write-cache).
-Per-tier comparison vs the log store and the file tier lives in
-[write-path.md::Where the time goes](write-path.md#where-the-time-goes).
-Cross-server competitive numbers (AbixIO vs MinIO vs RustFS) live in
-[benchmarks.md::Comprehensive matrix](benchmarks.md#comprehensive-matrix).
-None of those tables are duplicated here.
-
-The two pieces of perf information that *are* unique to this doc, and
-therefore live here:
-
-### When the RAM cache wins
+## When the RAM cache wins
 
 1. **Concurrent requests**: `DashMap` is lock-free. The log store uses
-   `Mutex`. Under 100 concurrent connections, `DashMap` scales linearly
+   `Mutex`. Under concurrent connections, `DashMap` scales linearly
    while the log-store mutex serializes.
 
-2. **Peer replication** (future): the disk write is removed entirely.
-   The only storage cost is RAM insert (local) + RAM insert (peer over
-   LAN). Both sub-millisecond.
+2. **Peer replication** (future): removes disk from the write path
+   entirely. Storage cost is RAM insert (local) + RAM insert (peer).
 
 3. **Non-HTTP protocols** (future): a binary protocol could expose the
-   1-microsecond `DashMap.insert` storage latency directly, bypassing
-   the ~600 us SDK + auth + hyper floor that hides the storage tier
-   choice in the SDK matrix bench.
+   sub-microsecond `DashMap.insert` latency directly.
 
-### Peer replication latency model
-
-```
-4KB wire time:     32us (1 GbE) / 3us (10 GbE)
-LAN RTT:           50-100us (same switch)
-HTTP overhead:     ~50us (keep-alive internode connection)
-Total:             ~50-100us per replication
-```
+For end-to-end numbers, see [write-path.md](write-path.md) and
+[benchmarks.md](benchmarks.md).
 
 ## Data structure
 
@@ -237,36 +214,8 @@ MVP = phases 1-4 (local RAM, single node, proves speed).
 Full peer-replicated mode = phases 5-8 (peer replication, 2+ nodes,
 crash safe).
 
-## Relationship to other storage tiers
-
-```
-WRITE PATH (fastest to slowest):
-
-  Tier 0: RAM write cache         ~0.001ms  (DashMap insert)
-    |
-    v (background, ~100ms)
-  Tier 1: Log-structured store    ~0.002ms  (segment append, <=64KB only)
-       OR
-  Tier 1: Pre-opened temp pool    ~0.002ms  (write to pre-opened slot, all sizes)
-    |
-    v (rename worker drains)
-  Tier 2: File tier               ~0.4ms    (mkdir + file create)
-
-READ PATH (checked in order):
-
-  Tier 0: RAM write cache         ~0.001ms  (DashMap lookup)
-  Tier 1: Log store index         ~0.05ms   (HashMap + mmap slice)
-       OR
-  Tier 1: pending_renames table   ~0.001ms  (DashMap lookup) + ~0.1ms file read
-  Tier 2: File tier               ~0.7ms    (file open + read)
-```
-
-Each tier is a fallback for the one above. Writes flow down asynchronously.
-Reads check each tier in order, returning on the first hit.
-
-The log store and the temp pool are alternatives at tier 1, gated by
-`--write-tier`. See [write-pool.md](write-pool.md) for the pool design
-and the benchmark plan.
+For how the cache fits into the overall write and read paths, see
+[write-path.md](write-path.md).
 
 ## Accuracy Report
 

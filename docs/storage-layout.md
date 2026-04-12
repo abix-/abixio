@@ -1,7 +1,12 @@
 # Storage Layout
 
-How abixio stores identity, configuration, and data on disk. This is the
-single authoritative document for all on-disk metadata.
+**Authoritative for:** on-disk structure. Directory layout, metadata
+schemas (volume.json, meta.json), bucket config, shard placement,
+atomic write guarantees. If you need to know what's on disk and why,
+this is the only doc.
+
+**Not covered here:** how data gets written (see [write-path.md](write-path.md)),
+how writes were optimized (see [layer-optimization.md](layer-optimization.md)).
 
 AbixIO stores all identity and configuration on the disks themselves. A fresh
 binary pointed at formatted disks can reconstruct the full cluster without

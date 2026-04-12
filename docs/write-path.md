@@ -1,13 +1,18 @@
 # Write path
 
-Canonical reference for how a `PUT` moves through AbixIO from client
-request to its final resting place. Other docs should link here for the
-end-to-end flow instead of restating it.
+**Authoritative for:** how a PUT moves through AbixIO. End-to-end flow,
+routing decisions, all five storage branches (RAM cache, log store,
+write pool, file tier, remote backend), ack semantics, and current
+performance characteristics. If you need to know how a write works,
+this is the only doc.
 
-This page is intentionally implementation-first. It describes the code
-that exists now, not the older design intent. Timings are measured-only:
-if a step has no benchmark or trace in the repo, it is described but not
-given a numeric budget.
+**Not covered here:** on-disk format (see [storage-layout.md](storage-layout.md)),
+optimization history (see [layer-optimization.md](layer-optimization.md)),
+benchmark results (see [benchmarks.md](benchmarks.md)).
+
+This page describes the code that exists now. Timings are measured-only:
+if a step has no benchmark in the repo, it is described but not given a
+numeric budget.
 
 ## Table of contents
 

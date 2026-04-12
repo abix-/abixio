@@ -1,10 +1,17 @@
 # Log-structured storage
 
-Log-structured storage for small objects. Objects are written exactly
-once to an append-only log, never overwritten. GC reclaims dead space.
-The log IS the permanent storage. No flush, no second format.
+**Authoritative for:** log store internals. Segment format, needle
+format, in-memory index, on-disk layout, durability model, and GC
+design. If you need to know how the log store works internally,
+this is the only doc.
 
-Large objects (>64KB) keep the existing file-per-object layout.
+**Not covered here:** how a PUT reaches the log store (see [write-path.md](write-path.md)),
+optimization history (see [layer-optimization.md](layer-optimization.md)),
+benchmark results (see [benchmarks.md](benchmarks.md)).
+
+Objects are written exactly once to an append-only log, never overwritten.
+GC reclaims dead space. The log IS the permanent storage. No flush, no
+second format. Large objects (>64KB) use the file tier instead.
 
 ## Performance
 
