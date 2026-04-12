@@ -3,10 +3,58 @@
 What we test, why, and how. This is the spec. All benchmark code
 must satisfy these requirements.
 
+## Repo ownership
+
+Benchmarks live in two repos. The split is based on whether you need
+a real server binary.
+
+### abixio (in-process, no child server)
+
+Test file: `tests/layer_bench.rs`
+
+Directly calls Rust APIs. No server binary spawned. Tests layers
+where you can isolate a component without a full server.
+
+| Layer | Why here |
+|---|---|
+| L1 (disk I/O) | pure filesystem primitive |
+| L2 (hashing + RS) | pure compute, no storage |
+| L3 (VolumePool) | direct API call, no HTTP |
+| L4 (HTTP transport) | in-process hyper, no S3 protocol |
+| L5 (S3 protocol) | in-process s3s, no real storage |
+| L6 (S3 + real storage) | in-process s3s + real VolumePool |
+
+L3 and L6 include real storage, so they test all write path
+configurations (3 tiers x 2 cache states).
+
+### abixio-ui (child process, real server binary)
+
+Test file: `tests/bench.rs`
+
+Spawns real server processes (`abixio.exe`, `rustfs.exe`, `minio.exe`).
+Connects via real S3 clients over TCP/TLS.
+
+| Layer | Why here |
+|---|---|
+| L7 (full SDK client) | needs real server binary, real TCP, real TLS |
+| Competitive comparison | needs external server binaries (RustFS, MinIO) |
+
+L7 tests all write path configurations (3 tiers x 2 cache states).
+Competitive comparison tests all servers, clients, ops, and sizes.
+
+### Shared responsibility
+
+Write path x cache matrix testing happens in both repos:
+- L3 and L6 (abixio) test the storage layer in isolation per config
+- L7 (abixio-ui) tests the full end-to-end path per config
+
+Both repos must support the same CLI flags for filtering.
+
 ## Design principle
 
-One configurable harness, not dozens of separate tests. Every axis
-is selectable: run all benchmarks or narrow to exactly what you need.
+One configurable harness per repo, not dozens of separate tests.
+Every axis is selectable: run all benchmarks or narrow to exactly
+what you need.
 
 ## Configuration
 
@@ -27,22 +75,22 @@ Examples:
 
 ```bash
 # full suite
-k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_all
+k3sc cargo-lock test --release --test bench --ignored --nocapture bench_all
 
 # just 4KB PUT through the pool write path, no write cache
-k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_all \
+k3sc cargo-lock test --release --test bench --ignored --nocapture bench_all \
     --sizes 4KB --ops PUT --write-paths pool --write-cache off
 
 # just the competitive comparison at 10MB
-k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_all \
+k3sc cargo-lock test --release --test bench --ignored --nocapture bench_all \
     --sizes 10MB --layers L7
 
 # just the disk baseline
-k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_all \
+k3sc cargo-lock test --release --test bench --ignored --nocapture bench_all \
     --layers L1
 
 # write cache on vs off for all tiers at 4KB
-k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_all \
+k3sc cargo-lock test --release --test bench --ignored --nocapture bench_all \
     --sizes 4KB --write-cache both
 ```
 
@@ -216,7 +264,7 @@ the major variables constant.
 
 ## Requirement 6: Reproducibility
 
-- All benchmarks must report: avg, p50, p99, ops/sec, MB/s (where applicable)
+- All benchmarks must report: p50 (median), p95 (tail), p99 (worst case), ops/sec, MB/s (where applicable)
 - CLI process spawn overhead must be measured and reported (not subtracted)
 - Results must include git commit hash and timestamp
 - Results must be machine-readable (JSON output alongside human tables)
@@ -244,10 +292,10 @@ the major variables constant.
 
 ## What we do NOT test
 
-- Multi-disk EC scaling (2/3/4 disks) -- separate concern, not part of the core benchmark
-- Concurrent/parallel clients -- sequential only for now
-- Network latency -- localhost only
-- Linux -- Windows 10 only (document this limitation)
+- Multi-disk EC scaling (2/3/4 disks). Separate concern, not part of the core benchmark.
+- Concurrent/parallel clients. Sequential only for now.
+- Network latency. Localhost only.
+- Linux. Windows 10 only. Document this limitation.
 
 ## Running benchmarks
 
@@ -257,12 +305,12 @@ cd /path/to/abixio && k3sc cargo-lock build --release
 
 # full benchmark suite
 cd /path/to/abixio-ui
-k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_matrix
+k3sc cargo-lock test --release --test bench --ignored --nocapture bench_matrix
 
 # single server detailed
-k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_1_disk
+k3sc cargo-lock test --release --test bench --ignored --nocapture bench_1_disk
 
 # internal per-layer (runs in abixio repo, no external binaries)
 cd /path/to/abixio
-k3sc cargo-lock test --release --test layer_bench -- --ignored bench_perf --nocapture
+k3sc cargo-lock test --release --test layer_bench --ignored bench_perf --nocapture
 ```
