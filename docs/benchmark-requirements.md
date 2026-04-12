@@ -57,23 +57,19 @@ Examples:
 
 ```bash
 # full suite
-k3sc cargo-lock test --release --test bench --ignored --nocapture bench_all
+abixio-ui bench
 
 # just 4KB PUT through the pool write path, no write cache
-k3sc cargo-lock test --release --test bench --ignored --nocapture bench_all \
-    --sizes 4KB --ops PUT --write-paths pool --write-cache off
+abixio-ui bench --sizes 4KB --ops PUT --write-paths pool --write-cache off
 
 # just the competitive comparison at 10MB
-k3sc cargo-lock test --release --test bench --ignored --nocapture bench_all \
-    --sizes 10MB --layers L7
+abixio-ui bench --sizes 10MB --layers L7
 
 # just the disk baseline
-k3sc cargo-lock test --release --test bench --ignored --nocapture bench_all \
-    --layers L1
+abixio-ui bench --layers L1
 
 # write cache on vs off for all tiers at 4KB
-k3sc cargo-lock test --release --test bench --ignored --nocapture bench_all \
-    --sizes 4KB --write-cache both
+abixio-ui bench --sizes 4KB --write-cache both
 ```
 
 ## Sizes
@@ -282,17 +278,15 @@ the major variables constant.
 ## Running benchmarks
 
 ```bash
-# build AbixIO release binary first
-cd /path/to/abixio && k3sc cargo-lock build --release
+# build
+cd /path/to/abixio-ui && cargo build --release
 
-# full benchmark suite
-cd /path/to/abixio-ui
-k3sc cargo-lock test --release --test bench --ignored --nocapture bench_matrix
+# full suite
+abixio-ui bench
 
-# single server detailed
-k3sc cargo-lock test --release --test bench --ignored --nocapture bench_1_disk
+# just one layer
+abixio-ui bench --layers L3
 
-# internal per-layer (runs in abixio repo, no external binaries)
-cd /path/to/abixio
-k3sc cargo-lock test --release --test layer_bench --ignored bench_perf --nocapture
+# just competitive comparison
+abixio-ui bench --layers L7 --servers abixio,rustfs,minio
 ```
