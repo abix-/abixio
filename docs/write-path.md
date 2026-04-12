@@ -544,15 +544,17 @@ directly, same as the buffered path routes to them via `write_shard()`.
 The unified path should:
 
 - Have one encode pipeline that works for both small and large objects
-- Route shard writes to the best tier based on object size, not based
-  on whether the client declared content_length
-- Make log store and pool available through the `ShardWriter` trait so
-  the streaming encode path can use them
+- Route shard writes based on what tiers are enabled on the server,
+  not based on whether the client declared content_length
+- Make log store and pool implement `ShardWriter` so the streaming
+  encode path can use them. `open_shard_writer()` already decides
+  which writer to return; it just needs to return a log or pool
+  writer when those tiers are enabled
 - Never duplicate the EC, hashing, or placement logic between two
   code paths
 
-No unnecessary buffering. The data flows straight through. The only
-difference is which writer it flows into.
+No unnecessary buffering. The data flows straight through. The
+server's enabled tiers determine the writer, not the request shape.
 
 ## Where the time goes
 
