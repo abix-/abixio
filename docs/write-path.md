@@ -89,7 +89,7 @@ The main code anchors are:
 | Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
 |---     |---      |---             |---           |---     |
 | raw HTTP ingress floor (bare `hyper` / reqwest->hyper) | `94us` | `41.5 MB/s` | not measured at 64KB / 1MB / 10MB / 100MB; `bench_pool_l4_5_stack_breakdown` is hardcoded to 4KB at `abixio-ui/src/bench/:3509` | Phase 8.5 Stage A, raw at `bench-results/phase8.5-stack-breakdown-v5.txt` |
-| hyper transport ceiling (sustained, larger sizes) | n/a | n/a | `762 MB/s` at 10MB; layer L5 | `docs/layer-optimization.md` L5 |
+| hyper transport ceiling (sustained, larger sizes) | n/a | n/a | `762 MB/s` at 10MB; layer L1 | `docs/layer-optimization.md` L1 |
 
 `hyper` accepts the request, parses HTTP/1.1, and exposes the body as
 a stream. This is the lowest measured floor in the stack. Per-layer
@@ -188,9 +188,9 @@ requests. Those stay on the streaming encode path.
 | request-level config / versioning work | `~50us` | -- | constant per request | synthesized 4KB trace, originally in `write-cache.md::Request trace` |
 | RS encode + checksum work | `~30us` | -- | scales with shard size; see ceilings below | synthesized 4KB trace |
 | placement planning | `~10us` | -- | constant per request | synthesized 4KB trace |
-| blake3 hashing per shard | n/a | -- | `4303 MB/s` | `docs/layer-optimization.md` L1 |
-| MD5 hashing of full body | n/a | -- | `703 MB/s` | `docs/layer-optimization.md` L1 |
-| RS encode 3+1 | n/a | -- | `2762 MB/s` | `docs/layer-optimization.md` L2 |
+| blake3 hashing per shard | n/a | -- | `4303 MB/s` | `docs/layer-optimization.md` L4 |
+| MD5 hashing of full body | n/a | -- | `703 MB/s` | `docs/layer-optimization.md` L4 |
+| RS encode 3+1 | n/a | -- | `2762 MB/s` | `docs/layer-optimization.md` L4 |
 
 Once the full small object is buffered, `VolumePool`:
 
@@ -361,7 +361,7 @@ the Phase 8.7 row shows.
 
 Storage-layer-only pool numbers (no HTTP, no s3s) reach `43us` p50 at
 4KB and `2781.8 MB/s` at 100MB; see `docs/layer-optimization.md` Pool
-L3 for that view. The end-to-end rows above are the cost actually paid
+Pool L3 for that view. The end-to-end rows above are the cost actually paid
 by an external client.
 
 If a `LocalVolume` has the pre-opened temp-file pool enabled and a slot
@@ -421,13 +421,13 @@ dispatch overhead (~32us) and an extra warmup spread are added back.
 Storage-layer-only file-tier ceilings (no HTTP, no s3s) from
 `docs/layer-optimization.md`:
 
-- L4 storage pipeline: `439 MB/s` at 10MB, `489 MB/s` at 1GB
-- L4 skip-MD5 storage pipeline: `510 MB/s` at 1GB
-- L3 raw local write ceiling underneath the file tier: `1625 MB/s`
+- L3 storage pipeline: `439 MB/s` at 10MB, `489 MB/s` at 1GB
+- L3 skip-MD5 storage pipeline: `510 MB/s` at 1GB
+- L5 raw local write ceiling underneath the file tier: `1625 MB/s`
   at 10MB, `1056 MB/s` at 1GB
 
 The Phase 8.7 file-tier 100MB PUT (`670.0 MB/s`) sits comfortably
-above the L4 10MB pipeline ceiling because L4 measures the storage
+above the L3 10MB pipeline ceiling because L3 measures the storage
 pipeline at smaller sizes than 100MB; the comparison is informative
 about the per-stage gap, not directly comparable cell to cell.
 

@@ -14,12 +14,12 @@ benchmark results (see [benchmarks.md](benchmarks.md)).
 
 - [Layer architecture](#layer-architecture)
 - [Benchmark environment](#benchmark-environment)
-- [L1: Hashing](#l1-hashing)
-- [L2: RS encode](#l2-rs-encode)
-- [L3: Disk I/O](#l3-disk-io)
-- [L4: Storage pipeline](#l4-storage-pipeline-volumepool)
-- [L5: HTTP transport](#l5-http-transport)
-- [L6: S3 protocol](#l6-s3-protocol-s3s--full-pipeline)
+- [L1: HTTP transport](#l1-http-transport)
+- [L2: S3 protocol](#l2-s3-protocol-s3s--full-pipeline)
+- [L3: Storage pipeline](#l3-storage-pipeline-volumepool)
+- [L4: Hashing + RS encode](#l4-hashing--rs-encode)
+- [L5: Disk I/O](#l5-disk-io)
+- [L6: S3 + real storage](#l6-s3--real-storage)
 - [L7: Full client path](#l7-full-client-path-aws-sdk-s3--auth)
 - [Layer-to-layer gaps](#layer-to-layer-gaps)
 - [Optimization history](#optimization-history)
@@ -33,24 +33,22 @@ benchmark results (see [benchmarks.md](benchmarks.md)).
 ## Layer architecture
 
 ```
-PUT path (top to bottom):
+PUT path (outside in, following the request):
 
   Client request
        |
+  L1   HTTP transport (hyper)      accept TCP, read/write body
+  L2   S3 protocol (s3s)           parse HTTP, SigV4 verify, dispatch to AbixioS3
+  L3   Storage pipeline            VolumePool: placement, RS encode, write shards
+  L4   Hashing + RS encode         blake3, MD5, reed-solomon-erasure galois_8
+  L5   Disk I/O                    tokio::fs::write / tokio::fs::read
+  L6   S3 + real storage           s3s + VolumePool combined (integration)
   L7   Full client (aws-sdk-s3)    SigV4 signing, SDK HTTP, UNSIGNED-PAYLOAD
-  L6   S3 protocol (s3s)           parse HTTP, SigV4 verify, dispatch to AbixioS3
-  L5   HTTP transport (hyper)      accept TCP, read/write body
-  L4   Storage pipeline            VolumePool: placement, RS encode, write shards
-  L3   Disk I/O                    tokio::fs::write / tokio::fs::read
-  L2   RS encode                   reed-solomon-erasure galois_8, SIMD
-  L1   Hashing                     blake3 (shard integrity) + MD5 (S3 ETag)
-
-GET path reverses: L7 -> L6 -> L5 -> L4 -> L3 -> L2 (decode) -> L1 (verify)
 ```
 
-L1-L3 are primitives measured in isolation. L4 combines them into the storage
-pipeline. L5 measures raw HTTP. L6 adds the S3 protocol layer on top. L7
-adds a real S3 client with auth.
+L1-L2 are protocol layers. L3 is the storage pipeline. L4-L5 are
+primitives measured in isolation. L6 combines L1-L5 into an integrated
+in-process test. L7 adds a real S3 client with auth.
 
 ## Benchmark environment
 
@@ -61,7 +59,9 @@ adds a real S3 client with auth.
 
 ---
 
-## L1: Hashing
+## L4: Hashing + RS encode
+
+### Hashing
 
 ### Numbers (10MB)
 
@@ -83,7 +83,7 @@ MD5 is required by S3 (ETag = MD5 of body) when the client sends
 ### MD5 skip optimization (done, 2026-04-09)
 
 **Before**: MD5 computed inline on every PUT regardless of client headers.
-703 MB/s throughput = ~30% of L4 PUT time for 1GB objects.
+703 MB/s throughput = ~30% of L3 PUT time for 1GB objects.
 
 **After**: when `input.content_md5` is `None` (the common case; aws-sdk-s3
 with `disable_payload_signing()`, mc, rclone all skip it), set
@@ -116,9 +116,7 @@ Investigated 2026-04-09 for cases where MD5 IS required:
 - **Future**: write x86_64 MD5 compress using `global_asm!` (works on all
   targets including MSVC). On Linux, enable `md-5 = { features = ["asm"] }`.
 
----
-
-## L2: RS encode
+### RS encode
 
 ### Numbers (10MB)
 
@@ -129,9 +127,9 @@ Investigated 2026-04-09 for cases where MD5 IS required:
 ### Analysis
 
 reed-solomon-erasure with `simd-accel` feature. 2.8 GB/s is within expected
-range for galois_8 on x86. 6x faster than the L4 storage pipeline (439 MB/s).
+range for galois_8 on x86. 6x faster than the L3 storage pipeline (439 MB/s).
 
-Could use ISA-L bindings for ~2x more, but pointless when L4 is the bottleneck.
+Could use ISA-L bindings for ~2x more, but pointless when L3 is the bottleneck.
 
 ### Decision
 
@@ -139,7 +137,7 @@ Could use ISA-L bindings for ~2x more, but pointless when L4 is the bottleneck.
 
 ---
 
-## L3: Disk I/O
+## L5: Disk I/O
 
 ### Numbers
 
@@ -150,7 +148,7 @@ Could use ISA-L bindings for ~2x more, but pointless when L4 is the bottleneck.
 
 ### Analysis
 
-These are the ceiling numbers for L4. Page-cache writes avoid disk sync. Real
+These are the ceiling numbers for L3. Page-cache writes avoid disk sync. Real
 durability requires fsync, which would cut throughput to physical disk speed
 (SATA SSD ~500 MB/s, NVMe ~2-3 GB/s).
 
@@ -163,7 +161,7 @@ Future: configurable fsync for durability, io_uring on Linux for zero-copy I/O.
 
 ---
 
-## L4: Storage pipeline (VolumePool)
+## L3: Storage pipeline (VolumePool)
 
 ### Numbers (after optimization)
 
@@ -187,7 +185,7 @@ for (i, shard_data) in shards.iter().enumerate() {
 }
 ```
 
-L4 PUT at 510 MB/s (with skip_md5) vs L3 disk write at 1625 MB/s = 3.2x
+L3 PUT at 510 MB/s (with skip_md5) vs L5 disk write at 1625 MB/s = 3.2x
 overhead from inline hashing (blake3 + xxhash64), RS encode, metadata
 writes, and the sequential shard write loop. Without skip_md5 (MD5
 required): 439 MB/s, 3.7x overhead.
@@ -239,7 +237,7 @@ Key implementation details:
 - The last block may be smaller than 1MB. `split_data` padding is handled
   by truncating the reassembled block to the actual remaining bytes.
 
-**Result**: +9-16% throughput at L4, but the bigger win is at L6 (see below).
+**Result**: +9-16% throughput at L3, but the bigger win is at L6 (see below).
 
 Files changed:
 - `src/storage/erasure_decode.rs`: `read_and_decode_stream()`
@@ -266,7 +264,7 @@ Both paths use `Backend::mmap_shard()` which returns `MmapOrVec`. Local
 volumes return a real mmap, remote volumes fall back to buffered read.
 
 **Result**:
-- L4 GET (1 disk, mmap): 19,098 MB/s at 10MB (page cache), effectively instant
+- L3 GET (1 disk, mmap): 19,098 MB/s at 10MB (page cache), effectively instant
 - L6 GET (1 disk): 809 MB/s at 10MB, **1048 MB/s at 1GB** (was 833)
 - curl GET (no auth): **1220 MB/s at 1GB**, faster than MinIO through mc
 - EC GET (4 disk): **1048 MB/s (10MB), 1236 MB/s (1GB)**, zero-alloc fast
@@ -281,7 +279,7 @@ Files changed:
 
 ---
 
-## L5: HTTP transport
+## L1: HTTP transport
 
 ### Numbers (10MB)
 
@@ -297,11 +295,11 @@ which adds a copy; the real S3 path streams the body without copying.
 
 ### Decision
 
-**No change.** HTTP transport is not limiting (762 MB/s > L6's 272 MB/s).
+**No change.** HTTP transport is not limiting (762 MB/s > L6's 272 MB/s). L1 is the outermost layer a PUT request hits.
 
 ---
 
-## L6: S3 protocol (s3s + full pipeline)
+## L6: S3 + real storage (s3s + full pipeline)
 
 ### Numbers (after optimization)
 
@@ -326,7 +324,7 @@ ensure fresh data.
 
 **Result**: L6 PUT improved from 214 MB/s to 272 MB/s (+27%).
 
-Remaining PUT overhead (272 vs L4's 439 = 38% gap) is s3s request parsing,
+Remaining PUT overhead (272 vs L3's 439 = 38% gap) is s3s request parsing,
 XML serialization, and service dispatch. This is inherent to the protocol
 layer and not easily reducible without replacing s3s.
 
@@ -389,6 +387,8 @@ binary path to use release builds, matrix results match L7.
 Auth overhead is negligible (L6 vs L6A: 344 vs 337 MB/s, within noise).
 aws-sdk-s3 client overhead is negligible (L6 vs L7: 344 vs 380 MB/s pre-skip-md5).
 
+Note: L6A is an auth variant of L6, not a separate layer.
+
 ---
 
 ## Layer-to-layer gaps
@@ -397,8 +397,8 @@ aws-sdk-s3 client overhead is negligible (L6 vs L7: 344 vs 380 MB/s pre-skip-md5
 
 | Layer | 1GB GET MB/s | What it measures |
 |-------|-------------|-----------------|
-| L4 get_stream | **instant** (mmap) | Storage: zero-copy mmap, 4MB Bytes::slice |
-| L5 http_get | **724** | Raw hyper HTTP body (no S3, no storage) |
+| L3 get_stream | **instant** (mmap) | Storage: zero-copy mmap, 4MB Bytes::slice |
+| L1 http_get | **724** | Raw hyper HTTP body (no S3, no storage) |
 | L6 s3s_get | **714** | s3s + storage, no auth, reqwest |
 | L7 sdk_get | **920** | s3s + auth + aws-sdk-s3 (in-process) |
 | Matrix | **604** | Separate abixio.exe process |
@@ -406,11 +406,11 @@ aws-sdk-s3 client overhead is negligible (L6 vs L7: 344 vs 380 MB/s pre-skip-md5
 
 Key findings:
 
-1. **s3s adds near-zero overhead to GET** (L5 724 vs L6 714, within noise).
+1. **s3s adds near-zero overhead to GET** (L1 724 vs L6 714, within noise).
    The s3s response path is efficient. Prior attribution of GET bottleneck to
    s3s was incorrect.
 
-2. **L5 (raw hyper) is the HTTP ceiling at 724 MB/s** for writing 1GB over
+2. **L1 (raw hyper) is the HTTP ceiling at 724 MB/s** for writing 1GB over
    127.0.0.1 TCP on Windows. This is the hyper/Windows loopback limit.
 
 3. **The real GET gap is L7 (920) -> Matrix (604) = -34%**. This is the cost
@@ -426,7 +426,7 @@ Key findings:
 
 | Layer | 1GB PUT MB/s | What it measures |
 |-------|-------------|-----------------|
-| L4 put_stream | **510** (skip-md5) | Storage: encode + write shards |
+| L3 put_stream | **510** (skip-md5) | Storage: encode + write shards |
 | L6 s3s_put | **344** (with MD5) | s3s + storage, no auth |
 | L7 sdk_put | **695** (skip-md5) | s3s + auth + aws-sdk-s3 (in-process) |
 | Matrix | **498** (skip-md5, TCP_NODELAY) | Separate abixio.exe process |
@@ -440,7 +440,7 @@ Key findings:
 | L7 GET -> Matrix GET | 920 vs 686 MB/s | 1.3x | process boundary (improved from 1.5x with TCP_NODELAY) |
 | Matrix GET: AbixIO vs MinIO | 686 vs 757 MB/s | 0.91x | 9% gap, down from 24% before TCP_NODELAY |
 | 10MB GET: AbixIO vs MinIO | 324 vs 748 MB/s | 0.43x | **2.3x gap** from per-response overhead in hyper vs Go |
-| L4 PUT vs L3 write | 510 vs 1625 MB/s | 3.2x | blake3 + xxhash + RS + metadata |
+| L3 PUT vs L5 write | 510 vs 1625 MB/s | 3.2x | blake3 + xxhash + RS + metadata |
 | EC GET vs 1+0 GET | 1236 vs page cache | n/a | RS decode (inherent cost of EC) |
 
 ### TCP_NODELAY analysis (2026-04-09)
@@ -454,10 +454,10 @@ AbixIO did not. Nagle's algorithm was batching small writes, adding latency.
 the 1GB GET gap from 24% to 9% vs MinIO.
 
 **Remaining 10MB GET gap (2.3x vs MinIO)**: confirmed as hyper's HTTP
-write ceiling, not AbixIO code. Evidence: L5 raw hyper GET (no S3, no
+write ceiling, not AbixIO code. Evidence: L1 raw hyper GET (no S3, no
 storage, just `Full::new(bytes)`) = **510 MB/s** with TCP_NODELAY. MinIO
 achieves **748 MB/s** through a full S3 stack in a separate process.
-### L5X: hyper sub-layer experiments (2026-04-09)
+### L1X: hyper sub-layer experiments (2026-04-09)
 
 Tested hyper config variants to find where time goes in HTTP GET responses.
 All measurements in-process, 10 iterations, TCP_NODELAY on.
@@ -465,7 +465,7 @@ All measurements in-process, 10 iterations, TCP_NODELAY on.
 | Variant | 10MB GET MB/s | 1GB GET MB/s | Config |
 |---|---|---|---|
 | raw_tcp | 327 | 395 | Raw tokio write_all, no HTTP framing |
-| L5 (baseline) | 510 | 724 | hyper default, Full::new(bytes) |
+| L1 (baseline) | 510 | 724 | hyper default, Full::new(bytes) |
 | writev | 429 | 605 | hyper writev(true) |
 | bigbuf | 364 | **800** | hyper max_buf_size(4MB) |
 | stream | 462 | **849** | hyper StreamBody (4MB frame chunks) |
@@ -479,7 +479,7 @@ Key findings:
    hyper is NOT fundamentally slower; its default config just isn't
    optimized for large bodies.
 
-2. **`all_opts` hits 726 MB/s at 10MB**, within 6% of MinIO's 685.
+2. **`all_opts` hits 726 MB/s at 10MB**, within 6% of MinIO's 685 at L1.
    The combination of `writev(true)` + `max_buf_size(4MB)` + chunked
    StreamBody nearly closes the gap at L5 level.
 
@@ -491,7 +491,7 @@ Key findings:
 
 Applied: `writev(true)` + `max_buf_size(4MB)` in `src/main.rs`.
 The remaining matrix gap (674 vs 796 for 1GB) is the s3s/ChunkedBytes
-overhead between L5X and the full stack.
+overhead between L1X and the full stack.
 
 ---
 
@@ -499,19 +499,19 @@ overhead between L5X and the full stack.
 
 | # | Change | Layer | Result | Status |
 |---|--------|-------|--------|--------|
-| 1 | Streaming GET | L4+L6 | **GET +105%** (10MB), **+84%** (1GB) | done |
-| 2 | Parallel shard writes | L4 | **Regressed** -21%. Sequential faster on same disk | reverted |
+| 1 | Streaming GET | L3+L6 | **GET +105%** (10MB), **+84%** (1GB) | done |
+| 2 | Parallel shard writes | L3 | **Regressed** -21%. Sequential faster on same disk | reverted |
 | 3 | Versioning config cache | L6 | **PUT +27%** (10MB) | done |
-| 4 | mmap GET (1+0 fast path) | L4+L6 | **L6 GET 1GB: 833->1048 MB/s (+26%)**. curl: 1220 MB/s | done |
-| 5 | mmap GET (EC, 4MB blocks) | L4 | 4-disk GET 675-803 MB/s (regressed from mmap->Vec copy) | superseded by #6 |
-| 6 | Zero-alloc EC GET fast path | L4 | **EC GET +35%** (919->1236 MB/s at 1GB). Slices from mmap, no Vec alloc | done |
+| 4 | mmap GET (1+0 fast path) | L3+L6 | **L6 GET 1GB: 833->1048 MB/s (+26%)**. curl: 1220 MB/s | done |
+| 5 | mmap GET (EC, 4MB blocks) | L3 | 4-disk GET 675-803 MB/s (regressed from mmap->Vec copy) | superseded by #6 |
+| 6 | Zero-alloc EC GET fast path | L3 | **EC GET +35%** (919->1236 MB/s at 1GB). Slices from mmap, no Vec alloc | done |
 | 7 | Debug binary fix | n/a | **Matrix PUT 52->320 MB/s** (was benchmarking debug build) | done |
-| 8 | Pipeline experiments | L4 | Double-buffer -96%, channel -96%, 4MB chunks -11%. All worse | reverted |
-| 9 | Skip MD5 (xxhash64 ETag) | L1+L4+L7 | **L7 PUT +83%** (380->695 MB/s). Matrix PUT +38% (320->441). Fastest PUT at all sizes | done |
-| 10 | Chunked mmap GET (4MB slices) | L4+L7 | **Matrix GET +25%** (484->604 MB/s). Zero-copy Bytes::slice | done |
-| 11 | TCP_NODELAY on accept | L5+ | **Matrix PUT +10%** (453->498), **GET +14%** (604->686). Go sets this by default | done |
+| 8 | Pipeline experiments | L3 | Double-buffer -96%, channel -96%, 4MB chunks -11%. All worse | reverted |
+| 9 | Skip MD5 (xxhash64 ETag) | L4+L3+L7 | **L7 PUT +83%** (380->695 MB/s). Matrix PUT +38% (320->441). Fastest PUT at all sizes | done |
+| 10 | Chunked mmap GET (4MB slices) | L3+L7 | **Matrix GET +25%** (484->604 MB/s). Zero-copy Bytes::slice | done |
+| 11 | TCP_NODELAY on accept | L1+ | **Matrix PUT +10%** (453->498), **GET +14%** (604->686). Go sets this by default | done |
 | 12 | ChunkedBytes GET (hybrid) | L6+L7 | **10MB GET +36%** (324->440 MB/s). Collect <=64MB, stream >64MB. Eliminates SyncStream+StreamWrapper chain | done |
-| 13 | hyper writev + max_buf_size | L5+ | **1GB GET +15%** (584->674). L5X shows hyper can match MinIO with correct config | done |
+| 13 | hyper writev + max_buf_size | L1+ | **1GB GET +15%** (584->674). L1X shows hyper can match MinIO with correct config | done |
 
 ### Before and after (L7, full client path, what users see)
 
@@ -550,7 +550,7 @@ GET 1GB            452 MB/s        1048 MB/s       +132%   (mmap fast path)
 GET 1GB (curl)     n/a             1220 MB/s       n/a     (no mc overhead)
 ```
 
-### Before and after (L4, storage pipeline)
+### Before and after (L3, storage pipeline)
 
 ```
 Operation          Before          After           Change

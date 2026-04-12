@@ -17,11 +17,11 @@ competitive comparison.
 
 | Layer | How it runs |
 |---|---|
-| L1 (disk I/O) | in-process, direct tokio::fs calls |
-| L2 (hashing + RS) | in-process, direct abixio API calls |
+| L1 (HTTP transport) | in-process hyper server |
+| L2 (S3 protocol) | in-process s3s server |
 | L3 (VolumePool) | in-process, direct VolumePool API calls |
-| L4 (HTTP transport) | in-process hyper server |
-| L5 (S3 protocol) | in-process s3s server |
+| L4 (hashing + RS) | in-process, direct abixio API calls |
+| L5 (disk I/O) | in-process, direct tokio::fs calls |
 | L6 (S3 + real storage) | in-process s3s + real VolumePool |
 | L7 (full SDK client) | child process, real TCP/TLS |
 | Competitive comparison | child processes (AbixIO, RustFS, MinIO) |
@@ -38,13 +38,13 @@ else calls abixio library code directly.
 src/bench/
     mod.rs              -- run(), CLI arg routing
     stats.rs            -- BenchResult, Stats, print/parse, JSON output, baseline comparison
-    l1_disk.rs          -- raw disk I/O (write, write+fsync, read)
-    l2_compute.rs       -- hashing (blake3, md5, sha256) + reed-solomon encode
+    l1_http.rs          -- hyper transport floor (PUT/GET, no S3)
+    l2_s3proto.rs       -- s3s protocol overhead (NullBackend, no real storage)
     l3_storage.rs       -- VolumePool put/get/put_stream/get_stream, 1+4 disks
     l3_pool_internals.rs -- pool write path internals (slot primitives, write strategies,
                            JSON serializers, rename worker, integrated write_shard, breakdowns)
-    l4_http.rs          -- hyper transport floor (PUT/GET, no S3)
-    l5_s3proto.rs       -- s3s protocol overhead (NullBackend, no real storage)
+    l4_compute.rs       -- hashing (blake3, md5, sha256) + reed-solomon encode
+    l5_disk.rs          -- raw disk I/O (write, write+fsync, read)
     l6_s3storage.rs     -- s3s + real VolumePool (write path x cache matrix)
     l6_stack_breakdown.rs -- 5-stage latency attribution (hyper -> s3s -> file -> pool)
     l7_e2e.rs           -- full SDK client, child servers, competitive comparison
@@ -57,12 +57,12 @@ src/bench/
 
 | Layer | File | What it measures | Write path varies? |
 |---|---|---|---|
-| L1 | l1_disk.rs | tokio::fs write/read, fsync | no |
-| L2 | l2_compute.rs | blake3, md5, sha256, reed-solomon encode | no |
+| L1 | l1_http.rs | hyper PUT/GET, no S3 | no |
+| L2 | l2_s3proto.rs | s3s SigV4+XML, NullBackend | no |
 | L3 | l3_storage.rs | VolumePool put/get, streaming, 1+4 disks | yes (file/log/pool x cache on/off) |
 | L3 pool | l3_pool_internals.rs | slot acquire/release, write strategies, JSON serializers, rename worker drain, integrated write_shard, per-step breakdowns | pool only |
-| L4 | l4_http.rs | hyper PUT/GET, no S3 | no |
-| L5 | l5_s3proto.rs | s3s SigV4+XML, NullBackend | no |
+| L4 | l4_compute.rs | blake3, md5, sha256, reed-solomon encode | no |
+| L5 | l5_disk.rs | tokio::fs write/read, fsync | no |
 | L6 | l6_s3storage.rs | s3s + real VolumePool | yes (file/log/pool x cache on/off) |
 | L6 stack | l6_stack_breakdown.rs | 5-stage attribution at 4KB (A through E variants) | file + pool |
 | L7 | l7_e2e.rs | full SDK/aws-cli/rclone, AbixIO/RustFS/MinIO, all ops | yes (file/log/pool x cache on/off) |
@@ -103,7 +103,7 @@ abixio-ui bench --sizes 4KB --ops PUT --write-paths pool --write-cache off
 abixio-ui bench --sizes 10MB --layers L7
 
 # just the disk baseline
-abixio-ui bench --layers L1
+abixio-ui bench --layers L5
 
 # write cache on vs off for all tiers at 4KB
 abixio-ui bench --sizes 4KB --write-cache both
@@ -130,7 +130,7 @@ Measure the filesystem floor. Nothing in the stack can exceed this.
 - `tokio::fs::read`
 - At every size
 
-This is Layer 1 (L1). It answers: "how fast is the disk?"
+This is Layer 5 (L5). It answers: "how fast is the disk?"
 
 ## Requirement 2: Per-layer performance through the stack
 
@@ -138,11 +138,11 @@ Measure each layer independently so we can attribute latency.
 
 | Layer | What it measures | Includes | Write path varies? |
 |---|---|---|---|
-| L1 | raw disk I/O | tokio::fs write/read, fsync | no (pure filesystem) |
-| L2 | hashing + erasure coding | blake3, md5, reed-solomon encode | no (pure compute) |
+| L1 | HTTP transport | hyper round-trip, no S3 protocol | no (no storage) |
+| L2 | S3 protocol | s3s SigV4 + XML parsing, no real storage | no (no storage) |
 | L3 | storage pipeline | VolumePool put/get, no HTTP | yes (file/log/pool x cache on/off) |
-| L4 | HTTP transport | hyper round-trip, no S3 protocol | no (no storage) |
-| L5 | S3 protocol | s3s SigV4 + XML parsing, no real storage | no (no storage) |
+| L4 | hashing + erasure coding | blake3, md5, reed-solomon encode | no (pure compute) |
+| L5 | raw disk I/O | tokio::fs write/read, fsync | no (pure filesystem) |
 | L6 | S3 protocol + real storage | s3s + VolumePool, no SDK | yes (file/log/pool x cache on/off) |
 | L7 | full SDK client | aws-sdk-s3 end-to-end | yes (file/log/pool x cache on/off) |
 
