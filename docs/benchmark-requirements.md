@@ -52,6 +52,7 @@ Comma-separated values to select multiple. Single value to narrow.
 | `--servers` | `abixio,rustfs,minio` | all |
 | `--clients` | `sdk,aws-cli,rclone` | all |
 | `--ops` | `PUT,GET,HEAD,LIST,DELETE` | all |
+| `--iters` | number | auto-scaled by size |
 
 Examples:
 
