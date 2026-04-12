@@ -10,16 +10,18 @@ is selectable: run all benchmarks or narrow to exactly what you need.
 
 ## Configuration
 
-All axes are controlled by env vars. Default: run everything.
+All axes controlled by CLI flags. Default: run everything.
+Comma-separated values to select multiple. Single value to narrow.
 
-| Env var | Values | Default |
+| Flag | Values | Default |
 |---|---|---|
-| `BENCH_SIZES` | `4KB,64KB,10MB,100MB,1GB` | all |
-| `BENCH_LAYERS` | `L1,L2,L3,L4,L5,L6,L7` | all |
-| `BENCH_WRITE_PATHS` | `file,log,pool,ram` | all |
-| `BENCH_SERVERS` | `abixio,rustfs,minio` | all |
-| `BENCH_CLIENTS` | `sdk,aws-cli,rclone` | all |
-| `BENCH_OPS` | `PUT,GET,HEAD,LIST,DELETE` | all |
+| `--sizes` | `4KB,64KB,10MB,100MB,1GB` | all |
+| `--layers` | `L1,L2,L3,L4,L5,L6,L7` | all |
+| `--write-paths` | `file,log,pool` | all |
+| `--write-cache` | `on,off,both` | both |
+| `--servers` | `abixio,rustfs,minio` | all |
+| `--clients` | `sdk,aws-cli,rclone` | all |
+| `--ops` | `PUT,GET,HEAD,LIST,DELETE` | all |
 
 Examples:
 
@@ -27,14 +29,21 @@ Examples:
 # full suite
 k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_all
 
-# just 4KB PUT through the pool write path
-BENCH_SIZES=4KB BENCH_OPS=PUT BENCH_WRITE_PATHS=pool bench_all
+# just 4KB PUT through the pool write path, no write cache
+k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_all \
+    --sizes 4KB --ops PUT --write-paths pool --write-cache off
 
 # just the competitive comparison at 10MB
-BENCH_SIZES=10MB BENCH_LAYERS=L7 bench_all
+k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_all \
+    --sizes 10MB --layers L7
 
 # just the disk baseline
-BENCH_LAYERS=L1 bench_all
+k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_all \
+    --layers L1
+
+# write cache on vs off for all tiers at 4KB
+k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_all \
+    --sizes 4KB --write-cache both
 ```
 
 ## Sizes
