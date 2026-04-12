@@ -246,14 +246,23 @@ requests. Those stay on the streaming encode path.
 
 ### 5. EC resolution, hashing, and placement
 
-| Metric | 4KB p50 | 4KB throughput | per-byte ceiling at larger sizes | Source |
-|---     |---      |---             |---                                |---     |
-| request-level config / versioning work | `~50us` | -- | constant per request | synthesized 4KB trace, originally in `write-cache.md::Request trace` |
-| RS encode + checksum work | `~30us` | -- | scales with shard size; see ceilings below | synthesized 4KB trace |
-| placement planning | `~10us` | -- | constant per request | synthesized 4KB trace |
-| blake3 hashing per shard | n/a | -- | `4303 MB/s` | `docs/layer-optimization.md` L4 |
-| MD5 hashing of full body | n/a | -- | `703 MB/s` | `docs/layer-optimization.md` L4 |
-| RS encode 3+1 | n/a | -- | `2762 MB/s` | `docs/layer-optimization.md` L4 |
+Isolated L4 compute. Direct function calls on in-memory buffers,
+no I/O, no storage pipeline, no HTTP. These are the per-byte CPU
+ceilings for each operation.
+
+Source: `abixio-ui bench --layers L4`, `bench-results/l4-compute.json`
+
+| Op | 4KB p50 | 64KB p50 | 10MB p50 | 100MB p50 | 1GB p50 | throughput |
+|---|---|---|---|---|---|---|
+| blake3 | `2us` | `14us` | `2.2ms` | `23.3ms` | `239.6ms` | `4283 MB/s` |
+| md5 | `6us` | `89us` | `14.2ms` | `141.8ms` | `1.45s` | `702 MB/s` |
+| sha256 | `15us` | `224us` | `35.5ms` | `359.6ms` | `3.69s` | `277 MB/s` |
+| rs_encode 3+1 | `1us` | `20us` | `3.6ms` | `35.7ms` | `366.4ms` | `2781 MB/s` |
+
+Throughput column is from the 1GB run. blake3 and RS encode are fast
+enough to be invisible in the storage pipeline. MD5 at 702 MB/s is
+the bottleneck when Content-MD5 is required (skipped by default via
+xxhash64 ETag).
 
 Once the full small object is buffered, `VolumePool`:
 
@@ -502,6 +511,45 @@ reference.
 | write pool | temp files are written and pending rename is registered | no |
 | file tier | final object files are written in their destination directory | yes, modulo OS page-cache durability model |
 | remote backend | target node completed its local shard write path | depends on the target branch |
+
+## Design gap: split write paths
+
+AbixIO currently has two separate PUT code paths:
+
+1. **Buffered path** (`volume_pool.rs:238-376`): runs when
+   `content_length` is known and <=64KB. Collects the entire body
+   into a `Vec<u8>`, RS encodes all at once, then calls `write_shard()`
+   per disk. This path can use the log store, pool, and RAM cache.
+
+2. **Streaming path** (`erasure_encode.rs:75-279`): runs for large
+   objects, unknown content length, or versioned objects. Reads body
+   in 1MB chunks, RS encodes each block, writes via
+   `open_shard_writer()` + `write_chunk()` + `finalize()`. This path
+   always uses the file tier. It cannot use log store, pool, or RAM
+   cache.
+
+This is a problem. A 32KB object sent without `Content-Length` hits
+the streaming path and bypasses all three optimizations. The log
+store, pool, and RAM cache only help objects that happen to arrive
+with a declared small content length. The optimization should apply
+based on what the object IS, not how it arrived.
+
+### Fix: unified write path
+
+Merge the two paths into one. The unified path should:
+
+- Accept both streaming and buffered input
+- Buffer internally when total size is small (<=64KB), regardless of
+  whether content_length was declared
+- Once the object is complete and small: route through log store,
+  pool, or RAM cache, same as today's buffered path
+- Once the object exceeds the threshold: switch to streaming encode,
+  same as today's streaming path
+- Never duplicate the EC, hashing, or placement logic between two
+  code paths
+
+This means one code path, one set of optimizations, consistent
+behavior regardless of how the client sends the request.
 
 ## Where the time goes
 
