@@ -16,7 +16,7 @@ use super::{Backend, BackendInfo, MmapOrVec, ShardWriter, StorageError};
 pub struct LocalVolume {
     root: PathBuf,
     volume_id: String,
-    log_store: Option<std::sync::Mutex<super::log_store::LogStore>>,
+    log_store: Option<Arc<std::sync::Mutex<super::log_store::LogStore>>>,
     /// Pre-opened temp file pool for the fast write path. None until
     /// `enable_write_pool` is called. See `docs/write-pool.md`.
     write_pool: Option<Arc<WriteSlotPool>>,
@@ -60,7 +60,7 @@ impl LocalVolume {
         let log_dir = root.join(".abixio.sys").join("log");
         let log_store = if log_dir.is_dir() {
             match super::log_store::LogStore::open(&log_dir, super::segment::DEFAULT_SEGMENT_SIZE) {
-                Ok(ls) => Some(std::sync::Mutex::new(ls)),
+                Ok(ls) => Some(Arc::new(std::sync::Mutex::new(ls))),
                 Err(e) => {
                     tracing::warn!("log store init failed: {}", e);
                     None
@@ -93,7 +93,7 @@ impl LocalVolume {
         let log_dir = self.root.join(".abixio.sys").join("log");
         std::fs::create_dir_all(&log_dir)?;
         let ls = super::log_store::LogStore::open(&log_dir, super::segment::DEFAULT_SEGMENT_SIZE)?;
-        self.log_store = Some(std::sync::Mutex::new(ls));
+        self.log_store = Some(Arc::new(std::sync::Mutex::new(ls)));
         Ok(())
     }
 
@@ -376,6 +376,169 @@ impl LocalVolume {
     }
 }
 
+/// Streaming shard writer for the pre-opened temp file pool. Writes
+/// chunks to the slot's data file, then on finalize writes meta and
+/// queues the rename request. Same optimization as the buffered pool
+/// path in write_shard(), but accessible from the streaming encode path.
+pub struct PoolShardWriter {
+    slot: Option<WriteSlot>,
+    root: PathBuf,
+    bucket: String,
+    key: String,
+    rename_tx: Arc<RenameDispatch>,
+    pending_renames: Option<PendingRenames>,
+    bytes_written: usize,
+}
+
+impl PoolShardWriter {
+    pub fn new(
+        slot: WriteSlot,
+        root: PathBuf,
+        bucket: &str,
+        key: &str,
+        rename_tx: Arc<RenameDispatch>,
+        pending_renames: Option<PendingRenames>,
+    ) -> Self {
+        Self {
+            slot: Some(slot),
+            root,
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            rename_tx,
+            pending_renames,
+            bytes_written: 0,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ShardWriter for PoolShardWriter {
+    async fn write_chunk(&mut self, data: &[u8]) -> Result<(), StorageError> {
+        if let Some(ref mut slot) = self.slot {
+            slot.data_file.write_all(data).await?;
+            self.bytes_written += data.len();
+        }
+        Ok(())
+    }
+
+    async fn finalize(mut self: Box<Self>, meta: &ObjectMeta) -> Result<(), StorageError> {
+        let mut slot = self.slot.take().ok_or_else(|| {
+            StorageError::Internal("pool slot already consumed".into())
+        })?;
+
+        // write meta
+        let mut version = meta.clone();
+        version.is_latest = true;
+        let mf = ObjectMetaFile {
+            bucket: self.bucket.clone(),
+            key: self.key.clone(),
+            versions: vec![version],
+        };
+        let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
+            StorageError::Internal(format!("simd_json meta serialize: {}", e))
+        })?;
+        slot.meta_file.write_all(&meta_json).await?;
+
+        // compute destination paths
+        let dest_dir = pathing::object_dir(&self.root, &self.bucket, &self.key)?;
+        let data_dest = dest_dir.join("shard.dat");
+        let meta_dest = dest_dir.join("meta.json");
+
+        // insert into pending_renames before sending rename request
+        if let Some(ref pending) = self.pending_renames {
+            let entry = PendingEntry {
+                slot_id: slot.slot_id,
+                data_path: slot.data_path.clone(),
+                meta_path: slot.meta_path.clone(),
+                data_len: self.bytes_written as u64,
+            };
+            pending.insert(
+                (Arc::<str>::from(self.bucket.as_str()), Arc::<str>::from(self.key.as_str())),
+                entry,
+            );
+        }
+
+        let req = RenameRequest {
+            slot,
+            bucket: self.bucket.clone(),
+            key: self.key.clone(),
+            dest_dir,
+            data_dest,
+            meta_dest,
+        };
+        self.rename_tx.send(req).await.map_err(|_| {
+            StorageError::Internal("rename worker channel closed".into())
+        })?;
+        Ok(())
+    }
+}
+
+/// Streaming shard writer for the log store. Buffers chunks internally
+/// (log store needs the complete shard to build a needle). On finalize,
+/// appends the needle atomically. Only used for small objects (<=64KB).
+/// If the accumulated data exceeds LOG_THRESHOLD, finalize falls back
+/// to the file tier.
+pub struct LogShardWriter {
+    log_store: Arc<std::sync::Mutex<super::log_store::LogStore>>,
+    root: PathBuf,
+    bucket: String,
+    key: String,
+    buf: Vec<u8>,
+}
+
+impl LogShardWriter {
+    pub fn new(
+        log_store: Arc<std::sync::Mutex<super::log_store::LogStore>>,
+        root: PathBuf,
+        bucket: &str,
+        key: &str,
+    ) -> Self {
+        Self {
+            log_store,
+            root,
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            buf: Vec::with_capacity(LOG_THRESHOLD),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ShardWriter for LogShardWriter {
+    async fn write_chunk(&mut self, data: &[u8]) -> Result<(), StorageError> {
+        self.buf.extend_from_slice(data);
+        Ok(())
+    }
+
+    async fn finalize(self: Box<Self>, meta: &ObjectMeta) -> Result<(), StorageError> {
+        // if data exceeded log threshold, fall back to file tier
+        if self.buf.len() > LOG_THRESHOLD {
+            let obj_dir = pathing::object_dir(&self.root, &self.bucket, &self.key)?;
+            tokio::fs::create_dir_all(&obj_dir).await?;
+            let shard_path = pathing::object_shard_path(&self.root, &self.bucket, &self.key)?;
+            tokio::fs::write(&shard_path, &self.buf).await?;
+            let mut version = meta.clone();
+            version.is_latest = true;
+            let mf = ObjectMetaFile {
+                bucket: self.bucket.clone(),
+                key: self.key.clone(),
+                versions: vec![version],
+            };
+            let meta_path = pathing::object_meta_path(&self.root, &self.bucket, &self.key)?;
+            write_meta_file(&meta_path, &mf).await.map_err(StorageError::Io)?;
+            return Ok(());
+        }
+
+        // small object: append to log store
+        let needle = super::needle::Needle::new(&self.bucket, &self.key, meta, &self.buf)?;
+        let mut log = self.log_store.lock().map_err(|e| {
+            StorageError::Internal(format!("log store lock: {}", e))
+        })?;
+        log.append(&needle)?;
+        Ok(())
+    }
+}
+
 /// Streaming shard writer for local disk. Opens a file on creation,
 /// appends chunks, writes meta on finalize.
 pub struct LocalShardWriter {
@@ -449,6 +612,37 @@ impl Backend for LocalVolume {
         key: &str,
         version_id: Option<&str>,
     ) -> Result<Box<dyn ShardWriter>, StorageError> {
+        let is_versioned = version_id.is_some();
+
+        // 1. pool (if enabled, not versioned, slot available)
+        if !is_versioned {
+            if let (Some(pool), Some(tx)) = (self.write_pool.as_ref(), self.rename_tx.as_ref()) {
+                if let Some(slot) = pool.try_pop() {
+                    return Ok(Box::new(PoolShardWriter::new(
+                        slot,
+                        self.root.clone(),
+                        bucket,
+                        key,
+                        Arc::clone(tx),
+                        self.pending_renames.clone(),
+                    )));
+                }
+            }
+        }
+
+        // 2. log store (if enabled, not versioned)
+        if !is_versioned {
+            if let Some(ref log) = self.log_store {
+                return Ok(Box::new(LogShardWriter::new(
+                    Arc::clone(log),
+                    self.root.clone(),
+                    bucket,
+                    key,
+                )));
+            }
+        }
+
+        // 3. file tier (fallback)
         let shard_path = if let Some(vid) = version_id {
             let ver_dir = pathing::version_dir(&self.root, bucket, key, vid)?;
             tokio::fs::create_dir_all(&ver_dir).await?;
