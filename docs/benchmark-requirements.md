@@ -73,18 +73,22 @@ This is Layer 1 (L1). It answers: "how fast is the disk?"
 
 Measure each layer independently so we can attribute latency.
 
-| Layer | What it measures | Includes |
-|---|---|---|
-| L1 | raw disk I/O | tokio::fs write/read, fsync |
-| L2 | hashing + erasure coding | blake3, md5, reed-solomon encode |
-| L3 | storage pipeline | VolumePool put/get, no HTTP |
-| L4 | HTTP transport | hyper round-trip, no S3 protocol |
-| L5 | S3 protocol | s3s SigV4 + XML parsing, no real storage |
-| L6 | S3 protocol + real storage | s3s + VolumePool, no SDK |
-| L7 | full SDK client | aws-sdk-s3 end-to-end |
+| Layer | What it measures | Includes | Write path varies? |
+|---|---|---|---|
+| L1 | raw disk I/O | tokio::fs write/read, fsync | no (pure filesystem) |
+| L2 | hashing + erasure coding | blake3, md5, reed-solomon encode | no (pure compute) |
+| L3 | storage pipeline | VolumePool put/get, no HTTP | yes (file/log/pool x cache on/off) |
+| L4 | HTTP transport | hyper round-trip, no S3 protocol | no (no storage) |
+| L5 | S3 protocol | s3s SigV4 + XML parsing, no real storage | no (no storage) |
+| L6 | S3 protocol + real storage | s3s + VolumePool, no SDK | yes (file/log/pool x cache on/off) |
+| L7 | full SDK client | aws-sdk-s3 end-to-end | yes (file/log/pool x cache on/off) |
 
 Each layer tested at every size. Subtracting consecutive layers
 attributes latency to each component.
+
+L3, L6, and L7 include real storage, so they must be tested across
+all write path configurations (3 tiers x 2 cache states = 6 configs).
+L1, L2, L4, L5 have no storage, so write path does not apply.
 
 ## Requirement 3: Per-write-path performance
 
