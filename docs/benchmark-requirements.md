@@ -134,20 +134,44 @@ This is Layer 5 (L5). It answers: "how fast is the disk?"
 
 ## Requirement 2: Per-layer performance through the stack
 
-Measure each layer independently so we can attribute latency.
+Each layer must be tested in isolation. The benchmark for a layer
+measures ONLY that layer's overhead, not the layers above or below it.
+This is critical for tuning: if you cannot measure a layer by itself,
+you cannot tell whether a change to that layer made it faster or slower.
 
-| Layer | What it measures | Includes | Write path varies? |
+### Isolation rules
+
+- L1 tests ONLY HTTP transport. No S3, no storage, no compute.
+- L2 tests ONLY S3 protocol parsing and dispatch. No TCP/HTTP
+  transport overhead. Uses in-memory pipe, not a TCP socket.
+- L3 tests ONLY the storage pipeline. Calls VolumePool directly,
+  no HTTP, no s3s.
+- L4 tests ONLY hashing and erasure coding. Direct function calls,
+  no I/O.
+- L5 tests ONLY raw disk I/O. Direct filesystem calls, no storage
+  pipeline.
+- L6 is NOT isolated. It is an integration test that combines
+  L1+L2+L3 into a single in-process stack (s3s + real VolumePool).
+- L7 is NOT isolated. It is a full end-to-end test with a real
+  server process, real client, TLS, and auth.
+
+L1 through L5 are isolated layers. Each one can be tuned independently.
+L6 and L7 are integration layers that show how the isolated layers
+compose together.
+
+### Layer table
+
+| Layer | What it measures | Isolation method | Write path varies? |
 |---|---|---|---|
-| L1 | HTTP transport | hyper round-trip, no S3 protocol | no (no storage) |
-| L2 | S3 protocol | s3s SigV4 + XML parsing, no real storage | no (no storage) |
-| L3 | storage pipeline | VolumePool put/get, no HTTP | yes (file/log/pool x cache on/off) |
-| L4 | hashing + erasure coding | blake3, md5, reed-solomon encode | no (pure compute) |
-| L5 | raw disk I/O | tokio::fs write/read, fsync | no (pure filesystem) |
-| L6 | S3 protocol + real storage | s3s + VolumePool, no SDK | yes (file/log/pool x cache on/off) |
-| L7 | full SDK client | aws-sdk-s3 end-to-end | yes (file/log/pool x cache on/off) |
+| L1 | HTTP transport | bare hyper, reqwest client, no S3 | no |
+| L2 | S3 protocol | s3s dispatch via in-memory pipe, NullBackend | no |
+| L3 | storage pipeline | direct VolumePool API, no HTTP | yes (file/log/pool x cache on/off) |
+| L4 | hashing + erasure coding | direct function calls | no |
+| L5 | raw disk I/O | direct tokio::fs calls | no |
+| L6 | S3 + real storage (integration) | in-process s3s + VolumePool | yes (file/log/pool x cache on/off) |
+| L7 | full e2e (integration) | child process server, real SDK client | yes (file/log/pool x cache on/off) |
 
-Each layer tested at every size. Subtracting consecutive layers
-attributes latency to each component.
+Each layer tested at every size.
 
 L3, L6, and L7 include real storage, so they must be tested across
 all write path configurations (3 tiers x 2 cache states = 6 configs).
