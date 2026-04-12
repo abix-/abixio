@@ -47,6 +47,10 @@ pub struct Config {
     /// temp file pool with async rename worker). See `docs/write-path.md`.
     #[arg(long, default_value = "file")]
     pub write_tier: String,
+
+    /// RAM write cache size in MB. 0 disables the cache.
+    #[arg(long, default_value_t = 256)]
+    pub write_cache: u64,
 }
 
 impl Config {
@@ -228,6 +232,7 @@ mod tests {
             heal_interval: "24h".to_string(),
             mrf_workers: 2,
             write_tier: "file".to_string(),
+            write_cache: 256,
         }
     }
 
