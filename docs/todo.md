@@ -8,7 +8,7 @@
 - [ ] uncommitted debug header in src/s3_route.rs (x-debug-s3s-ms). own comment says "remove in production". feature-gate or revert
 - [x] EC GET regression fixed. zero-alloc fast path slices directly from mmap. 4-disk GET: 803->1236 MB/s
 - [x] log-structured storage: needle.rs + segment.rs + log_store.rs + S3 integration. small PUTs with Content-Length <= 64KB route through log store end-to-end. verified with curl. 4 appends vs 12 fs ops per 4KB object on 4 disks
-- [ ] RemoteVolume::bucket_exists() returns false unconditionally. cluster bucket ops partially broken
+- [x] RemoteVolume::bucket_exists() and bucket_created_at() now hit the remote peer endpoints instead of returning hardcoded false/0. Backend trait methods made async; all callers (volume_pool make_bucket/head_bucket/list_buckets, storage_server handlers, test mocks) updated. 12 bucket-related lib tests pass.
 - [x] streaming body support: unified encode path via ShardWriter trait, inline MD5+blake3, no full-body buffering
 - [x] s3s GET response buffering: streaming GET via read_and_decode_stream + get_object_stream + mmap fast path. L6 GET: 365->1048 MB/s (1GB). curl: 1220 MB/s
 - [x] parallel shard writes in streaming path: tested FuturesUnordered and channel-based tasks, both regressed. sequential is faster on same physical disk
