@@ -88,6 +88,7 @@ Comma-separated values to select multiple. Single value to narrow.
 | `--clients` | `sdk,aws-cli,rclone` | all |
 | `--ops` | `PUT,GET,HEAD,LIST,DELETE` | all |
 | `--iters` | number | auto-scaled by size |
+| `--disks` | `1,4` (comma-separated) | 1 |
 | `--tls` | `on,off,both` | on |
 | `--tmp-dir` | path | system temp dir |
 
