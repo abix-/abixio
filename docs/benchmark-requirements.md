@@ -79,21 +79,42 @@ attributes latency to each component.
 
 ## Requirement 3: Per-write-path performance
 
-Each write path tested independently through the full stack (L7).
+Two independent axes: write tier and write cache. Test every combination.
 
-| Write path | What it is | CLI flag |
+### Write tiers
+
+| Tier | What it is | CLI flag |
 |---|---|---|
-| file | baseline, direct filesystem writes | `--write-tier file --no-write-cache` |
-| log | log-structured append (small object optimization) | `--write-tier log --no-write-cache` |
-| pool | pre-opened temp file pool + async rename workers | `--write-tier pool --no-write-cache` |
-| ram | RAM write cache (DashMap, immediate ack, async flush) | `--write-tier file` (write cache on by default) |
+| file | baseline, direct filesystem writes | `--write-tier file` |
+| log | log-structured append (small object optimization) | `--write-tier log` |
+| pool | pre-opened temp file pool + async rename workers | `--write-tier pool` |
 
-The `ram` path is the write cache layered on top of the file tier.
-Each path must be testable in isolation. The `--no-write-cache` flag
-controls whether the RAM cache is active.
+### Write cache
 
-All operations (PUT, GET, HEAD, LIST, DELETE) tested per write path.
-All sizes tested per write path.
+| State | What it is | CLI flag |
+|---|---|---|
+| off | no RAM cache, writes go directly to the tier | `--no-write-cache` |
+| on | RAM DashMap, immediate ack, async flush to disk | (default, no flag needed) |
+
+### Test matrix
+
+Every tier tested with write cache off AND write cache on:
+
+| Config | CLI flags |
+|---|---|
+| file | `--write-tier file --no-write-cache` |
+| file+wc | `--write-tier file` |
+| log | `--write-tier log --no-write-cache` |
+| log+wc | `--write-tier log` |
+| pool | `--write-tier pool --no-write-cache` |
+| pool+wc | `--write-tier pool` |
+
+This produces 6 AbixIO configurations. The raw tier rows (without
+write cache) show true disk-tier performance. The +wc rows show the
+write cache benefit on top of each tier.
+
+All operations (PUT, GET, HEAD, LIST, DELETE) tested per configuration.
+All sizes tested per configuration.
 
 ## Requirement 4: Competitive comparison
 
@@ -114,14 +135,99 @@ HEAD, LIST, DELETE are latency-bound metadata ops. These only need
 the sdk client (CLI process spawn overhead makes the comparison
 meaningless for sub-millisecond ops).
 
-## Requirement 5: Reproducibility
+### Test infrastructure
 
-- All benchmarks must warmup before timing (3 PUT + 3 GET minimum)
+All benchmarks launch real server processes, create temp dirs, and
+benchmark through real S3 clients. No synthetic tests, no mocked
+storage. Real servers, real clients, real data.
+
+### Clients
+
+| Client | Type | Auth | Connection | Overhead |
+|---|---|---|---|---|
+| aws-sdk-s3 (Rust) | in-process SDK | SigV4, UNSIGNED-PAYLOAD | keep-alive | none |
+| AWS CLI | per-process CLI | SigV4, UNSIGNED-PAYLOAD via `payload_signing_enabled = false` | new process per op | measured at runtime |
+| rclone | per-process CLI | SigV4, UNSIGNED-PAYLOAD via `--s3-use-unsigned-payload true` | new process per op | measured at runtime |
+
+For CLI tools, process spawn overhead is measured before each benchmark
+run and printed in the output for transparency.
+
+### Servers
+
+- AbixIO: Rust S3 server (this project)
+- RustFS 1.0.0-alpha.90: Rust S3 server (MinIO-compatible)
+- MinIO RELEASE.2026-04-07: Go S3 server (reference implementation)
+
+All binaries must be release builds. Debug builds are 5-7x slower.
+RustFS and MinIO binaries auto-detected at `C:\tools\rustfs.exe` and
+`C:\tools\minio.exe`. Override with `RUSTFS_BIN` and `MINIO_BIN` env vars.
+
+### Metrics
+
+- obj/sec: operations per second (primary metric for small objects)
+- MB/s: throughput (primary metric for large objects)
+- latency: per-request time in microseconds or milliseconds
+
+## Requirement 5: Fairness
+
+Authoritative normalized client mode: HTTPS + SigV4 + UNSIGNED-PAYLOAD.
+Cross-client numbers are only directly comparable when the harness holds
+the major variables constant.
+
+1. **Same warmup.** 3 PUT + 3 GET warmup operations before timing, for
+   every client. Ensures TCP connections are established, caches are warm,
+   and JIT (if any) has run.
+
+2. **Same I/O model.** All clients read PUT payload from a temp file on
+   disk. All clients write GET output to a temp file on disk. No client
+   gets the advantage of in-memory I/O while others do disk I/O.
+
+3. **Same connection warming.** Every client gets the same warmup count
+   before timing. Connection reuse is not fully normalized: aws-sdk-s3
+   runs in-process and reuses connections, while AWS CLI and rclone are
+   invoked as new processes per operation. Published matrix numbers are
+   end-to-end and include that difference.
+
+4. **Same iterations.** All clients run the same number of iterations per
+   (server, size) combination.
+
+5. **Same payload.** Identical byte pattern, identical size, identical
+   content-type for all clients.
+
+6. **Same auth mode.** HTTPS + SigV4 + UNSIGNED-PAYLOAD for every
+   comparable client: aws-sdk-s3, AWS CLI, and rclone.
+
+7. **Same server config.** Each server runs single-node, 1 disk, NTFS
+   tmpdir, same machine, release build. Servers are started fresh for
+   each benchmark run.
+
+## Requirement 6: Reproducibility
+
 - All benchmarks must report: avg, p50, p99, ops/sec, MB/s (where applicable)
-- All benchmarks must use the same payload bytes and content-type
 - CLI process spawn overhead must be measured and reported (not subtracted)
 - Results must include git commit hash and timestamp
 - Results must be machine-readable (JSON output alongside human tables)
+
+## Known limitations
+
+- Windows-only: all benchmarks run on Windows 10. Linux numbers may
+  differ due to epoll vs IOCP, different TCP stack, different filesystem
+  performance.
+- Single machine: client and server share CPU, memory, and network stack.
+  No network latency. Results represent localhost throughput, not
+  production deployment.
+- Per-process CLI overhead: uses a lightweight operation (ls/lsd) to
+  estimate overhead. Actual cp process overhead may be slightly higher.
+  Small objects may show inflated throughput after subtraction.
+- Iteration count: 3 iterations for 1GB may show variance. Larger
+  iteration counts are more reliable for large-object numbers.
+
+## Windows caveats
+
+- Always use `127.0.0.1`, never `localhost` (Windows DNS adds ~200ms)
+- TCP connect on Windows loopback = ~0.2ms (Linux = ~0.03ms)
+- TCP_NODELAY must be set explicitly (Go sets it by default)
+- hyper needs `writev(true)` + `max_buf_size(4MB)` for optimal throughput
 
 ## What we do NOT test
 
@@ -129,3 +235,21 @@ meaningless for sub-millisecond ops).
 - Concurrent/parallel clients -- sequential only for now
 - Network latency -- localhost only
 - Linux -- Windows 10 only (document this limitation)
+
+## Running benchmarks
+
+```bash
+# build AbixIO release binary first
+cd /path/to/abixio && k3sc cargo-lock build --release
+
+# full benchmark suite
+cd /path/to/abixio-ui
+k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_matrix
+
+# single server detailed
+k3sc cargo-lock test --release --test bench -- --ignored --nocapture bench_1_disk
+
+# internal per-layer (runs in abixio repo, no external binaries)
+cd /path/to/abixio
+k3sc cargo-lock test --release --test layer_bench -- --ignored bench_perf --nocapture
+```
