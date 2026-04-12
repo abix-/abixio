@@ -351,14 +351,14 @@ Source: `abixio-ui bench --layers L3 --write-paths log`,
 
 | Size | PUT p50 | PUT throughput | GET p50 | GET throughput |
 |---|---|---|---|---|
-| 4KB | `176us` | `21.2 MB/s` | `35us` | `111.6 MB/s` |
-| 64KB | `394us` | `156.5 MB/s` | `60us` | `971.8 MB/s` |
-| 10MB | `32.1ms` | `308.7 MB/s` | `467us` | `20601 MB/s` |
-| 100MB | `339.9ms` | `294.7 MB/s` | `591us` | `163690 MB/s` |
-| 1GB | `3.53s` | `290.3 MB/s` | `822us` | `1339146 MB/s` |
+| 4KB | `135us` | `27.1 MB/s` | `34us` | `112.9 MB/s` |
+| 64KB | `280us` | `217.7 MB/s` | `60us` | `1045.6 MB/s` |
+| 10MB | `30.1ms` | `330.4 MB/s` | `436us` | `21172 MB/s` |
+| 100MB | `338.3ms` | `273.5 MB/s` | `629us` | `162396 MB/s` |
+| 1GB | `3.24s` | `317.1 MB/s` | `694us` | `1421301 MB/s` |
 
 The log store handles small objects (<=64KB) natively via needle
-append. At 4KB it is 4.5x faster than the file tier. At 10MB+ the
+append. At 4KB it is 5.9x faster than the file tier. At 10MB+ the
 LogShardWriter buffers chunks then falls back to file-tier write
 because objects exceed the 64KB log threshold, which adds overhead
 compared to the direct file tier path. GET uses the log index +
@@ -396,15 +396,15 @@ Source: `abixio-ui bench --layers L3 --write-paths pool`,
 
 | Size | PUT p50 | PUT throughput | GET p50 | GET throughput |
 |---|---|---|---|---|
-| 4KB | `202us` | `9.2 MB/s` | `586us` | `6.6 MB/s` |
-| 64KB | `364us` | `136.3 MB/s` | `619us` | `90.8 MB/s` |
-| 10MB | `19.3ms` | `516.7 MB/s` | `634us` | `15574 MB/s` |
-| 100MB | `184.6ms` | `534.3 MB/s` | `622us` | `153081 MB/s` |
-| 1GB | `2.08s` | `489.8 MB/s` | `1.0ms` | `1048536 MB/s` |
+| 4KB | `157us` | `10.5 MB/s` | `577us` | `6.8 MB/s` |
+| 64KB | `259us` | `109.1 MB/s` | `665us` | `95.0 MB/s` |
+| 10MB | `18.0ms` | `554.3 MB/s` | `699us` | `14068 MB/s` |
+| 100MB | `179.0ms` | `556.7 MB/s` | `830us` | `125704 MB/s` |
+| 1GB | `1.92s` | `534.9 MB/s` | `937us` | `47450 MB/s` |
 
 The pool writes to pre-opened temp files and queues a rename, so
 the PUT ack happens before the final path exists. At 4KB it is
-4x faster than the file tier. At 10MB+ it beats file tier on PUT
+5.1x faster than the file tier. At 10MB+ it beats file tier on PUT
 because it avoids mkdir + File::create. GET reads from the pending
 temp file via pending_renames lookup.
 
@@ -442,13 +442,13 @@ Source: `abixio-ui bench --layers L3 --write-paths file`,
 
 | Size | PUT p50 | PUT throughput | GET p50 | GET throughput |
 |---|---|---|---|---|
-| 4KB | `847us` | `4.4 MB/s` | `452us` | `8.2 MB/s` |
-| 64KB | `1.0ms` | `58.9 MB/s` | `437us` | `135.6 MB/s` |
-| 10MB | `21.7ms` | `459.0 MB/s` | `493us` | `19576 MB/s` |
-| 100MB | `195.5ms` | `510.1 MB/s` | `553us` | `173527 MB/s` |
-| 1GB | `1.99s` | `505.3 MB/s` | `726us` | `1473876 MB/s` |
+| 4KB | `798us` | `3.9 MB/s` | `428us` | `8.6 MB/s` |
+| 64KB | `961us` | `63.7 MB/s` | `427us` | `137.1 MB/s` |
+| 10MB | `20.1ms` | `496.7 MB/s` | `425us` | `23011 MB/s` |
+| 100MB | `186.2ms` | `536.6 MB/s` | `554us` | `185106 MB/s` |
+| 1GB | `1.89s` | `533.6 MB/s` | `636us` | `1559866 MB/s` |
 
-The file tier writes shard.dat and meta.json directly to their
+The file tier writes object data and meta.json directly to their
 final paths. No post-write rename, no pre-opened files. At 4KB it
 is the slowest tier because every PUT pays mkdir + File::create.
 GET uses mmap (page-cache hot).
@@ -586,35 +586,35 @@ the final storage location, not from transitional temp files.
 
 Source: `abixio-ui bench --layers L3`, `bench-results/l3-storage.json`
 
-#### PUT p50 latency by tier (put_stream)
+#### PUT p50 latency by tier (put_stream, 1+0 fast path)
 
 | Size | file | log | pool | best tier |
 |---|---|---|---|---|
-| 4KB | `847us` | **`176us`** | `202us` | log |
-| 64KB | `1.0ms` | **`394us`** | `364us` | pool |
-| 10MB | `21.7ms` | `32.1ms` | **`19.3ms`** | pool |
-| 100MB | `195.5ms` | `339.9ms` | **`184.6ms`** | pool |
-| 1GB | **`1.99s`** | `3.53s` | `2.08s` | file |
+| 4KB | `798us` | **`135us`** | `157us` | log |
+| 64KB | `961us` | **`280us`** | `259us` | pool |
+| 10MB | `20.1ms` | `30.1ms` | **`18.0ms`** | pool |
+| 100MB | `186.2ms` | `338.3ms` | **`179.0ms`** | pool |
+| 1GB | **`1.89s`** | `3.24s` | `1.92s` | file |
 
-#### PUT throughput by tier (put_stream)
+#### PUT throughput by tier (put_stream, 1+0 fast path)
 
 | Size | file | log | pool | best tier |
 |---|---|---|---|---|
-| 4KB | `4.4 MB/s` | **`21.2 MB/s`** | `9.2 MB/s` | log |
-| 64KB | `58.9 MB/s` | **`156.5 MB/s`** | `136.3 MB/s` | log |
-| 10MB | `459.0 MB/s` | `308.7 MB/s` | **`516.7 MB/s`** | pool |
-| 100MB | `510.1 MB/s` | `294.7 MB/s` | **`534.3 MB/s`** | pool |
-| 1GB | **`505.3 MB/s`** | `290.3 MB/s` | `489.8 MB/s` | file |
+| 4KB | `3.9 MB/s` | **`27.1 MB/s`** | `10.5 MB/s` | log |
+| 64KB | `63.7 MB/s` | **`217.7 MB/s`** | `109.1 MB/s` | log |
+| 10MB | `496.7 MB/s` | `330.4 MB/s` | **`554.3 MB/s`** | pool |
+| 100MB | `536.6 MB/s` | `273.5 MB/s` | **`556.7 MB/s`** | pool |
+| 1GB | **`533.6 MB/s`** | `317.1 MB/s` | `534.9 MB/s` | file |
 
 #### GET p50 latency by tier (get_stream, mmap, page-cache hot)
 
 | Size | file | log | pool | best tier |
 |---|---|---|---|---|
-| 4KB | `452us` | **`35us`** | `586us` | log |
-| 64KB | `437us` | **`60us`** | `619us` | log |
-| 10MB | `493us` | **`467us`** | `634us` | log |
-| 100MB | `553us` | **`591us`** | `622us` | file |
-| 1GB | **`726us`** | `822us` | `1.0ms` | file |
+| 4KB | `428us` | **`34us`** | `577us` | log |
+| 64KB | `427us` | **`60us`** | `665us` | log |
+| 10MB | **`425us`** | `436us` | `699us` | file |
+| 100MB | **`554us`** | `629us` | `830us` | file |
+| 1GB | **`636us`** | `694us` | `937us` | file |
 
 GET is sub-millisecond at all sizes because data sits in OS page
 cache. Log store GET is fastest at small sizes because it reads
@@ -622,15 +622,14 @@ from the in-memory index + mmap segment (no directory traversal).
 
 #### Tier handoff
 
-- **<=64KB**: log store wins PUT (4.5x faster than file at 4KB)
-  and GET (13x faster at 4KB)
+- **<=64KB**: log store wins PUT (5.9x faster than file at 4KB)
+  and GET (12.6x faster at 4KB)
 - **10MB-100MB**: pool wins PUT (avoids mkdir + File::create)
-- **>=1GB**: file tier wins PUT (LogShardWriter buffer + fallback
-  adds overhead; pool rename tax grows with object count)
-- Log store loses at large sizes because LogShardWriter buffers
-  chunks internally, then falls back to file-tier write when the
-  accumulated data exceeds 64KB. This double-write is the cost of
-  not knowing the final size up front.
+- **>=1GB**: file and pool are within 2% on PUT. Log store loses
+  because LogShardWriter buffers chunks then falls back to file-tier
+  write when data exceeds 64KB
+- Pool is a strong default: nearly as fast as log at small sizes,
+  fastest at mid-range, competitive at 1GB, and no GC needed
 
 ## How other docs should use this page
 
