@@ -514,6 +514,35 @@ reference.
 | file tier | final object files are written in their destination directory | yes, modulo OS page-cache durability model |
 | remote backend | target node completed its local shard write path | depends on the target branch |
 
+## Design gap: unnecessary EC on single disk
+
+When AbixIO runs with 1 disk and ftt=0, there is no redundancy to
+compute. The RS encode is 1+0 (one data shard, zero parity). The
+shard IS the original data. But AbixIO still pays the full EC
+pipeline cost:
+
+1. RS encode 1+0 (passthrough, but still allocates shard buffers)
+2. blake3 checksum per shard
+3. Build ObjectMeta with ErasureMeta
+4. Serialize meta.json separately from shard data
+5. Write shard.dat + meta.json to a nested directory
+
+MinIO and RustFS on a single disk just write the object bytes
+directly with a binary metadata header. No RS encode, no separate
+meta file, no nested directory per object.
+
+### Fix: bypass EC for single-disk no-parity
+
+When data_n=1 and parity_n=0:
+- Skip RS encode entirely (data is the shard)
+- Write object bytes directly (no shard.dat wrapper)
+- Inline metadata into the same write or use a minimal header
+- Match MinIO/RustFS single-disk behavior
+
+This would close the gap between AbixIO and competitors on the
+simplest deployment (1 disk, no redundancy) where the EC overhead
+is pure waste.
+
 ## Raw disk floor (L5)
 
 Isolated L5 disk I/O. Direct tokio::fs calls, no storage pipeline,
