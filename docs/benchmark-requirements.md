@@ -5,54 +5,36 @@ must satisfy these requirements.
 
 ## Repo ownership
 
-Benchmarks live in two repos. The split is based on whether you need
-a real server binary.
+All benchmarks live in abixio-ui. One harness, one place.
 
-### abixio (in-process, no child server)
+Test file: `abixio-ui/tests/bench.rs`
 
-Test file: `tests/layer_bench.rs`
+abixio-ui depends on the abixio crate as a library, so it can
+directly import and call internal APIs (VolumePool, LocalVolume,
+Backend, ClusterManager, AbixioDispatch, etc.) for in-process
+layer testing. It also spawns real server processes for L7 and
+competitive comparison.
 
-Directly calls Rust APIs. No server binary spawned. Tests layers
-where you can isolate a component without a full server.
-
-| Layer | Why here |
+| Layer | How it runs |
 |---|---|
-| L1 (disk I/O) | pure filesystem primitive |
-| L2 (hashing + RS) | pure compute, no storage |
-| L3 (VolumePool) | direct API call, no HTTP |
-| L4 (HTTP transport) | in-process hyper, no S3 protocol |
-| L5 (S3 protocol) | in-process s3s, no real storage |
+| L1 (disk I/O) | in-process, direct tokio::fs calls |
+| L2 (hashing + RS) | in-process, direct abixio API calls |
+| L3 (VolumePool) | in-process, direct VolumePool API calls |
+| L4 (HTTP transport) | in-process hyper server |
+| L5 (S3 protocol) | in-process s3s server |
 | L6 (S3 + real storage) | in-process s3s + real VolumePool |
+| L7 (full SDK client) | child process, real TCP/TLS |
+| Competitive comparison | child processes (AbixIO, RustFS, MinIO) |
 
-L3 and L6 include real storage, so they test all write path
+L3, L6, and L7 include real storage, so they test all write path
 configurations (3 tiers x 2 cache states).
 
-### abixio-ui (child process, real server binary)
-
-Test file: `tests/bench.rs`
-
-Spawns real server processes (`abixio.exe`, `rustfs.exe`, `minio.exe`).
-Connects via real S3 clients over TCP/TLS.
-
-| Layer | Why here |
-|---|---|
-| L7 (full SDK client) | needs real server binary, real TCP, real TLS |
-| Competitive comparison | needs external server binaries (RustFS, MinIO) |
-
-L7 tests all write path configurations (3 tiers x 2 cache states).
-Competitive comparison tests all servers, clients, ops, and sizes.
-
-### Shared responsibility
-
-Write path x cache matrix testing happens in both repos:
-- L3 and L6 (abixio) test the storage layer in isolation per config
-- L7 (abixio-ui) tests the full end-to-end path per config
-
-Both repos must support the same CLI flags for filtering.
+L7 and competitive comparison spawn real server binaries. Everything
+else calls abixio library code directly.
 
 ## Design principle
 
-One configurable harness per repo, not dozens of separate tests.
+One configurable harness, not dozens of separate tests.
 Every axis is selectable: run all benchmarks or narrow to exactly
 what you need.
 
