@@ -531,17 +531,22 @@ MinIO and RustFS on a single disk just write the object bytes
 directly with a binary metadata header. No RS encode, no separate
 meta file, no nested directory per object.
 
-### Fix: bypass EC for single-disk no-parity
+### Fix: cluster-aware EC bypass
 
-When data_n=1 and parity_n=0:
-- Skip RS encode entirely (data is the shard)
-- Write object bytes directly (no shard.dat wrapper)
-- Inline metadata into the same write or use a minimal header
-- Match MinIO/RustFS single-disk behavior
+VolumePool knows how many backends are in the cluster. When there
+is only 1 volume, EC is pointless: there is nobody to replicate to
+and no disk failure to tolerate. The fix:
 
-This would close the gap between AbixIO and competitors on the
-simplest deployment (1 disk, no redundancy) where the EC overhead
-is pure waste.
+- VolumePool checks `disks.len()` at write time
+- If 1 disk: force data_n=1, parity_n=0, skip RS encode entirely
+- Write raw object bytes through write_shard (no shard encoding)
+- The file tier, pool, and log store all receive the original object
+  bytes, not encoded shard data
+- Metadata still records the object, but ErasureMeta reflects 1+0
+
+This is not a config flag. It's automatic based on cluster topology.
+When a second volume joins the cluster, EC activates. When it's
+alone, it writes like MinIO and RustFS do on a single node.
 
 ## Raw disk floor (L5)
 
