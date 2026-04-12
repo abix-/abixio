@@ -607,6 +607,42 @@ from the in-memory index + mmap segment (no directory traversal).
   their own tier internals and trade-offs, then link here for the
   end-to-end path.
 
+## Integration: S3 + real storage (L6)
+
+L6 is NOT isolated. It combines L1 (HTTP) + L2 (S3 protocol) + L3
+(storage) into a single in-process stack. This is what the server
+itself costs per request, without SDK client overhead or TLS.
+
+Source: `abixio-ui bench --layers L6`, `bench-results/l6-s3storage.json`
+
+Drain and flush between PUT and GET. 1 disk, ftt=0, no write cache.
+
+#### L6 PUT p50 by tier
+
+| Size | file | log | pool |
+|---|---|---|---|
+| 4KB | `708us` | **`303us`** | `372us` |
+| 64KB | `1.1ms` | **`405us`** | `378us` |
+| 10MB | **`31.1ms`** | `45.1ms` | `45.1ms` |
+| 100MB | **`155.0ms`** | `357.9ms` | `155.9ms` |
+| 1GB | **`1.73s`** | `3.10s` | `1.66s` |
+
+#### L6 GET p50 by tier
+
+| Size | file | log | pool |
+|---|---|---|---|
+| 4KB | `581us` | **`190us`** | `801us` |
+| 64KB | `948us` | **`239us`** | `801us` |
+| 10MB | `18.6ms` | `13.1ms` | **`10.5ms`** |
+| 100MB | `103.9ms` | `201.7ms` | **`107.4ms`** |
+| 1GB | **`1.33s`** | `1.53s` | `1.37s` |
+
+At 4KB the log store is 2.3x faster on PUT and 3x faster on GET
+than the file tier through the full S3 stack. At 1GB the log store
+is 1.8x slower on PUT because LogShardWriter buffers then falls
+back to file tier. Pool is competitive with file tier at all sizes
+and wins at 1GB PUT.
+
 ## Accuracy Report
 
 Audited against the codebase on 2026-04-11.
