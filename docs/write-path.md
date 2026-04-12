@@ -82,6 +82,24 @@ The main code anchors are:
 - `src/storage/remote_volume.rs`: remote shard buffering and finalize POST
 - `src/storage/storage_server.rs`: remote target dispatch
 
+## Benchmark layers
+
+Each section below includes timing from `abixio-ui bench`. Layers
+L1 through L5 are isolated: each measures ONLY its own overhead.
+
+| Layer | What it measures | How it isolates |
+|---|---|---|
+| L1 | HTTP transport | bare hyper over TCP, no S3, no storage |
+| L2 | S3 protocol | s3s over in-memory pipe (no TCP), NullBackend (no storage) |
+| L3 | storage pipeline | direct VolumePool API call, no HTTP, no s3s |
+| L4 | hashing + RS encode | direct function call on in-memory buffer, no I/O |
+| L5 | raw disk I/O | direct tokio::fs call, no storage pipeline |
+| L6 | S3 + storage | integration: TCP + s3s + real VolumePool |
+| L7 | full e2e | integration: real server process, SDK client, TLS, auth |
+
+L6 and L7 are integration tests, not isolated. They show how the
+layers compose together and what a real client actually sees.
+
 ## Entry and request shaping
 
 ### 1. HTTP ingress
