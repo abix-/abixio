@@ -3,7 +3,10 @@
 ## critical
 
 - [x] unwrap() audit. 533 unwrap() calls total, but 530 are in #[cfg(test)] blocks (standard for tests). 1 production unwrap in erasure_decode.rs:241 was guarded by a data_shards_ok check but replaced with let-else for clarity. 1 expect() in main.rs:31 is crypto provider init (standard). production code is clean
-- [ ] log-structured storage: remaining phases. GC (phase 8), heal worker log-awareness (phase 7), versioned object support, chunked-transfer PUT support. S3 integration working for Content-Length PUTs <= 64KB. see docs/write-log.md
+- [x] WAL replaces log store and write pool. append-only segment with background materialize to file-per-object layout. no GC, no permanent index, bounded startup. 4KB PUT: 147us (tied with log 143us, 5.4x faster than file 793us). mmap writes, zero-alloc serialize_into, fire-and-forget channel, Arc<str> identity. see docs/write-wal.md
+- [ ] remove log_store.rs and write_slot_pool.rs (replaced by WAL). update write-path.md, architecture.md. make WAL the default write tier
+- [ ] WAL: versioned object support (currently falls back to file tier)
+- [ ] WAL: chunked-transfer PUT support via WalShardWriter streaming path
 - [x] mc client throughput gap. root cause: StreamingBlob::wrap() used s3s StreamWrapper which returns RemainingLength::unknown(), causing hyper to use chunked transfer encoding instead of Content-Length. fix: SizedStream wrapper reports exact remaining_length. also fixed buffered GET path. result: mc GET 354->1476 MB/s (4.2x), now faster than curl
 - [x] debug header in src/s3_route.rs (x-debug-s3s-ms). kept and extended: now also emits W3C `server-timing` header with per-layer breakdown (setup, validate, ec_encode, storage_write, etc). `src/timing.rs` module with tokio task_local, RAII Span, 7 unit tests. the "remove in production" comment was wrong -- it's a profiling feature, not debug clutter
 - [x] EC GET regression fixed. zero-alloc fast path slices directly from mmap. 4-disk GET: 803->1236 MB/s
