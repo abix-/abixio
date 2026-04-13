@@ -10,33 +10,14 @@ use super::pathing;
 use super::wal::{
     self, MaterializeDispatch, MaterializeRequest, Wal, DEFAULT_WAL_THRESHOLD,
 };
-use super::write_slot_pool::{
-    recover_pool_dir, run_rename_worker, PendingEntry, PendingRenames, RenameDispatch,
-    RenameRequest, WriteSlot, WriteSlotPool,
-};
 use super::{Backend, BackendInfo, MmapOrVec, ShardWriter, StorageError};
 
 pub struct LocalVolume {
     root: PathBuf,
     volume_id: String,
-    /// Pre-opened temp file pool for the fast write path. None until
-    /// `enable_write_pool` is called. See `docs/write-pool.md`.
-    write_pool: Option<Arc<WriteSlotPool>>,
-    /// Rename request dispatcher (round-robin across N worker
-    /// channels). Closing it drains all workers. Phase 8.7 scaled
-    /// this from a single `mpsc::Sender` to a multi-worker dispatch.
-    rename_tx: Option<Arc<RenameDispatch>>,
-    /// Shutdown signal for the rename worker.
-    pool_shutdown: Option<tokio::sync::watch::Sender<bool>>,
-    /// In-memory table of objects that have been written to a slot
-    /// but whose temp files haven't been renamed to their destination
-    /// yet. Read paths consult this so an immediate GET-after-PUT
-    /// finds the object before the worker finishes the rename.
-    pending_renames: Option<PendingRenames>,
     /// Write-ahead log. When enabled, small object PUTs append to a
-    /// log segment (fast) and a background worker materializes them
-    /// to shard.dat + meta.json. Replaces both log_store and write_pool
-    /// when --write-tier=wal.
+    /// mmap segment (fast) and a background worker materializes them
+    /// to shard.dat + meta.json. See docs/write-wal.md.
     wal: Option<Arc<std::sync::Mutex<Wal>>>,
     wal_tx: Option<Arc<MaterializeDispatch>>,
     wal_shutdown: Option<tokio::sync::watch::Sender<bool>>,
@@ -64,10 +45,6 @@ impl LocalVolume {
         Ok(Self {
             root: root.to_path_buf(),
             volume_id,
-            write_pool: None,
-            rename_tx: None,
-            pool_shutdown: None,
-            pending_renames: None,
             wal: None,
             wal_tx: None,
             wal_shutdown: None,
@@ -79,145 +56,6 @@ impl LocalVolume {
         &self.root
     }
 
-    /// Enable the log-structured store for this volume.
-    /// Creates the log directory if it doesn't exist.
-    /// Enable the pre-opened temp file pool for this volume.
-    /// Creates the pool directory at `.abixio.sys/tmp/`, opens
-    /// `depth` slot pairs, and spawns the rename worker as a tokio
-    /// task. The worker drains rename requests until shutdown is
-    /// signaled (when `LocalVolume` is dropped or `disable_write_pool`
-    /// is called).
-    ///
-    /// Phase 4 only wires the buffered `write_shard` path; streaming
-    /// (`open_shard_writer`), reads, crash recovery, and the CLI flag
-    /// land in later phases. See `docs/write-pool.md` for status.
-    pub async fn enable_write_pool(&mut self, depth: u32) -> Result<(), StorageError> {
-        // Phase 8.7 defaults: channel buffer 10_000 per worker and 2
-        // rename workers. Phase 8.5 measured the default 1-worker + 256
-        // channel as undersized for sustained sequential load. Phase 3
-        // measured 2 workers at 1744 ops/sec (1.85x of 1 worker), which
-        // is the single biggest lever for sustained throughput.
-        self.enable_write_pool_with_config(depth, 10_000, 2).await
-    }
-
-    /// Same as `enable_write_pool` but lets the caller pick the rename
-    /// worker's channel buffer size. Worker count stays at the default
-    /// (2). Used by benches that measure backpressure behavior.
-    pub async fn enable_write_pool_with_channel(
-        &mut self,
-        depth: u32,
-        channel_buffer: usize,
-    ) -> Result<(), StorageError> {
-        self.enable_write_pool_with_config(depth, channel_buffer, 2).await
-    }
-
-    /// Full pool configuration: depth, per-worker channel buffer, and
-    /// number of rename workers. Used by benches that need to vary
-    /// worker count and by `enable_write_pool` to apply defaults.
-    ///
-    /// Each worker owns its own channel. The producer fans requests
-    /// out round-robin via `RenameDispatch`, so the effective total
-    /// buffer is `worker_count * channel_buffer` and the effective
-    /// drain rate is ~`worker_count * single_worker_rate`.
-    pub async fn enable_write_pool_with_config(
-        &mut self,
-        depth: u32,
-        channel_buffer: usize,
-        worker_count: usize,
-    ) -> Result<(), StorageError> {
-        if self.write_pool.is_some() {
-            return Ok(());
-        }
-        assert!(worker_count >= 1, "worker_count must be >= 1");
-        let pool_dir = self.root.join(".abixio.sys").join("tmp");
-
-        // Phase 6: finish any pending renames left over from a crash
-        // BEFORE WriteSlotPool::new truncates the slot files. Acked
-        // PUTs that didn't finish their rename on the previous run
-        // are recovered here. See write_slot_pool::recover_pool_dir.
-        let report = recover_pool_dir(&self.root, &pool_dir).await?;
-        if report.recovered_pairs
-            + report.half_renamed_fixed
-            + report.orphans_deleted
-            + report.unparseable_deleted
-            > 0
-        {
-            tracing::info!(
-                recovered = report.recovered_pairs,
-                half_renamed_fixed = report.half_renamed_fixed,
-                orphans_deleted = report.orphans_deleted,
-                unparseable_deleted = report.unparseable_deleted,
-                pool_dir = %pool_dir.display(),
-                "write pool crash recovery scan complete",
-            );
-        }
-
-        let pool = WriteSlotPool::new(&pool_dir, depth).await?;
-        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-
-        // Phase 5: shared pending-renames table: write_shard inserts,
-        // the rename worker removes after each rename completes, the
-        // read paths consult it for read-after-write consistency.
-        let pending: PendingRenames = Arc::new(dashmap::DashMap::new());
-
-        // Phase 8.7: spawn N workers, each with its own channel.
-        // Producer fans out via round-robin.
-        let mut senders = Vec::with_capacity(worker_count);
-        for _ in 0..worker_count {
-            let (tx, rx) = tokio::sync::mpsc::channel::<RenameRequest>(channel_buffer);
-            senders.push(tx);
-            let pool_clone = Arc::clone(&pool);
-            let pending_clone = Arc::clone(&pending);
-            let shutdown_clone = shutdown_rx.clone();
-            tokio::spawn(async move {
-                run_rename_worker(pool_clone, Some(pending_clone), rx, shutdown_clone).await;
-            });
-        }
-
-        let dispatch = Arc::new(RenameDispatch::new(senders));
-
-        self.write_pool = Some(pool);
-        self.rename_tx = Some(dispatch);
-        self.pool_shutdown = Some(shutdown_tx);
-        self.pending_renames = Some(pending);
-        Ok(())
-    }
-
-    /// Wait until every in-flight rename has completed and every
-    /// slot is back in the pool. Used by tests to bridge the gap
-    /// between PUT-ack and the file being readable at its final
-    /// destination. Times out after 5 seconds so a buggy test fails
-    /// fast instead of hanging forever.
-    pub async fn drain_pending(&self) {
-        let Some(ref pool) = self.write_pool else {
-            return;
-        };
-        let target = pool.depth() as usize;
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        loop {
-            if pool.available() >= target {
-                break;
-            }
-            if std::time::Instant::now() >= deadline {
-                tracing::warn!(
-                    available = pool.available(),
-                    target,
-                    "drain_pending timed out -- pool slots not returning"
-                );
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        }
-    }
-
-    /// Whether the write pool is enabled.
-    pub fn write_pool_enabled(&self) -> bool {
-        self.write_pool.is_some()
-    }
-
-    /// Enable the write-ahead log for this volume. Creates the WAL
-    /// directory at `.abixio.sys/wal/`, recovers un-materialized entries
-    /// from any previous run, and spawns background materialize workers.
     pub async fn enable_wal(&mut self) -> Result<(), StorageError> {
         self.enable_wal_with_config(DEFAULT_WAL_THRESHOLD, 10_000, 2).await
     }
@@ -391,99 +229,6 @@ impl LocalVolume {
 /// chunks to the slot's data file, then on finalize writes meta and
 /// queues the rename request. Same optimization as the buffered pool
 /// path in write_shard(), but accessible from the streaming encode path.
-pub struct PoolShardWriter {
-    slot: Option<WriteSlot>,
-    root: PathBuf,
-    bucket: String,
-    key: String,
-    rename_tx: Arc<RenameDispatch>,
-    pending_renames: Option<PendingRenames>,
-    bytes_written: usize,
-}
-
-impl PoolShardWriter {
-    pub fn new(
-        slot: WriteSlot,
-        root: PathBuf,
-        bucket: &str,
-        key: &str,
-        rename_tx: Arc<RenameDispatch>,
-        pending_renames: Option<PendingRenames>,
-    ) -> Self {
-        Self {
-            slot: Some(slot),
-            root,
-            bucket: bucket.to_string(),
-            key: key.to_string(),
-            rename_tx,
-            pending_renames,
-            bytes_written: 0,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl ShardWriter for PoolShardWriter {
-    async fn write_chunk(&mut self, data: &[u8]) -> Result<(), StorageError> {
-        if let Some(ref mut slot) = self.slot {
-            slot.data_file.write_all(data).await?;
-            self.bytes_written += data.len();
-        }
-        Ok(())
-    }
-
-    async fn finalize(mut self: Box<Self>, meta: &ObjectMeta) -> Result<(), StorageError> {
-        let mut slot = self.slot.take().ok_or_else(|| {
-            StorageError::Internal("pool slot already consumed".into())
-        })?;
-
-        // write meta
-        let mut version = meta.clone();
-        version.is_latest = true;
-        let mf = ObjectMetaFile {
-            bucket: self.bucket.clone(),
-            key: self.key.clone(),
-            versions: vec![version],
-        };
-        let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
-            StorageError::Internal(format!("simd_json meta serialize: {}", e))
-        })?;
-        slot.meta_file.write_all(&meta_json).await?;
-
-        // compute destination paths
-        let dest_dir = pathing::object_dir(&self.root, &self.bucket, &self.key)?;
-        let data_dest = dest_dir.join("shard.dat");
-        let meta_dest = dest_dir.join("meta.json");
-
-        // insert into pending_renames before sending rename request
-        if let Some(ref pending) = self.pending_renames {
-            let entry = PendingEntry {
-                slot_id: slot.slot_id,
-                data_path: slot.data_path.clone(),
-                meta_path: slot.meta_path.clone(),
-                data_len: self.bytes_written as u64,
-            };
-            pending.insert(
-                (Arc::<str>::from(self.bucket.as_str()), Arc::<str>::from(self.key.as_str())),
-                entry,
-            );
-        }
-
-        let req = RenameRequest {
-            slot,
-            bucket: self.bucket.clone(),
-            key: self.key.clone(),
-            dest_dir,
-            data_dest,
-            meta_dest,
-        };
-        self.rename_tx.send(req).await.map_err(|_| {
-            StorageError::Internal("rename worker channel closed".into())
-        })?;
-        Ok(())
-    }
-}
-
 /// Streaming shard writer for the WAL. Buffers chunks internally,
 /// then on finalize: serialize needle, append to WAL, send materialize
 /// request. If accumulated data exceeds the threshold, falls back to
@@ -639,7 +384,6 @@ impl ShardWriter for LocalShardWriter {
 #[async_trait::async_trait]
 impl Backend for LocalVolume {
     async fn drain_pending_writes(&self) {
-        self.drain_pending().await;
         // also drain WAL pending
         if let Some(ref wal_mutex) = self.wal {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -674,22 +418,6 @@ impl Backend for LocalVolume {
                     key,
                     self.wal_threshold,
                 )));
-            }
-        }
-
-        // 2. pool (if enabled, not versioned, slot available)
-        if !is_versioned {
-            if let (Some(pool), Some(tx)) = (self.write_pool.as_ref(), self.rename_tx.as_ref()) {
-                if let Some(slot) = pool.try_pop() {
-                    return Ok(Box::new(PoolShardWriter::new(
-                        slot,
-                        self.root.clone(),
-                        bucket,
-                        key,
-                        Arc::clone(tx),
-                        self.pending_renames.clone(),
-                    )));
-                }
             }
         }
 
@@ -748,87 +476,6 @@ impl Backend for LocalVolume {
             }
         }
 
-        // Pool fast path: if the write pool is enabled and a slot is
-        // available, use the Phase 2 hot path (pop slot, concurrent
-        // writes via try_join, simd-json meta, send rename request).
-        // Skip for versioned objects -- versioned needs a meta.json
-        // read-modify-write that the pool's "pure rename" worker
-        // can't do yet (Phase 5+).
-        if !is_versioned {
-            if let (Some(pool), Some(tx)) = (self.write_pool.as_ref(), self.rename_tx.as_ref()) {
-                if let Some(slot) = pool.try_pop() {
-                    let mut version = meta.clone();
-                    version.is_latest = true;
-                    let mf = ObjectMetaFile {
-                        bucket: bucket.to_string(),
-                        key: key.to_string(),
-                        versions: vec![version],
-                    };
-                    // simd-json was the Phase 2.5 winner: 30% faster
-                    // than serde_json::to_vec on a ~500-byte struct
-                    let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
-                        StorageError::Internal(format!("simd_json meta serialize: {}", e))
-                    })?;
-
-                    // Phase 5.6: don't destructure the slot. Write through
-                    // its file handles via split borrows, then move the
-                    // whole slot into the rename request so the worker
-                    // (not the request handler) drops the file handles.
-                    // The drops are a major hot-path cost on Windows
-                    // (~65us avg, ~1.57ms p99 from kernel close);
-                    // moving them to the worker keeps the hot path tight.
-                    let mut slot = slot;
-                    tokio::try_join!(
-                        slot.data_file.write_all(data),
-                        slot.meta_file.write_all(&meta_json),
-                    )?;
-
-                    // Compute destination paths once. (Phase 4.5: collapsing
-                    // 3 path computations into 1 saved ~5us / call.)
-                    let dest_dir = pathing::object_dir(&self.root, bucket, key)?;
-                    let data_dest = dest_dir.join("shard.dat");
-                    let meta_dest = dest_dir.join("meta.json");
-
-                    // Phase 5: insert into pending_renames BEFORE sending
-                    // the rename request so concurrent readers see the
-                    // entry as soon as the writes are durable. The insert
-                    // must happen before the channel send to avoid the
-                    // race where the worker starts processing before the
-                    // entry exists. Phase 5.5: slim PendingEntry; the
-                    // read paths read the temp meta file when they need
-                    // it instead of caching the ObjectMeta in RAM.
-                    if let Some(ref pending) = self.pending_renames {
-                        let entry = PendingEntry {
-                            slot_id: slot.slot_id,
-                            data_path: slot.data_path.clone(),
-                            meta_path: slot.meta_path.clone(),
-                            data_len: data.len() as u64,
-                        };
-                        pending.insert(
-                            (Arc::<str>::from(bucket), Arc::<str>::from(key)),
-                            entry,
-                        );
-                    }
-
-                    let req = RenameRequest {
-                        slot,
-                        bucket: bucket.to_string(),
-                        key: key.to_string(),
-                        dest_dir,
-                        data_dest,
-                        meta_dest,
-                    };
-                    tx.send(req).await.map_err(|_| {
-                        StorageError::Internal("rename worker channel closed".into())
-                    })?;
-                    return Ok(());
-                }
-                // Pool empty: fall through to the existing slow path
-                // (Phase 7 will add explicit backpressure / fallback).
-            }
-        }
-
-        // small objects: log-structured path (one append instead of mkdir + 2 file creates)
         // file path
         //
         // Phase 8.6: apply the pool-side optimizations here.
@@ -885,32 +532,6 @@ impl Backend for LocalVolume {
     }
 
     async fn read_shard(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
-        // Phase 5: check pending pool writes first. The temp files are
-        // on disk via the page cache. Phase 5.5: we read the meta from
-        // the temp meta file rather than caching it in RAM, since the
-        // file was just written and is essentially free to read back.
-        //
-        // CRITICAL: clone the paths we need and drop the DashMap guard
-        // BEFORE awaiting. Holding a DashMap Ref across an .await can
-        // deadlock the worker, which needs to write-lock the same
-        // shard to remove the entry after a successful rename.
-        if let Some(ref pending) = self.pending_renames {
-            let key_arc = (Arc::<str>::from(bucket), Arc::<str>::from(key));
-            let lookup = pending
-                .get(&key_arc)
-                .map(|e| (e.data_path.clone(), e.meta_path.clone()));
-            if let Some((data_path, meta_path)) = lookup {
-                if let Ok(data) = tokio::fs::read(&data_path).await {
-                    if let Ok(mf) = read_meta_file(&meta_path).await {
-                        if let Some(version) = mf.versions.into_iter().next() {
-                            return Ok((data, version));
-                        }
-                    }
-                }
-                // temp file(s) gone -> fall through (race with worker)
-            }
-        }
-
         // check WAL pending (un-materialized objects)
         if let Ok(Some((data, meta))) = self.read_shard_from_wal(bucket, key) {
             return Ok((data, meta));
@@ -995,25 +616,9 @@ impl Backend for LocalVolume {
         bucket: &str,
         key: &str,
     ) -> Result<(MmapOrVec, super::metadata::ObjectMeta), StorageError> {
-        // Phase 5: check pending pool writes first (same race fallback
-        // as read_shard). Phase 5.5: read meta from the temp meta file.
-        if let Some(ref pending) = self.pending_renames {
-            let key_arc = (Arc::<str>::from(bucket), Arc::<str>::from(key));
-            let lookup = pending
-                .get(&key_arc)
-                .map(|e| (e.data_path.clone(), e.meta_path.clone()));
-            if let Some((data_path, meta_path)) = lookup {
-                if let Ok(file) = std::fs::File::open(&data_path) {
-                    if let Ok(mmap) = unsafe { memmap2::Mmap::map(&file) } {
-                        if let Ok(mf) = read_meta_file(&meta_path).await {
-                            if let Some(version) = mf.versions.into_iter().next() {
-                                return Ok((MmapOrVec::Mmap(mmap), version));
-                            }
-                        }
-                    }
-                }
-                // race with worker -> fall through to file tier
-            }
+        // check WAL pending
+        if let Ok(Some((data, meta))) = self.read_shard_from_wal(bucket, key) {
+            return Ok((MmapOrVec::Vec(data), meta));
         }
 
         // file tier
@@ -1023,23 +628,17 @@ impl Backend for LocalVolume {
         }
         let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await
             .map_err(|_| StorageError::ObjectNotFound)?;
-        let version = mf
-            .versions
+        let version = mf.versions
             .iter()
             .find(|v| !v.is_delete_marker)
             .ok_or(StorageError::ObjectNotFound)?;
-
-        // inline data: return from meta.json (no shard.dat)
         if let Some(ref inline_b64) = version.inline_data {
             use base64::Engine;
             let data = base64::engine::general_purpose::STANDARD
                 .decode(inline_b64)
-                .map_err(|e| StorageError::Internal(format!("inline base64: {}", e)))?;
-            let mut meta = version.clone();
-            meta.inline_data = None;
-            return Ok((MmapOrVec::Vec(data), meta));
+                .map_err(|e| StorageError::Internal(format!("inline base64 decode: {}", e)))?;
+            return Ok((MmapOrVec::Vec(data), version.clone()));
         }
-
         let shard_path = if version.version_id.is_empty() {
             pathing::object_shard_path(&self.root, bucket, key)?
         } else {
@@ -1052,28 +651,11 @@ impl Backend for LocalVolume {
     }
 
     async fn delete_object(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
-        // Phase 5: cancel a pending pool write if one exists. Remove
-        // the in-memory entry, then unlink the temp files. The worker's
-        // rename will fail with ENOENT and the slot will still be
-        // replenished by the always-replenish guarantee in
-        // process_rename_request. We then return success without
-        // touching the file tier.
-        if let Some(ref pending) = self.pending_renames {
-            let key_arc = (Arc::<str>::from(bucket), Arc::<str>::from(key));
-            if let Some((_, entry)) = pending.remove(&key_arc) {
-                let _ = tokio::fs::remove_file(&entry.data_path).await;
-                let _ = tokio::fs::remove_file(&entry.meta_path).await;
-                return Ok(());
-            }
-        }
-
         // check WAL pending
         if self.is_in_wal(bucket, key) {
             if let Some(ref wal_mutex) = self.wal {
                 if let Ok(mut w) = wal_mutex.lock() {
                     w.mark_materialized(bucket, key);
-                    // the materialize worker will fail on the missing entry
-                    // (dest won't exist) -- that's fine, it logs and continues
                     return Ok(());
                 }
             }
@@ -1108,18 +690,6 @@ impl Backend for LocalVolume {
             }
         }
 
-        // pending pool writes that haven't been renamed yet
-        if let Some(ref pending) = self.pending_renames {
-            for entry in pending.iter() {
-                let (b, k) = entry.key();
-                if b.as_ref() == bucket && k.starts_with(prefix) {
-                    let k_str = k.to_string();
-                    if !keys.contains(&k_str) {
-                        keys.push(k_str);
-                    }
-                }
-            }
-        }
 
         keys.sort();
         Ok(keys)
@@ -1185,22 +755,6 @@ impl Backend for LocalVolume {
     }
 
     async fn stat_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
-        // Phase 5: pending pool writes are visible to stat. Phase 5.5
-        // reads the meta from the temp meta file (which is in the
-        // page cache) instead of caching it in RAM at PUT time.
-        if let Some(ref pending) = self.pending_renames {
-            let key_arc = (Arc::<str>::from(bucket), Arc::<str>::from(key));
-            let meta_path = pending.get(&key_arc).map(|e| e.meta_path.clone());
-            if let Some(meta_path) = meta_path {
-                if let Ok(mf) = read_meta_file(&meta_path).await {
-                    if let Some(version) = mf.versions.into_iter().next() {
-                        return Ok(version);
-                    }
-                }
-                // race with worker -> fall through
-            }
-        }
-
         // check WAL pending
         if let Some(ref wal_mutex) = self.wal {
             if let Ok(w) = wal_mutex.lock() {
@@ -1625,204 +1179,5 @@ mod tests {
         let info = disk.info();
         assert_eq!(info.backend_type, "local");
         assert!(info.label.starts_with("local:"));
-    }
-
-    // ----- Phase 4: write pool integration tests -----
-
-    #[tokio::test]
-    async fn enable_write_pool_recovers_crashed_put() {
-        // Simulate a crash state: a slot-0000.* pair exists in the
-        // pool dir from a previous run, but no pool had a chance to
-        // drain the rename. enable_write_pool must recover the PUT
-        // BEFORE WriteSlotPool::new truncates the slot-0000.*.tmp
-        // files, otherwise we would lose the acked write.
-
-        let tmp = TempDir::new().unwrap();
-        let root = tmp.path();
-        let pool_dir = root.join(".abixio.sys").join("tmp");
-        std::fs::create_dir_all(&pool_dir).unwrap();
-
-        // Lay out the temp pair by hand: data.tmp with some bytes,
-        // meta.tmp with a realistic ObjectMetaFile carrying the
-        // destination identity fields (bucket, key).
-        let data_tmp = pool_dir.join("slot-0000.data.tmp");
-        let meta_tmp = pool_dir.join("slot-0000.meta.tmp");
-        std::fs::write(&data_tmp, b"recovered bytes").unwrap();
-        let mf = ObjectMetaFile {
-            bucket: "bucket".to_string(),
-            key: "obj".to_string(),
-            versions: vec![ObjectMeta {
-                size: 15,
-                etag: "deadbeef".to_string(),
-                content_type: "application/octet-stream".to_string(),
-                created_at: 0,
-                erasure: ErasureMeta::default(),
-                checksum: String::new(),
-                ..Default::default()
-            }],
-        };
-        std::fs::write(&meta_tmp, serde_json::to_vec(&mf).unwrap()).unwrap();
-
-        let mut disk = LocalVolume::new(root).unwrap();
-        disk.enable_write_pool(4).await.unwrap();
-
-        // The destination must now exist with the recovered bytes.
-        let shard_path = pathing::object_shard_path(root, "bucket", "obj").unwrap();
-        let meta_path = pathing::object_meta_path(root, "bucket", "obj").unwrap();
-        assert!(shard_path.exists(), "shard.dat should exist after recovery");
-        assert!(meta_path.exists(), "meta.json should exist after recovery");
-        assert_eq!(std::fs::read(&shard_path).unwrap(), b"recovered bytes");
-
-        // Fresh pool must still be at full depth: recovery + slot
-        // creation at slot ids 0..4 coexist because recovery moved
-        // slot-0000.*.tmp to the destination first, then create_slot
-        // reopened empty files at those paths.
-        assert!(disk.write_pool_enabled());
-        let fresh_data_tmp = pool_dir.join("slot-0000.data.tmp");
-        let fresh_meta_tmp = pool_dir.join("slot-0000.meta.tmp");
-        assert!(fresh_data_tmp.exists());
-        assert!(fresh_meta_tmp.exists());
-        assert_eq!(std::fs::metadata(&fresh_data_tmp).unwrap().len(), 0);
-        assert_eq!(std::fs::metadata(&fresh_meta_tmp).unwrap().len(), 0);
-    }
-
-    #[tokio::test]
-    async fn enable_write_pool_creates_pool_and_worker() {
-        let tmp = TempDir::new().unwrap();
-        let mut disk = LocalVolume::new(tmp.path()).unwrap();
-        assert!(!disk.write_pool_enabled());
-        disk.enable_write_pool(8).await.unwrap();
-        assert!(disk.write_pool_enabled());
-
-        // verify the slot files exist on disk
-        let pool_dir = tmp.path().join(".abixio.sys").join("tmp");
-        let mut count = 0;
-        for entry in std::fs::read_dir(&pool_dir).unwrap() {
-            if entry.unwrap().path().is_file() {
-                count += 1;
-            }
-        }
-        assert_eq!(count, 16, "expected 8 data + 8 meta files in pool dir");
-    }
-
-    #[tokio::test]
-    async fn write_shard_with_pool_routes_to_pool_then_drains() {
-        let tmp = TempDir::new().unwrap();
-        let mut disk = LocalVolume::new(tmp.path()).unwrap();
-        disk.enable_write_pool(4).await.unwrap();
-
-        let meta = test_meta(0);
-        let payload = b"hello pool";
-        disk.write_shard("bucket", "obj", payload, &meta).await.unwrap();
-
-        // Drain pending renames so the destination file exists.
-        disk.drain_pending().await;
-
-        // The destination must now have shard.dat + meta.json
-        let shard_path = pathing::object_shard_path(&tmp.path(), "bucket", "obj").unwrap();
-        let meta_path = pathing::object_meta_path(&tmp.path(), "bucket", "obj").unwrap();
-        assert!(shard_path.exists(), "shard.dat should exist after drain");
-        assert!(meta_path.exists(), "meta.json should exist after drain");
-
-        let read_data = std::fs::read(&shard_path).unwrap();
-        assert_eq!(read_data, payload);
-    }
-
-    #[tokio::test]
-    async fn read_after_drain_returns_correct_data() {
-        let tmp = TempDir::new().unwrap();
-        let mut disk = LocalVolume::new(tmp.path()).unwrap();
-        disk.enable_write_pool(4).await.unwrap();
-
-        let meta = test_meta(0);
-        disk.write_shard("bucket", "key.txt", b"phase4data", &meta)
-            .await
-            .unwrap();
-        disk.drain_pending().await;
-
-        // Use the existing read_shard path which goes through the file
-        // tier (Phase 4 doesn't touch reads). Verify it sees the data.
-        let (got, got_meta) = disk.read_shard("bucket", "key.txt").await.unwrap();
-        assert_eq!(got, b"phase4data");
-        assert_eq!(got_meta.size, meta.size);
-    }
-
-    #[tokio::test]
-    async fn drain_pending_is_noop_when_pool_not_enabled() {
-        let tmp = TempDir::new().unwrap();
-        let disk = LocalVolume::new(tmp.path()).unwrap();
-        // Should return immediately without panic.
-        disk.drain_pending().await;
-    }
-
-    // ----- Phase 5: read path integration via pending_renames -----
-
-    #[tokio::test]
-    async fn pending_visible_to_read_immediately() {
-        let tmp = TempDir::new().unwrap();
-        let mut disk = LocalVolume::new(tmp.path()).unwrap();
-        disk.enable_write_pool(4).await.unwrap();
-
-        let meta = test_meta(0);
-        let payload = b"phase5 read after write";
-        disk.write_shard("bucket", "imm", payload, &meta).await.unwrap();
-        // No drain -- worker may not have run yet.
-        let (got, got_meta) = disk.read_shard("bucket", "imm").await.unwrap();
-        assert_eq!(got, payload);
-        assert_eq!(got_meta.size, meta.size);
-    }
-
-    #[tokio::test]
-    async fn pending_visible_to_stat_immediately_zero_disk() {
-        let tmp = TempDir::new().unwrap();
-        let mut disk = LocalVolume::new(tmp.path()).unwrap();
-        disk.enable_write_pool(4).await.unwrap();
-
-        let meta = test_meta(0);
-        disk.write_shard("bucket", "stat", b"x", &meta).await.unwrap();
-        // No drain -- worker may not have run yet.
-        let got_meta = disk.stat_object("bucket", "stat").await.unwrap();
-        assert_eq!(got_meta.size, meta.size);
-        assert_eq!(got_meta.etag, meta.etag);
-    }
-
-    #[tokio::test]
-    async fn pending_visible_to_list() {
-        let tmp = TempDir::new().unwrap();
-        let mut disk = LocalVolume::new(tmp.path()).unwrap();
-        disk.enable_write_pool(4).await.unwrap();
-
-        let meta = test_meta(0);
-        disk.write_shard("bucket", "a.txt", b"a", &meta).await.unwrap();
-        disk.write_shard("bucket", "b.txt", b"b", &meta).await.unwrap();
-        // No drain.
-        let keys = disk.list_objects("bucket", "").await.unwrap();
-        assert!(keys.contains(&"a.txt".to_string()));
-        assert!(keys.contains(&"b.txt".to_string()));
-    }
-
-    #[tokio::test]
-    async fn delete_pending_cancels_rename() {
-        let tmp = TempDir::new().unwrap();
-        let mut disk = LocalVolume::new(tmp.path()).unwrap();
-        disk.enable_write_pool(4).await.unwrap();
-
-        let meta = test_meta(0);
-        disk.write_shard("bucket", "doomed", b"data", &meta).await.unwrap();
-        // Immediately delete -- the worker hasn't necessarily run.
-        disk.delete_object("bucket", "doomed").await.unwrap();
-        // Drain to let any in-flight worker activity settle.
-        disk.drain_pending().await;
-
-        // Destination should NOT exist
-        let dest = pathing::object_dir(&tmp.path(), "bucket", "doomed").unwrap();
-        let shard_path = dest.join("shard.dat");
-        let meta_path = dest.join("meta.json");
-        assert!(!shard_path.exists(), "shard.dat should not exist after delete-cancel");
-        assert!(!meta_path.exists(), "meta.json should not exist after delete-cancel");
-
-        // Read should 404
-        let result = disk.read_shard("bucket", "doomed").await;
-        assert!(result.is_err());
     }
 }

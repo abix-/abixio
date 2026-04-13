@@ -42,9 +42,8 @@ pub struct Config {
     #[arg(long, default_value_t = 2)]
     pub mrf_workers: usize,
 
-    /// Write tier for local volumes: `file` (default), `wal`
-    /// (write-ahead log with background materialize), or `pool`
-    /// (legacy pre-opened temp file pool). See `docs/write-path.md`.
+    /// Write tier for local volumes: `file` (default) or `wal`
+    /// (write-ahead log with background materialize). See `docs/write-path.md`.
     #[arg(long, default_value = "file")]
     pub write_tier: String,
 
@@ -90,8 +89,8 @@ impl Config {
             .map_err(|_| format!("invalid heal_interval: {}", self.heal_interval))?;
         // validate write tier
         match self.write_tier.as_str() {
-            "file" | "wal" | "pool" => {}
-            other => return Err(format!("invalid write_tier: {} (expected file|wal|pool)", other)),
+            "file" | "wal" => {}
+            other => return Err(format!("invalid write_tier: {} (expected file|wal)", other)),
         }
         Ok(())
     }

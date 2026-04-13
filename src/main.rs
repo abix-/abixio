@@ -77,12 +77,6 @@ async fn main() {
                                     std::process::exit(1);
                                 }
                             }
-                            "pool" => {
-                                if let Err(e) = v.enable_write_pool(1024).await {
-                                    eprintln!("error: enable write pool on {}: {}", vp, e);
-                                    std::process::exit(1);
-                                }
-                            }
                             _ => {}
                         }
                         backends.push(Box::new(v));

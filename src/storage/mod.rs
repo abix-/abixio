@@ -5,7 +5,6 @@ pub mod needle;
 pub mod segment;
 pub mod wal;
 pub mod write_cache;
-pub mod write_slot_pool;
 pub mod remote_volume;
 pub mod storage_server;
 pub mod erasure_decode;
