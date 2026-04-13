@@ -19,14 +19,16 @@ node-level resilience, not product support.
 !!! warning "Early development"
     AbixIO is not production-ready yet.
 
-Current reality as of 2026-04-06:
+Current reality as of 2026-04-13:
 
 - first commit: 2026-04-04
 - no releases, packaging, or production deployments
-- 171 passing automated tests (lib + integration + admin)
+- 273 test functions (111 lib + 162 integration/admin)
 - 41 of 72 S3 API operations implemented
 - protocol layer powered by s3s (SigV4 chunked auth, smithy XML, presigned URLs)
 - fully async storage layer (tokio)
+- conditional requests (If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since) implemented
+- versioning response headers wired through s3s DTOs
 - core storage engine works with real S3 clients, but important gaps remain
 
 ## What AbixIO Is Good At
@@ -54,9 +56,7 @@ Current reality as of 2026-04-06:
 
 ## What Is Still Missing Or Rough
 
-- No production field time, benchmarks, load testing, or failure-injection testing
-- Conditional requests (If-Match, If-None-Match) not yet wired through s3s
-- Versioning response headers (x-amz-version-id) not yet wired through s3s
+- No production field time or failure-injection testing
 - Bucket delete fails when versioned objects exist
 - No encryption at rest
 - No live topology changes or rebalance
@@ -66,6 +66,7 @@ Current reality as of 2026-04-06:
 
 | Doc | What it covers |
 |---|---|
+| [Status](status.md) | Per-feature completion ratings and release blockers |
 | [Architecture](architecture.md) | Design principles, cluster direction, project structure |
 | [Write Path](write-path.md) | Canonical PUT path from client request to final resting place |
 | [Cluster](cluster.md) | Node exchange, quorum model, fencing behavior |

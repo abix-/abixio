@@ -299,7 +299,7 @@ Authoritative normalized client mode: HTTPS + SigV4 + UNSIGNED-PAYLOAD.
 Cross-client numbers are only directly comparable when the harness holds
 the major variables constant.
 
-1. **Same warmup.** 3 PUT + 3 GET warmup operations before timing, for
+1. **Same warmup.** 20 PUT + 3 GET warmup operations before timing, for
    every client. Ensures TCP connections are established, caches are warm,
    and JIT (if any) has run.
 
@@ -326,7 +326,7 @@ the major variables constant.
    tmpdir, same machine, release build. Servers are started fresh for
    each benchmark run.
 
-## Requirement 6: Reproducibility
+## Requirement 7: Reproducibility
 
 - All benchmarks must report: p50 (median), p95 (tail), p99 (worst case), ops/sec, MB/s (where applicable)
 - CLI process spawn overhead must be measured and reported (not subtracted)

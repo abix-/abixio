@@ -53,11 +53,11 @@ Same `--nodes` on every node. Identity resolves automatically. You now have 5 vo
 
 | | |
 |---|---|
-| **Tests** | 355 passed, 18 ignored (current `cargo test`) |
+| **Tests** | 273 test functions (111 lib + 162 integration) |
 | **S3 coverage** | 41 of 72 operations ([details](docs/s3-compliance.md)) |
 | **Protocol** | [s3s](https://crates.io/crates/s3s) v0.13 (SigV4, chunked auth, smithy XML) |
 | **GET perf** | 1220 MB/s at 1GB (mmap, zero-copy). Zero-alloc EC decode ([benchmarks](docs/benchmarks.md)) |
-| **Small objects** | Log-structured: 1096 PUT/s, 1315 GET/s (4KB, keep-alive). 90% faster PUT, 70% faster GET vs file tier ([design](docs/write-log.md)) |
+| **Small objects** | 1716 PUT/s, 805 GET/s (4KB, SDK, TLS). 4.7x faster PUT than MinIO, 5.7x faster than RustFS ([benchmarks](docs/benchmarks.md)) |
 | **Releases** | None yet |
 
 ### Docs

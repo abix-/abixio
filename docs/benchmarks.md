@@ -140,8 +140,11 @@ process; per-object dispatch is still pending.
 
 ## Single-server detailed benchmark
 
-AbixIO 1-disk, all operations, all sizes.
-Run with: `cd abixio-ui && cargo test --release --test bench -- --ignored --nocapture bench_1_disk`
+AbixIO 1-disk, all operations, all sizes. Measured 2026-04-09 (pre-TLS,
+HTTP-only, file tier, no write cache). Numbers differ from the TLS
+matrix above because TLS + SigV4 add per-request overhead.
+
+Run with: `abixio-ui bench --layers L6 --servers abixio --write-paths file --write-cache off`
 
 ```
 OP       SIZE          ops         avg         p50         p99          MB/s     obj/sec
@@ -185,9 +188,10 @@ The current canonical client set is:
 - `AWS CLI`
 - `rclone`
 
-Published numeric results for this rewritten comparison are pending a
-fresh run. The older `curl` / `mc` table has been retired because it no
-longer matches the benchmark design.
+See the [Comprehensive matrix](#comprehensive-matrix) above for the
+canonical cross-client numbers (aws-sdk-s3, AWS CLI, rclone). The older
+`curl` / `mc` table has been retired because it no longer matches the
+benchmark design.
 
 ---
 
