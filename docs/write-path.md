@@ -198,8 +198,9 @@ Current routing:
 | non-versioned and `content_length <= 64KB` | collect body in memory, EC-encode, then try RAM cache first |
 | RAM cache insert succeeds | ack from RAM cache |
 | RAM cache insert fails or cache disabled | call `write_shard` per selected backend |
-| local backend + non-versioned + `meta.size <= 64KB` + log enabled | log store |
-| local backend + write pool enabled and object qualifies for that local path | write pool |
+| local backend + non-versioned + `data.len <= wal_threshold` + WAL enabled | WAL (append to mmap segment, background materialize) |
+| local backend + non-versioned + `meta.size <= 64KB` + log enabled | log store (legacy) |
+| local backend + write pool enabled and object qualifies for that local path | write pool (legacy) |
 | local backend fallback | file tier |
 | remote backend | HTTP POST to target node's storage server, which then executes its own local branch |
 | versioned object or unknown/large content length | streaming `encode_and_write` path |
@@ -209,9 +210,8 @@ places for different reasons.
 
 - `VolumePool` uses `content_length <= 64KB` to decide whether it can
   buffer the full object and take the small-object path.
-- `LocalVolume::write_shard` uses `meta.size <= 64KB` plus
-  `!is_versioned` when deciding whether that shard can go to the log or
-  inline-file path.
+- `LocalVolume::write_shard` checks the WAL threshold (default 64KB)
+  when deciding whether to append to the WAL or fall through to file tier.
 
 ## Layer-by-layer write path
 
@@ -341,7 +341,67 @@ Final resting place:
 - that flush drains cached entries and calls backend `write_shard` for
   each shard, which then re-enters the normal local or remote shard path
 
-### Branch B: Local log store
+### Branch B: Write-ahead log (WAL)
+
+Isolated L3 storage pipeline. Direct VolumePool API call, no HTTP,
+no s3s. 1 disk, ftt=0, no write cache, Defender-excluded tmp dir.
+
+Source: `abixio-ui bench --layers L3 --write-paths wal`,
+`bench-results/1776077316.json`
+
+| Size | PUT p50 | PUT throughput | GET p50 | GET throughput |
+|---|---|---|---|---|
+| 4KB | `148us` | `24.6 MB/s` | `533us` | `6.9 MB/s` |
+| 64KB | `292us` | `173.3 MB/s` | `565us` | `108.1 MB/s` |
+| 10MB | `30.8ms` | `320.6 MB/s` | `10.4ms` | `944.7 MB/s` |
+| 100MB | `336.5ms` | `293.6 MB/s` | `94.5ms` | `1059.2 MB/s` |
+| 1GB | `3.45s` | `296.7 MB/s` | `1.37s` | `755.7 MB/s` |
+
+The WAL appends a checksummed needle directly into a writable mmap
+segment (zero syscalls, zero allocation). At 4KB it is 5.4x faster
+than the file tier and tied with the log store. At 64KB it beats the
+log store (292us vs 308us) because it skips the log store's per-append
+meta decode. At 10MB+ the WalShardWriter buffers then falls back to
+the file tier, which adds overhead vs the direct file path.
+
+Head-to-head release-mode unit test (`write_shard` only, same process,
+same disk): WAL 3us, log 3us, file 878us at 4KB. WAL 30us, log 31us
+at 64KB. The L3 bench numbers above include VolumePool routing
+overhead (EC, placement, quorum).
+
+If the WAL is enabled on a `LocalVolume`, small non-versioned objects
+route through the WAL. Objects above the WAL threshold (default 64KB)
+go straight to the file tier.
+
+What happens before ack:
+
+- `Needle::new` serializes ObjectMeta to msgpack
+- `serialize_into` writes the needle directly into the mmap segment
+  (header + bucket + key + meta + data, one copy, zero allocation)
+- the in-memory pending map is updated so reads can find the object
+- a lightweight `MaterializeRequest` (Arc<str> identity + 20 bytes of
+  offsets) is fire-and-forget sent to the background worker
+
+What ack means here:
+
+- the object is durable in the WAL segment's mmap (OS page cache)
+- reads see it immediately via the pending map
+- the object is **not yet at its final file-per-object location**
+
+Final resting place:
+
+- the background materialize worker reads data from the segment mmap,
+  creates the object directory, and writes `shard.dat` + `meta.json`
+  concurrently via `tokio::try_join!`
+- once materialized, the pending entry is removed and reads fall
+  through to the file tier
+- when all entries in a segment are materialized, the segment file
+  is deleted
+
+See [write-wal.md](write-wal.md) for the full WAL design, recovery,
+and optimization history.
+
+### Branch C: Local log store (legacy)
 
 Isolated L3 storage pipeline. Direct VolumePool API call, no HTTP,
 no s3s. 1 disk, ftt=0, no write cache.
@@ -386,7 +446,7 @@ Final resting place:
 
 - the append-only log segment itself is the final resting place
 
-### Branch C: Local write pool
+### Branch D: Local write pool (legacy)
 
 Isolated L3 storage pipeline. Direct VolumePool API call, no HTTP,
 no s3s. 1 disk, ftt=0, pool depth 32, no write cache.
@@ -432,7 +492,7 @@ Final resting place:
 - the final `bucket/key/.../shard.dat` and `meta.json` object paths,
   after the rename worker completes
 
-### Branch D: Local file tier
+### Branch E: Local file tier
 
 Isolated L3 storage pipeline. Direct VolumePool API call, no HTTP,
 no s3s. 1 disk, ftt=0, no write cache.
@@ -477,7 +537,7 @@ Final resting place:
 
 - the final object directory on disk
 
-### Branch E: Remote backend
+### Branch F: Remote backend
 
 | Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
 |---|---|---|---|---|---|---|
@@ -509,8 +569,9 @@ reference.
 | Branch | Ack means | Final resting place reached at ack? |
 |---|---|---|
 | RAM write cache | object is in RAM cache and readable from cache | no |
-| log store | object is appended to the log and indexed | yes, modulo OS page-cache durability model |
-| write pool | temp files are written and pending rename is registered | no |
+| WAL | object is in mmap segment and pending map; materialize queued | no (materialized in background) |
+| log store (legacy) | object is appended to the log and indexed | yes, modulo OS page-cache durability model |
+| write pool (legacy) | temp files are written and pending rename is registered | no |
 | file tier | final object files are written in their destination directory | yes, modulo OS page-cache durability model |
 | remote backend | target node completed its local shard write path | depends on the target branch |
 
@@ -584,61 +645,59 @@ pending renames are drained and write cache is flushed before any
 timed GETs begin. This ensures GET measures read performance from
 the final storage location, not from transitional temp files.
 
-Source: `abixio-ui bench --layers L3`, `bench-results/l3-storage.json`
+Source: `abixio-ui bench --layers L3 --write-paths file,wal,log,pool`,
+`bench-results/1776077316.json`
 
-#### PUT p50 latency by tier (put_stream, 1+0 fast path)
+#### PUT p50 latency by tier (1+0 fast path)
 
-| Size | file | log | pool | best tier |
-|---|---|---|---|---|
-| 4KB | `798us` | **`135us`** | `157us` | log |
-| 64KB | `961us` | **`280us`** | `259us` | pool |
-| 10MB | `20.1ms` | `30.1ms` | **`18.0ms`** | pool |
-| 100MB | `186.2ms` | `338.3ms` | **`179.0ms`** | pool |
-| 1GB | **`1.89s`** | `3.24s` | `1.92s` | file |
-
-#### PUT throughput by tier (put_stream, 1+0 fast path)
-
-| Size | file | log | pool | best tier |
-|---|---|---|---|---|
-| 4KB | `3.9 MB/s` | **`27.1 MB/s`** | `10.5 MB/s` | log |
-| 64KB | `63.7 MB/s` | **`217.7 MB/s`** | `109.1 MB/s` | log |
-| 10MB | `496.7 MB/s` | `330.4 MB/s` | **`554.3 MB/s`** | pool |
-| 100MB | `536.6 MB/s` | `273.5 MB/s` | **`556.7 MB/s`** | pool |
-| 1GB | **`533.6 MB/s`** | `317.1 MB/s` | `534.9 MB/s` | file |
+| Size | file | **wal** | log | pool | best tier |
+|---|---|---|---|---|---|
+| 4KB | `898us` | **`148us`** | `157us` | `160us` | wal |
+| 64KB | `898us` | **`292us`** | `308us` | `277us` | pool |
+| 10MB | `20.1ms` | `30.8ms` | `30.1ms` | **`18.0ms`** | pool |
+| 100MB | `186.2ms` | `336.5ms` | `338.3ms` | **`179.0ms`** | pool |
+| 1GB | **`1.89s`** | `3.45s` | `3.24s` | `1.92s` | file |
 
 #### GET p50 latency by tier (get_stream, mmap, page-cache hot)
 
-| Size | file | log | pool | best tier |
-|---|---|---|---|---|
-| 4KB | `428us` | **`34us`** | `577us` | log |
-| 64KB | `427us` | **`60us`** | `665us` | log |
-| 10MB | **`425us`** | `436us` | `699us` | file |
-| 100MB | **`554us`** | `629us` | `830us` | file |
-| 1GB | **`636us`** | `694us` | `937us` | file |
+| Size | file | wal | **log** | pool | best tier |
+|---|---|---|---|---|---|
+| 4KB | `452us` | `533us` | **`33us`** | `660us` | log |
+| 64KB | `519us` | `565us` | **`76us`** | `748us` | log |
 
 GET is sub-millisecond at all sizes because data sits in OS page
 cache. Log store GET is fastest at small sizes because it reads
-from the in-memory index + mmap segment (no directory traversal).
+from the permanent in-memory index + mmap segment (no directory
+traversal). WAL GET reads from the segment mmap while pending, then
+falls through to file tier after materialization.
 
 #### Tier handoff
 
-- **<=64KB**: log store wins PUT (5.9x faster than file at 4KB)
-  and GET (12.6x faster at 4KB)
-- **10MB-100MB**: pool wins PUT (avoids mkdir + File::create)
-- **>=1GB**: file and pool are within 2% on PUT. Log store loses
-  because LogShardWriter buffers chunks then falls back to file-tier
-  write when data exceeds 64KB
-- Pool is a strong default: nearly as fast as log at small sizes,
-  fastest at mid-range, competitive at 1GB, and no GC needed
+- **<=64KB PUT**: WAL wins at 4KB (148us, 5.4x faster than file).
+  Pool wins at 64KB (277us) by a small margin over WAL (292us).
+  Both beat file tier by 3x+
+- **<=64KB GET**: log wins (33us) because the log is permanent
+  storage with an in-memory index. WAL and file tier are similar
+  (~500us) because WAL materializes to file tier
+- **10MB-100MB**: pool and file win PUT. WAL and log fall back to
+  file tier at these sizes (above the 64KB threshold) and add
+  buffering overhead
+- **>=1GB**: file tier wins PUT. All non-file tiers fall back to
+  file tier with overhead
+
+**WAL is the recommended default.** It matches or beats log on PUT
+at every size up to the threshold, gives file-per-object final layout,
+has no GC, no permanent index, and bounded startup cost. The only
+tradeoff vs log is GET performance during the pending window.
 
 ## How other docs should use this page
 
 - `architecture.md` should summarize the write path and link here.
 - `benchmarks.md` should keep measurements and link here for layer and
   durability interpretation.
-- `write-log.md`, `write-pool.md`, and `write-cache.md` should explain
-  their own tier internals and trade-offs, then link here for the
-  end-to-end path.
+- `write-wal.md` is the authoritative WAL design doc.
+- `write-log.md`, `write-pool.md`, and `write-cache.md` cover legacy
+  tier internals.
 
 ## Integration: S3 + real storage (L6)
 
