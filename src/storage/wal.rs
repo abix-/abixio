@@ -762,42 +762,27 @@ mod tests {
         wal_vol.enable_wal().await.unwrap();
         wal_vol.make_bucket("b").await.unwrap();
 
-        let log_root = tmp.path().join("log_vol");
-        std::fs::create_dir_all(&log_root).unwrap();
-        let mut log_vol = LocalVolume::new(&log_root).unwrap();
-        log_vol.enable_log_store().unwrap();
-        log_vol.make_bucket("b").await.unwrap();
-
         let file_root = tmp.path().join("file_vol");
         std::fs::create_dir_all(&file_root).unwrap();
         let file_vol = LocalVolume::new(&file_root).unwrap();
         file_vol.make_bucket("b").await.unwrap();
 
-        // warmup all 3
+        // warmup both
         for i in 0..50 {
             let k = format!("w{}", i);
             wal_vol.write_shard("b", &k, &data, &meta).await.unwrap();
-            log_vol.write_shard("b", &k, &data, &meta).await.unwrap();
             file_vol.write_shard("b", &k, &data, &meta).await.unwrap();
         }
 
         // --- timed runs ---
         let mut wal_times = Vec::with_capacity(iters);
-        let mut log_times = Vec::with_capacity(iters);
         let mut file_times = Vec::with_capacity(iters);
 
-        // run each tier in its own loop to avoid cross-tier interference
         for i in 0..iters {
             let k = format!("tw{}", i);
             let t0 = std::time::Instant::now();
             wal_vol.write_shard("b", &k, &data, &meta).await.unwrap();
             wal_times.push(t0.elapsed());
-        }
-        for i in 0..iters {
-            let k = format!("tl{}", i);
-            let t0 = std::time::Instant::now();
-            log_vol.write_shard("b", &k, &data, &meta).await.unwrap();
-            log_times.push(t0.elapsed());
         }
         for i in 0..iters {
             let k = format!("tf{}", i);
@@ -807,7 +792,6 @@ mod tests {
         }
 
         wal_times.sort();
-        log_times.sort();
         file_times.sort();
 
         let p50 = |v: &[std::time::Duration]| v[v.len() / 2];
@@ -821,143 +805,10 @@ mod tests {
         eprintln!("  {:>8}  {:>10}  {:>10}  {:>10}", "tier", "p50", "p95", "p99");
         eprintln!("  {:>8}  {:>9.0}us  {:>9.0}us  {:>9.0}us", "wal",
             us(p50(&wal_times)), us(p95(&wal_times)), us(p99(&wal_times)));
-        eprintln!("  {:>8}  {:>9.0}us  {:>9.0}us  {:>9.0}us", "log",
-            us(p50(&log_times)), us(p95(&log_times)), us(p99(&log_times)));
         eprintln!("  {:>8}  {:>9.0}us  {:>9.0}us  {:>9.0}us", "file",
             us(p50(&file_times)), us(p95(&file_times)), us(p99(&file_times)));
         eprintln!();
-        eprintln!("  wal vs log delta: {:.0}us", us(p50(&wal_times)) - us(p50(&log_times)));
-    }
-
-    /// Instrumented breakdown: WAL append vs log store append at 4KB.
-    /// Measures each step individually to find where the gap is.
-    /// Run with: cargo test --lib wal::tests::bench_wal_vs_log_breakdown -- --ignored --nocapture
-    #[tokio::test]
-    #[ignore]
-    async fn bench_wal_vs_log_breakdown() {
-        use crate::storage::log_store::LogStore;
-        let iters = 10_000usize;
-        let data = vec![0x42u8; 4096];
-        let meta = test_meta();
-
-        // --- LOG STORE ---
-        let tmp_log = TempDir::new().unwrap();
-        let log_dir = tmp_log.path().join("log");
-        let mut log = LogStore::open(&log_dir, 64 * 1024 * 1024).unwrap();
-
-        // warmup
-        for i in 0..100 {
-            let n = Needle::new("b", &format!("w{}", i), &meta, &data).unwrap();
-            log.append(&n).unwrap();
-        }
-
-        // measure: needle creation
-        let t0 = std::time::Instant::now();
-        let mut needles = Vec::with_capacity(iters);
-        for i in 0..iters {
-            needles.push(Needle::new("b", &format!("log{}", i), &meta, &data).unwrap());
-        }
-        let needle_create = t0.elapsed();
-
-        // measure: log append only
-        let t0 = std::time::Instant::now();
-        for n in &needles {
-            log.append(n).unwrap();
-        }
-        let log_append = t0.elapsed();
-
-        // --- WAL ---
-        let tmp_wal = TempDir::new().unwrap();
-        let wal_dir = tmp_wal.path().join("wal");
-        let root = tmp_wal.path();
-        let wal_mutex = Arc::new(std::sync::Mutex::new(
-            Wal::open(&wal_dir, 64 * 1024 * 1024, root).unwrap()
-        ));
-
-        // set up a channel (we won't consume -- just measure send cost)
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<MaterializeRequest>(100_000);
-
-        // warmup
-        {
-            let mut w = wal_mutex.lock().unwrap();
-            for i in 0..100 {
-                let n = Needle::new("b", &format!("w{}", i), &meta, &data).unwrap();
-                w.append(&n).unwrap();
-            }
-        }
-
-        // create needles for WAL
-        let mut wal_needles = Vec::with_capacity(iters);
-        for i in 0..iters {
-            wal_needles.push(Needle::new("b", &format!("wal{}", i), &meta, &data).unwrap());
-        }
-
-        // measure: wal append only (no channel send)
-        let t0 = std::time::Instant::now();
-        {
-            let mut w = wal_mutex.lock().unwrap();
-            for n in &wal_needles {
-                w.append(n).unwrap();
-            }
-        }
-        let wal_append = t0.elapsed();
-
-        // measure: Arc::from for bucket+key
-        let t0 = std::time::Instant::now();
-        for _ in 0..iters {
-            let _b: Arc<str> = Arc::from("b");
-            let _k: Arc<str> = Arc::from("wal_key_name");
-        }
-        let arc_from = t0.elapsed();
-
-        // measure: channel send only
-        let t0 = std::time::Instant::now();
-        for i in 0..iters {
-            let req = MaterializeRequest {
-                bucket: Arc::from("b"),
-                key: Arc::from("k"),
-                entry: WalEntry {
-                    segment_id: 1,
-                    data_offset: 0,
-                    data_len: 4096,
-                    meta_offset: 0,
-                    meta_len: 100,
-                    created_at: 0,
-                },
-            };
-            tx.send(req).await.unwrap();
-        }
-        let channel_send = t0.elapsed();
-        // drain channel
-        while rx.try_recv().is_ok() {}
-
-        // measure: segment_pending_counts update
-        let t0 = std::time::Instant::now();
-        let mut counts: HashMap<u32, u32> = HashMap::new();
-        for _ in 0..iters {
-            *counts.entry(1).or_insert(0) += 1;
-        }
-        let pending_counts = t0.elapsed();
-
-        let per = |d: std::time::Duration| -> u64 { d.as_nanos() as u64 / iters as u64 };
-
-        eprintln!();
-        eprintln!("=== WAL vs Log breakdown ({} iters, 4KB) ===", iters);
-        eprintln!();
-        eprintln!("  needle creation:            {:>6}ns / iter", per(needle_create));
-        eprintln!();
-        eprintln!("  log_store.append():         {:>6}ns / iter", per(log_append));
-        eprintln!("  wal.append():               {:>6}ns / iter", per(wal_append));
-        eprintln!("  delta (wal - log):          {:>6}ns / iter",
-            per(wal_append) as i64 - per(log_append) as i64);
-        eprintln!();
-        eprintln!("  Arc::from (bucket+key):     {:>6}ns / iter", per(arc_from));
-        eprintln!("  channel.send():             {:>6}ns / iter", per(channel_send));
-        eprintln!("  segment_pending_counts:     {:>6}ns / iter", per(pending_counts));
-        eprintln!();
-        eprintln!("  WAL total overhead vs log:  {:>6}ns / iter",
-            per(wal_append) as i64 - per(log_append) as i64
-            + per(arc_from) as i64
-            + per(channel_send) as i64);
+        eprintln!("  wal vs file speedup: {:.0}x", us(p50(&file_times)) / us(p50(&wal_times)));
     }
 }
+
