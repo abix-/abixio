@@ -715,15 +715,16 @@ impl ShardWriter for WalShardWriter {
             w.append(&needle)?
         };
 
-        // request carries only identity + offsets; worker reads data from mmap
+        // fire-and-forget: data is durable in the WAL segment and
+        // findable via pending map. materialize is best-effort -- if
+        // the channel is full or closed, recovery will pick it up on
+        // restart. try_send avoids the .await entirely.
         let req = MaterializeRequest {
             bucket: self.bucket.clone(),
             key: self.key.clone(),
             entry,
         };
-        self.wal_tx.send(req).await.map_err(|_| {
-            StorageError::Internal("WAL materialize worker channel closed".into())
-        })?;
+        let _ = self.wal_tx.try_send(req);
 
         Ok(())
     }
@@ -909,9 +910,7 @@ impl Backend for LocalVolume {
                     key: Arc::from(key),
                     entry,
                 };
-                tx.send(req).await.map_err(|_| {
-                    StorageError::Internal("WAL materialize worker channel closed".into())
-                })?;
+                let _ = tx.try_send(req);
                 return Ok(());
             }
         }
