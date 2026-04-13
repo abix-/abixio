@@ -4,7 +4,6 @@
 //! Segments go through a lifecycle: NEW -> ACTIVE -> SEALED -> (GC) -> DEAD.
 //! Sealed segments are mmap'd for zero-copy GET reads.
 
-use std::io::{Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use super::needle::{self, Needle, NeedleLocation, HEADER_SIZE};
@@ -34,10 +33,11 @@ struct Superblock {
 pub struct ActiveSegment {
     segment_id: u32,
     path: PathBuf,
-    file: std::fs::File,
-    /// mmap of the pre-allocated file for zero-copy reads.
-    /// The mmap sees data written via the file handle (page cache coherent).
-    mmap: memmap2::Mmap,
+    /// Writable mmap of the pre-allocated segment file. Appends are
+    /// memcpy into this region (zero syscalls). Reads from the same
+    /// mmap see writes immediately (same pages). On seal, this is
+    /// flushed and replaced with a read-only mmap.
+    mmap: memmap2::MmapMut,
     write_offset: usize,
     capacity: usize,
 }
@@ -66,7 +66,12 @@ impl ActiveSegment {
         // pre-allocate
         file.set_len(capacity as u64)?;
 
-        // write superblock
+        // writable mmap: appends are memcpy (zero syscalls), reads
+        // see writes immediately (same pages)
+        let mut mmap = unsafe { memmap2::MmapMut::map_mut(&file) }
+            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+
+        // write superblock directly into mmap
         let created_at = super::metadata::unix_timestamp_secs();
         let superblock = Superblock {
             magic: SEGMENT_MAGIC,
@@ -81,22 +86,11 @@ impl ActiveSegment {
                 SUPERBLOCK_SIZE,
             )
         };
-        {
-            let mut writer = std::io::BufWriter::new(&file);
-            writer.write_all(sb_bytes)?;
-            writer.flush()?;
-        } // drop BufWriter to release borrow
-
-        // mmap the pre-allocated file for reads. Writes via the file handle
-        // are page-cache coherent with the mmap (same file, same pages).
-        let mmap_file = std::fs::File::open(&path)?;
-        let mmap = unsafe { memmap2::Mmap::map(&mmap_file) }
-            .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+        mmap[..SUPERBLOCK_SIZE].copy_from_slice(sb_bytes);
 
         Ok(Self {
             segment_id,
             path,
-            file,
             mmap,
             write_offset: SUPERBLOCK_SIZE,
             capacity,
@@ -111,8 +105,8 @@ impl ActiveSegment {
             return Ok(None); // segment full
         }
 
-        self.file.seek(SeekFrom::Start(self.write_offset as u64))?;
-        self.file.write_all(&buf)?;
+        // memcpy into mmap -- zero syscalls
+        self.mmap[self.write_offset..self.write_offset + buf.len()].copy_from_slice(&buf);
 
         let needle_offset = self.write_offset as u32;
 
@@ -136,8 +130,8 @@ impl ActiveSegment {
         Ok(Some(location))
     }
 
-    /// Read bytes from the active segment at an offset via mmap.
-    /// The mmap is page-cache coherent with writes via the file handle.
+    /// Read bytes from the active segment mmap.
+    /// Writes and reads use the same MmapMut -- no coherence issues.
     pub fn read_at(&self, offset: usize, len: usize) -> Result<Vec<u8>, StorageError> {
         if offset + len > self.write_offset {
             return Err(StorageError::Internal("read beyond write offset".into()));
@@ -154,9 +148,9 @@ impl ActiveSegment {
         }
     }
 
-    /// Fsync the segment file to disk.
+    /// Flush the mmap to disk.
     pub fn fsync(&self) -> Result<(), StorageError> {
-        self.file.sync_all()?;
+        self.mmap.flush()?;
         Ok(())
     }
 
@@ -180,11 +174,12 @@ impl ActiveSegment {
         self.segment_id
     }
 
-    /// Seal this segment: flush, convert to read-only mmap.
+    /// Seal this segment: flush mmap, convert to read-only.
     pub fn seal(self) -> Result<SealedSegment, StorageError> {
-        self.file.sync_all()?;
+        self.mmap.flush()?;
         let size = self.write_offset;
-        // re-open read-only for mmap
+        // drop MmapMut, re-open as read-only Mmap
+        drop(self.mmap);
         let file = std::fs::File::open(&self.path)?;
         let mmap = unsafe { memmap2::Mmap::map(&file) }
             .map_err(|e| StorageError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;

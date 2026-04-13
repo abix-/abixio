@@ -724,6 +724,111 @@ mod tests {
         assert_eq!(wal.lock().unwrap().pending_count(), 0);
     }
 
+    /// Head-to-head: full write_shard path for WAL vs log vs file tier,
+    /// same process, same disk, same iteration loop, interleaved.
+    /// Run with: cargo test --lib wal::tests::bench_write_shard_head_to_head -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore]
+    async fn bench_write_shard_head_to_head() {
+        use crate::storage::Backend;
+        use crate::storage::local_volume::LocalVolume;
+        use crate::storage::metadata::ErasureMeta;
+
+        let iters = 2000usize;
+        let data = vec![0x42u8; 4096];
+
+        let meta = ObjectMeta {
+            size: 4096,
+            etag: "bench".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            created_at: 1700000000,
+            erasure: ErasureMeta { ftt: 0, index: 0, epoch_id: 1, volume_ids: vec!["v1".into()] },
+            checksum: "dead".to_string(),
+            user_metadata: HashMap::new(),
+            tags: HashMap::new(),
+            version_id: String::new(),
+            is_latest: true,
+            is_delete_marker: false,
+            parts: Vec::new(),
+            inline_data: None,
+        };
+
+        // --- set up 3 volumes: WAL, log, file ---
+        let tmp = TempDir::new().unwrap();
+
+        let wal_root = tmp.path().join("wal_vol");
+        std::fs::create_dir_all(&wal_root).unwrap();
+        let mut wal_vol = LocalVolume::new(&wal_root).unwrap();
+        wal_vol.enable_wal().await.unwrap();
+        wal_vol.make_bucket("b").await.unwrap();
+
+        let log_root = tmp.path().join("log_vol");
+        std::fs::create_dir_all(&log_root).unwrap();
+        let mut log_vol = LocalVolume::new(&log_root).unwrap();
+        log_vol.enable_log_store().unwrap();
+        log_vol.make_bucket("b").await.unwrap();
+
+        let file_root = tmp.path().join("file_vol");
+        std::fs::create_dir_all(&file_root).unwrap();
+        let file_vol = LocalVolume::new(&file_root).unwrap();
+        file_vol.make_bucket("b").await.unwrap();
+
+        // warmup all 3
+        for i in 0..50 {
+            let k = format!("w{}", i);
+            wal_vol.write_shard("b", &k, &data, &meta).await.unwrap();
+            log_vol.write_shard("b", &k, &data, &meta).await.unwrap();
+            file_vol.write_shard("b", &k, &data, &meta).await.unwrap();
+        }
+
+        // --- timed runs ---
+        let mut wal_times = Vec::with_capacity(iters);
+        let mut log_times = Vec::with_capacity(iters);
+        let mut file_times = Vec::with_capacity(iters);
+
+        // run each tier in its own loop to avoid cross-tier interference
+        for i in 0..iters {
+            let k = format!("tw{}", i);
+            let t0 = std::time::Instant::now();
+            wal_vol.write_shard("b", &k, &data, &meta).await.unwrap();
+            wal_times.push(t0.elapsed());
+        }
+        for i in 0..iters {
+            let k = format!("tl{}", i);
+            let t0 = std::time::Instant::now();
+            log_vol.write_shard("b", &k, &data, &meta).await.unwrap();
+            log_times.push(t0.elapsed());
+        }
+        for i in 0..iters {
+            let k = format!("tf{}", i);
+            let t0 = std::time::Instant::now();
+            file_vol.write_shard("b", &k, &data, &meta).await.unwrap();
+            file_times.push(t0.elapsed());
+        }
+
+        wal_times.sort();
+        log_times.sort();
+        file_times.sort();
+
+        let p50 = |v: &[std::time::Duration]| v[v.len() / 2];
+        let p95 = |v: &[std::time::Duration]| v[v.len() * 95 / 100];
+        let p99 = |v: &[std::time::Duration]| v[v.len() * 99 / 100];
+        let us = |d: std::time::Duration| -> f64 { d.as_nanos() as f64 / 1000.0 };
+
+        eprintln!();
+        eprintln!("=== write_shard head-to-head ({} iters, 4KB) ===", iters);
+        eprintln!();
+        eprintln!("  {:>8}  {:>10}  {:>10}  {:>10}", "tier", "p50", "p95", "p99");
+        eprintln!("  {:>8}  {:>9.0}us  {:>9.0}us  {:>9.0}us", "wal",
+            us(p50(&wal_times)), us(p95(&wal_times)), us(p99(&wal_times)));
+        eprintln!("  {:>8}  {:>9.0}us  {:>9.0}us  {:>9.0}us", "log",
+            us(p50(&log_times)), us(p95(&log_times)), us(p99(&log_times)));
+        eprintln!("  {:>8}  {:>9.0}us  {:>9.0}us  {:>9.0}us", "file",
+            us(p50(&file_times)), us(p95(&file_times)), us(p99(&file_times)));
+        eprintln!();
+        eprintln!("  wal vs log delta: {:.0}us", us(p50(&wal_times)) - us(p50(&log_times)));
+    }
+
     /// Instrumented breakdown: WAL append vs log store append at 4KB.
     /// Measures each step individually to find where the gap is.
     /// Run with: cargo test --lib wal::tests::bench_wal_vs_log_breakdown -- --ignored --nocapture
