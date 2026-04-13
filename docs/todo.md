@@ -4,9 +4,8 @@
 
 - [x] unwrap() audit. 533 unwrap() calls total, but 530 are in #[cfg(test)] blocks (standard for tests). 1 production unwrap in erasure_decode.rs:241 was guarded by a data_shards_ok check but replaced with let-else for clarity. 1 expect() in main.rs:31 is crypto provider init (standard). production code is clean
 - [x] WAL replaces log store and write pool. append-only segment with background materialize to file-per-object layout. no GC, no permanent index, bounded startup. 4KB PUT: 147us (tied with log 143us, 5.4x faster than file 793us). mmap writes, zero-alloc serialize_into, fire-and-forget channel, Arc<str> identity. see docs/write-wal.md
-- [ ] delete log_store.rs and write_slot_pool.rs. WAL supersedes both. log store's only advantage was GET speed (33us vs 533us) but that comes from permanent in-memory index which causes GC, RAM scaling, and startup rebuild problems. the right solution is a dedicated read cache (below), not permanent log storage
 - [ ] make WAL the default write tier (change --write-tier default from "file" to "wal")
-- [ ] read cache for small objects. closes the GET gap without log store baggage. WAL owns writes, read cache owns reads, file tier owns permanent storage. LRU or frequency-based eviction. bounded RAM. no GC, no startup rebuild
+- [ ] read cache for small objects. closes the GET gap for hot small objects. WAL owns writes, read cache owns reads, file tier owns permanent storage. LRU or frequency-based eviction. bounded RAM. no GC, no startup rebuild
 - [ ] WAL: versioned object support (currently falls back to file tier)
 - [ ] WAL: chunked-transfer PUT support via WalShardWriter streaming path
 - [x] mc client throughput gap. root cause: StreamingBlob::wrap() used s3s StreamWrapper which returns RemainingLength::unknown(), causing hyper to use chunked transfer encoding instead of Content-Length. fix: SizedStream wrapper reports exact remaining_length. also fixed buffered GET path. result: mc GET 354->1476 MB/s (4.2x), now faster than curl

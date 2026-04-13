@@ -206,8 +206,6 @@ Two independent axes: write tier and write cache. Test every combination.
 | Tier | What it is | CLI flag |
 |---|---|---|
 | file | baseline, direct filesystem writes | `--write-tier file` |
-| log | log-structured append (small object optimization) | `--write-tier log` |
-| pool | pre-opened temp file pool + async rename workers | `--write-tier pool` |
 
 ### Write cache
 

@@ -65,9 +65,7 @@ cluster-control direction.
     The WAL is ephemeral -- it is a landing zone, not permanent storage.
     No GC, no compaction, no permanent in-memory index, bounded startup
     cost. 4KB PUT: 148us (5.4x faster than file tier). Head-to-head
-    release-mode unit test: WAL 3us vs file 878us. The WAL replaces
-    the earlier log store (permanent log with GC problem) and write pool
-    (pre-opened temp files with slot management). No fsync. Page cache
+    release-mode unit test: WAL 3us vs file 878us. No fsync. Page cache
     serves both read and write paths. See [write-wal.md](write-wal.md).
 
 14. **Three-tier storage architecture.** WAL handles fast writes (append
@@ -233,7 +231,7 @@ Audited against the codebase on 2026-04-11.
 | Versioning config is cached in `s3_service.rs` | Verified | `src/s3_service.rs:74`, `96-117`, `359-366`, `552-562` |
 | Small objects `<=64KB` use log-structured routing | Verified | `src/storage/volume_pool.rs:239-365`, `src/storage/local_volume.rs:564-568` |
 | Log-store PUT path includes `fsync + ack` | Corrected | Code comments and implementation explicitly say no fsync: `src/storage/local_volume.rs:251-253` |
-| Pool/default choice is still unsettled | Resolved | WAL replaces both log store and write pool. See `docs/write-wal.md` |
+| Write tier choice | Resolved | WAL is the default. See `docs/write-wal.md` |
 | 1+0 mmap fast path and EC mmap decode exist | Verified | `src/s3_service.rs:458-474`, `src/storage/erasure_decode.rs`, `src/storage/volume_pool.rs` |
 | Per-tier and per-size performance numbers in this doc | Removed (moved out) | Architecture doc no longer carries perf claims; see [write-path.md](write-path.md), [layer-optimization.md](layer-optimization.md), [benchmarks.md](benchmarks.md) for the canonical sources |
 | Dependency table | Mostly verified at a glance | The listed crates are present and used, but I did not exhaustively reconcile every crate entry against `Cargo.toml` in this pass |

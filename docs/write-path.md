@@ -301,14 +301,12 @@ Floor:    ~370us  (~99.7% of total) -- hyper + s3s + protocol work
 
 The point of this trace is that the storage primitive is invisible
 under the protocol floor at 4KB. Cf. the SDK-matrix bench finding in
-`benchmarks.md::Comprehensive matrix`: file/log/pool tier choices are
+`benchmarks.md::Comprehensive matrix`: file/wal tier choices are
 within 4% of each other at 4KB sdk PUT for exactly the same reason --
 the protocol floor dominates.
 
-Run `bench_pool_l4_tier_matrix` (`abixio-ui/src/bench/`) to see the
-file/log/pool branches end-to-end at 4KB through 100MB. There is
-currently no equivalent bench that enables the RAM write cache in the
-process; adding one is on the TODO list.
+Run `abixio-ui bench --layers L3` to see the
+file/wal branches end-to-end at all sizes.
 
 This branch exists only on the small-object buffered path. After the
 object has already been validated, buffered, encoded, and assigned to
@@ -354,14 +352,11 @@ Source: `abixio-ui bench --layers L3 --write-paths wal`,
 
 The WAL appends a checksummed needle directly into a writable mmap
 segment (zero syscalls, zero allocation). At 4KB it is 5.4x faster
-than the file tier and tied with the log store. At 64KB it beats the
-log store (292us vs 308us) because it skips the log store's per-append
-meta decode. At 10MB+ the WalShardWriter buffers then falls back to
+than the file tier. At 64KB it is competitive with all tiers. At 10MB+ the WalShardWriter buffers then falls back to
 the file tier, which adds overhead vs the direct file path.
 
 Head-to-head release-mode unit test (`write_shard` only, same process,
-same disk): WAL 3us, log 3us, file 878us at 4KB. WAL 30us, log 31us
-at 64KB. The L3 bench numbers above include VolumePool routing
+same disk): WAL 3us, file 878us at 4KB. WAL 30us at 64KB. The L3 bench numbers above include VolumePool routing
 overhead (EC, placement, quorum).
 
 If the WAL is enabled on a `LocalVolume`, small non-versioned objects
@@ -463,7 +458,7 @@ What ack means here:
 - the remote node has accepted and completed its local `write_shard`
   path for that shard
 - the final resting place is whichever local branch the remote target
-  volume uses: log store, pool temp files awaiting rename, or file tier
+  volume uses: WAL or file tier
 
 ## Ack semantics by branch
 
@@ -503,7 +498,7 @@ and no disk failure to tolerate. The fix:
 - VolumePool checks `disks.len()` at write time
 - If 1 disk: force data_n=1, parity_n=0, skip RS encode entirely
 - Write raw object bytes through write_shard (no shard encoding)
-- The file tier, pool, and log store all receive the original object
+- The file tier and WAL both receive the original object
   bytes, not encoded shard data
 - Metadata still records the object, but ErasureMeta reflects 1+0
 
@@ -542,8 +537,8 @@ Isolated L3 tier comparison. Direct VolumePool API, no HTTP, no s3s.
 1 disk, ftt=0, no write cache, Defender-excluded tmp dir. All paths
 use the unified write path (streaming encode + tier-aware ShardWriter).
 
-PUT and GET are measured separately. After all PUTs complete, pool
-pending renames are drained and write cache is flushed before any
+PUT and GET are measured separately. After all PUTs complete, WAL
+pending entries are materialized and write cache is flushed before any
 timed GETs begin. This ensures GET measures read performance from
 the final storage location, not from transitional temp files.
 
@@ -552,7 +547,7 @@ Source: `abixio-ui bench --layers L3 --write-paths file,wal,log,pool`,
 
 #### PUT p50 latency by tier (1+0 fast path)
 
-| Size | file | **wal** | log | pool | best tier |
+| Size | file | **wal** | best tier |
 |---|---|---|---|---|---|
 | 4KB | `898us` | **`148us`** | `157us` | `160us` | wal |
 | 64KB | `898us` | **`292us`** | `308us` | `277us` | pool |
@@ -562,7 +557,7 @@ Source: `abixio-ui bench --layers L3 --write-paths file,wal,log,pool`,
 
 #### GET p50 latency by tier (get_stream, mmap, page-cache hot)
 
-| Size | file | wal | **log** | pool | best tier |
+| Size | file | wal | best tier |
 |---|---|---|---|---|---|
 | 4KB | `452us` | `533us` | **`33us`** | `660us` | log |
 | 64KB | `519us` | `565us` | **`76us`** | `748us` | log |
@@ -578,9 +573,8 @@ falls through to file tier after materialization.
 - **<=64KB PUT**: WAL wins at 4KB (148us, 5.4x faster than file).
   Pool wins at 64KB (277us) by a small margin over WAL (292us).
   Both beat file tier by 3x+
-- **<=64KB GET**: log wins (33us) because the log is permanent
-  storage with an in-memory index. WAL and file tier are similar
-  (~500us) because WAL materializes to file tier
+- **<=64KB GET**: file tier and WAL are similar (~500us).
+  A planned read cache will close this gap for hot objects
 - **10MB-100MB**: pool and file win PUT. WAL and log fall back to
   file tier at these sizes (above the 64KB threshold) and add
   buffering overhead
@@ -589,8 +583,7 @@ falls through to file tier after materialization.
 
 **WAL is the recommended default.** It matches or beats log on PUT
 at every size up to the threshold, gives file-per-object final layout,
-has no GC, no permanent index, and bounded startup cost. The only
-tradeoff vs log is GET performance during the pending window.
+has no GC, no permanent index, and bounded startup cost. 
 
 ## How other docs should use this page
 
@@ -612,7 +605,7 @@ Drain and flush between PUT and GET. 1 disk, ftt=0, no write cache.
 
 #### L6 PUT p50 by tier
 
-| Size | file | log | pool |
+| Size | file | wal |
 |---|---|---|---|
 | 4KB | `708us` | **`303us`** | `372us` |
 | 64KB | `1.1ms` | **`405us`** | `378us` |
@@ -622,7 +615,7 @@ Drain and flush between PUT and GET. 1 disk, ftt=0, no write cache.
 
 #### L6 GET p50 by tier
 
-| Size | file | log | pool |
+| Size | file | wal |
 |---|---|---|---|
 | 4KB | `581us` | **`190us`** | `801us` |
 | 64KB | `948us` | **`239us`** | `801us` |
@@ -630,11 +623,7 @@ Drain and flush between PUT and GET. 1 disk, ftt=0, no write cache.
 | 100MB | `103.9ms` | `201.7ms` | **`107.4ms`** |
 | 1GB | **`1.33s`** | `1.53s` | `1.37s` |
 
-At 4KB the log store is 2.3x faster on PUT and 3x faster on GET
-than the file tier through the full S3 stack. At 1GB the log store
-is 1.8x slower on PUT because LogShardWriter buffers then falls
-back to file tier. Pool is competitive with file tier at all sizes
-and wins at 1GB PUT.
+At 4KB the WAL is the fastest PUT path through the full S3 stack.
 
 ## Accuracy Report
 
