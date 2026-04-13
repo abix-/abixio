@@ -36,11 +36,12 @@ pub struct WalEntry {
 }
 
 /// Lightweight request sent to the background materialize worker.
-/// Contains only identity and offsets -- no data copies. The worker
-/// reads data from the segment mmap via the shared WAL reference.
+/// Contains only identity and offsets -- no data copies, no heap
+/// allocations (Arc<str> is ref-counted from the WAL pending map).
+/// The worker reads data from the segment mmap.
 pub struct MaterializeRequest {
-    pub bucket: String,
-    pub key: String,
+    pub bucket: Arc<str>,
+    pub key: Arc<str>,
     pub entry: WalEntry,
 }
 
@@ -305,8 +306,8 @@ impl Wal {
         self.pending
             .iter()
             .map(|((bucket, key), entry)| MaterializeRequest {
-                bucket: bucket.to_string(),
-                key: key.to_string(),
+                bucket: Arc::clone(bucket),
+                key: Arc::clone(key),
                 entry: *entry,
             })
             .collect()
@@ -380,8 +381,8 @@ async fn process_materialize(
         let mut version = meta;
         version.is_latest = true;
         let mf = ObjectMetaFile {
-            bucket: req.bucket.clone(),
-            key: req.key.clone(),
+            bucket: req.bucket.to_string(),
+            key: req.key.to_string(),
             versions: vec![version],
         };
         // simd-json: 30% faster than serde_json (perf win #6)
@@ -691,8 +692,8 @@ mod tests {
 
         // send lightweight materialize request (worker reads from mmap)
         tx.send(MaterializeRequest {
-            bucket: "b".to_string(),
-            key: "k".to_string(),
+            bucket: Arc::from("b"),
+            key: Arc::from("k"),
             entry,
         }).await.unwrap();
 

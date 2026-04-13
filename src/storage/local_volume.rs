@@ -647,8 +647,8 @@ pub struct WalShardWriter {
     wal: Arc<std::sync::Mutex<Wal>>,
     wal_tx: Arc<MaterializeDispatch>,
     root: PathBuf,
-    bucket: String,
-    key: String,
+    bucket: Arc<str>,
+    key: Arc<str>,
     buf: Vec<u8>,
     threshold: usize,
 }
@@ -666,8 +666,8 @@ impl WalShardWriter {
             wal,
             wal_tx,
             root,
-            bucket: bucket.to_string(),
-            key: key.to_string(),
+            bucket: Arc::from(bucket),
+            key: Arc::from(key),
             buf: Vec::with_capacity(threshold),
             threshold,
         }
@@ -691,8 +691,8 @@ impl ShardWriter for WalShardWriter {
             let mut version = meta.clone();
             version.is_latest = true;
             let mf = ObjectMetaFile {
-                bucket: self.bucket.clone(),
-                key: self.key.clone(),
+                bucket: self.bucket.to_string(),
+                key: self.key.to_string(),
                 versions: vec![version],
             };
             let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
@@ -905,8 +905,8 @@ impl Backend for LocalVolume {
                 };
 
                 let req = MaterializeRequest {
-                    bucket: bucket.to_string(),
-                    key: key.to_string(),
+                    bucket: Arc::from(bucket),
+                    key: Arc::from(key),
                     entry,
                 };
                 tx.send(req).await.map_err(|_| {
