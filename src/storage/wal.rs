@@ -35,13 +35,13 @@ pub struct WalEntry {
     pub created_at: u32,
 }
 
-/// Request sent to the background materialize worker.
+/// Lightweight request sent to the background materialize worker.
+/// Contains only identity and offsets -- no data copies. The worker
+/// reads data from the segment mmap via the shared WAL reference.
 pub struct MaterializeRequest {
     pub bucket: String,
     pub key: String,
-    pub data: Vec<u8>,
-    pub meta_json: Vec<u8>,
-    pub segment_id: u32,
+    pub entry: WalEntry,
 }
 
 /// The write-ahead log for one disk volume.
@@ -302,31 +302,14 @@ impl Wal {
     /// Build MaterializeRequests for all un-materialized entries.
     /// Used during startup recovery to re-send to the worker.
     pub fn drain_recovery_requests(&self) -> Vec<MaterializeRequest> {
-        let mut requests = Vec::new();
-        for ((bucket, key), entry) in &self.pending {
-            let Some(data) = self.read_data(entry) else { continue };
-            let Some(meta_bytes) = self.read_meta_bytes(entry) else { continue };
-
-            // decode meta, build ObjectMetaFile, serialize to JSON
-            let Ok(meta) = Needle::decode_meta(&meta_bytes) else { continue };
-            let mut version = meta;
-            version.is_latest = true;
-            let mf = ObjectMetaFile {
+        self.pending
+            .iter()
+            .map(|((bucket, key), entry)| MaterializeRequest {
                 bucket: bucket.to_string(),
                 key: key.to_string(),
-                versions: vec![version],
-            };
-            let Ok(meta_json) = simd_json::serde::to_vec(&mf) else { continue };
-
-            requests.push(MaterializeRequest {
-                bucket: bucket.to_string(),
-                key: key.to_string(),
-                data,
-                meta_json,
-                segment_id: entry.segment_id,
-            });
-        }
-        requests
+                entry: *entry,
+            })
+            .collect()
     }
 }
 
@@ -377,13 +360,37 @@ impl MaterializeDispatch {
     }
 }
 
-/// Process a single materialize request: write shard.dat + meta.json
-/// to the final file-per-object location, then signal the WAL to
-/// remove the pending entry.
+/// Process a single materialize request: read data + meta from the
+/// WAL segment mmap, write shard.dat + meta.json to final location.
+/// All heavy work (mmap read, JSON serialize, disk write) happens
+/// here on the worker, not on the PUT hot path.
 async fn process_materialize(
     root: &Path,
+    wal: &std::sync::Mutex<Wal>,
     req: &MaterializeRequest,
 ) -> Result<(), StorageError> {
+    // read data and meta from WAL segment (zero-copy mmap slice -> Vec copy)
+    let (data, meta_json) = {
+        let w = wal.lock().map_err(|e| {
+            StorageError::Internal(format!("wal lock in worker: {}", e))
+        })?;
+        let data = w.read_data(&req.entry)
+            .ok_or_else(|| StorageError::Internal("WAL segment data missing".into()))?;
+        let meta = w.read_meta(&req.entry)?;
+        let mut version = meta;
+        version.is_latest = true;
+        let mf = ObjectMetaFile {
+            bucket: req.bucket.clone(),
+            key: req.key.clone(),
+            versions: vec![version],
+        };
+        // simd-json: 30% faster than serde_json (perf win #6)
+        let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
+            StorageError::Internal(format!("simd_json: {}", e))
+        })?;
+        (data, meta_json)
+    };
+
     // single path computation (perf win #8)
     let dest_dir = pathing::object_dir(root, &req.bucket, &req.key)?;
     let data_dest = dest_dir.join("shard.dat");
@@ -393,8 +400,8 @@ async fn process_materialize(
 
     // concurrent data+meta writes (perf win #7)
     tokio::try_join!(
-        tokio::fs::write(&data_dest, &req.data),
-        tokio::fs::write(&meta_dest, &req.meta_json),
+        tokio::fs::write(&data_dest, &data),
+        tokio::fs::write(&meta_dest, &meta_json),
     )?;
 
     Ok(())
@@ -415,7 +422,7 @@ pub async fn run_materialize_worker(
                 // drain remaining items (perf win #4)
                 let mut count = 0u32;
                 while let Ok(req) = rx.try_recv() {
-                    if let Err(e) = process_materialize(&root, &req).await {
+                    if let Err(e) = process_materialize(&root, &wal, &req).await {
                         tracing::warn!(
                             bucket = %req.bucket, key = %req.key,
                             error = %e, "materialize failed during shutdown drain"
@@ -434,7 +441,7 @@ pub async fn run_materialize_worker(
             }
             msg = rx.recv() => {
                 let Some(req) = msg else { break; };
-                if let Err(e) = process_materialize(&root, &req).await {
+                if let Err(e) = process_materialize(&root, &wal, &req).await {
                     tracing::warn!(
                         bucket = %req.bucket, key = %req.key,
                         error = %e, "materialize failed"
@@ -665,19 +672,10 @@ mod tests {
 
         // append an entry
         let meta = test_meta();
-        let mut version = meta.clone();
-        version.is_latest = true;
-        let mf = ObjectMetaFile {
-            bucket: "b".to_string(),
-            key: "k".to_string(),
-            versions: vec![version],
-        };
-        let meta_json = simd_json::serde::to_vec(&mf).unwrap();
-
-        {
+        let entry = {
             let needle = Needle::new("b", "k", &meta, b"hello").unwrap();
-            wal.lock().unwrap().append(&needle).unwrap();
-        }
+            wal.lock().unwrap().append(&needle).unwrap()
+        };
 
         // set up worker
         let (tx, rx) = tokio::sync::mpsc::channel(10);
@@ -691,13 +689,11 @@ mod tests {
         // make bucket dir
         std::fs::create_dir_all(root.join("b")).unwrap();
 
-        // send materialize request
+        // send lightweight materialize request (worker reads from mmap)
         tx.send(MaterializeRequest {
             bucket: "b".to_string(),
             key: "k".to_string(),
-            data: b"hello".to_vec(),
-            meta_json,
-            segment_id: 0,
+            entry,
         }).await.unwrap();
 
         // drop sender to close channel, wait for worker

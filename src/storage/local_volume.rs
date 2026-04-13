@@ -705,38 +705,21 @@ impl ShardWriter for WalShardWriter {
             return Ok(());
         }
 
-        // small object: append to WAL
+        // small object: append to WAL, send lightweight request (no data copy)
         let needle = super::needle::Needle::new(&self.bucket, &self.key, meta, &self.buf)?;
 
-        // build materialize request before locking WAL (minimize lock hold)
-        let mut version = meta.clone();
-        version.is_latest = true;
-        let mf = ObjectMetaFile {
-            bucket: self.bucket.clone(),
-            key: self.key.clone(),
-            versions: vec![version],
-        };
-        // simd-json: 30% faster than serde_json (perf win #6)
-        let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
-            StorageError::Internal(format!("simd_json meta serialize: {}", e))
-        })?;
-        let data_copy = self.buf.clone();
-
-        let segment_id = {
+        let entry = {
             let mut w = self.wal.lock().map_err(|e| {
                 StorageError::Internal(format!("wal lock: {}", e))
             })?;
-            let entry = w.append(&needle)?;
-            entry.segment_id
+            w.append(&needle)?
         };
 
-        // send materialize request to background worker
+        // request carries only identity + offsets; worker reads data from mmap
         let req = MaterializeRequest {
             bucket: self.bucket.clone(),
             key: self.key.clone(),
-            data: data_copy,
-            meta_json,
-            segment_id,
+            entry,
         };
         self.wal_tx.send(req).await.map_err(|_| {
             StorageError::Internal("WAL materialize worker channel closed".into())
@@ -909,37 +892,22 @@ impl Backend for LocalVolume {
 
         let is_versioned = !meta.version_id.is_empty();
 
-        // WAL fast path: append needle, send materialize request
+        // WAL fast path: append needle, send lightweight request (no data copy)
         if !is_versioned && (data.len() <= self.wal_threshold) {
             if let (Some(wal_mutex), Some(tx)) = (&self.wal, &self.wal_tx) {
                 let needle = super::needle::Needle::new(bucket, key, meta, data)?;
 
-                // build materialize request before locking (minimize hold)
-                let mut version = meta.clone();
-                version.is_latest = true;
-                let mf = ObjectMetaFile {
-                    bucket: bucket.to_string(),
-                    key: key.to_string(),
-                    versions: vec![version],
-                };
-                let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
-                    StorageError::Internal(format!("simd_json meta serialize: {}", e))
-                })?;
-
-                let segment_id = {
+                let entry = {
                     let mut w = wal_mutex.lock().map_err(|e| {
                         StorageError::Internal(format!("wal lock: {}", e))
                     })?;
-                    let entry = w.append(&needle)?;
-                    entry.segment_id
+                    w.append(&needle)?
                 };
 
                 let req = MaterializeRequest {
                     bucket: bucket.to_string(),
                     key: key.to_string(),
-                    data: data.to_vec(),
-                    meta_json,
-                    segment_id,
+                    entry,
                 };
                 tx.send(req).await.map_err(|_| {
                     StorageError::Internal("WAL materialize worker channel closed".into())
