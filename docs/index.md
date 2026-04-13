@@ -23,7 +23,7 @@ Current reality as of 2026-04-13:
 
 - first commit: 2026-04-04
 - no releases, packaging, or production deployments
-- 273 test functions (111 lib + 162 integration/admin)
+- 362 tests passing (201 lib + 32 admin + 4 distributed + 125 S3 integration across 9 files)
 - 41 of 72 S3 API operations implemented
 - protocol layer powered by s3s (SigV4 chunked auth, smithy XML, presigned URLs)
 - fully async storage layer (tokio)

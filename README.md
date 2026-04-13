@@ -53,7 +53,7 @@ Same `--nodes` on every node. Identity resolves automatically. You now have 5 vo
 
 | | |
 |---|---|
-| **Tests** | 273 test functions (111 lib + 162 integration) |
+| **Tests** | 362 passing (lib + admin + distributed + S3 integration) |
 | **S3 coverage** | 41 of 72 operations ([details](docs/s3-compliance.md)) |
 | **Protocol** | [s3s](https://crates.io/crates/s3s) v0.13 (SigV4, chunked auth, smithy XML) |
 | **GET perf** | 1220 MB/s at 1GB (mmap, zero-copy). Zero-alloc EC decode ([benchmarks](docs/benchmarks.md)) |

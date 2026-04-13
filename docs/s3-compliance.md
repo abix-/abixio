@@ -142,12 +142,13 @@ Protocol layer powered by [s3s](https://crates.io/crates/s3s) v0.13 (smithy-gene
 | SigV4 presigned URL | Done | 9/10 |
 | SigV4 chunked transfer | Done | 9/10 |
 | SigV4 trailing checksums | Done | 9/10 |
-| POST policy uploads | Done | 8/10 |
+| POST policy uploads | No | 0/10 |
 | Content-MD5 validation | Done | 9/10 |
 | Anonymous (no-auth mode) | Done | 8/10 |
 
-SigV4 chunked transfer, trailing checksums, POST policy, and content-MD5
-are handled by s3s at the protocol layer. No application code needed.
+SigV4 chunked transfer, trailing checksums, and content-MD5 are handled
+by s3s at the protocol layer. No application code needed. POST policy
+uploads (browser-based `POST /{bucket}`) are not implemented.
 
 ## Summary
 
@@ -164,20 +165,19 @@ CORS is stub-only. Full implementation is a 2.0 item.
 
 ## Accuracy Report
 
-Audited against the codebase on 2026-04-11.
+Audited against the codebase on 2026-04-13.
 
 | Claim | Status | Evidence |
 |---|---|---|
-| `x-amz-version-id` response header was pending | Corrected | Tests assert header presence in `tests/s3_integration.rs:998-1027`, `1126`, `1229`, `1279` |
-| `x-amz-delete-marker` response header was pending | Corrected | Test asserts header on versioned delete in `tests/s3_integration.rs:1124-1126` |
-| `PutBucketNotification` returns 501 | Corrected | Stub returns success in `src/s3_service.rs:1320-1324`; test allows 200 in `tests/s3_integration.rs:2607-2620` |
-| `PutBucketACL` only accepts private / rejects others with 501 | Corrected | Stub unconditionally returns success in `src/s3_service.rs:1352-1357`; test notes current 200-or-501 behavior in `tests/s3_integration.rs:2656-2669` |
-| `PutObjectACL` only accepts private | Corrected | Stub unconditionally returns success in `src/s3_service.rs:1359-1364`; private-path test in `tests/s3_integration.rs:2692-2710` |
-| Bucket CORS stubs | Verified with nuance | Implementation is `404 NoSuchCORSConfiguration` for GET and `501 NotImplemented` for PUT/DELETE in `src/s3_service.rs:1329-1347`; PUT test allows 400 parse failure before stub in `tests/s3_integration.rs:2560-2573` |
-| Bucket notification GET stub | Verified | `src/s3_service.rs:1313-1318`, `tests/s3_integration.rs:2590-2604` |
-| Versioning operations and headers | Verified | `src/s3_service.rs:903-942`, `tests/s3_integration.rs:873-1279` |
-| Multipart operations marked Done | Verified | `src/s3_service.rs:1006-1158`, `tests/s3_integration.rs:1656-2383`, `3901-3930` |
-| `41 of 72` implemented | Not re-derived in this pass | Value is internally plausible, but I did not re-count every route against code in this audit |
-| `POST policy uploads` in Auth section | Not verified in this pass | No direct implementation or test evidence reviewed here; this may be protocol capability from `s3s`, but the doc currently conflicts with `PostPolicyBucket = No` above |
+| `x-amz-version-id` response header | Verified | Tests in `tests/s3_versioning.rs` assert header presence on versioned PUT, DELETE, and GET |
+| `x-amz-delete-marker` response header | Verified | Test in `tests/s3_versioning.rs::versioned_delete_creates_delete_marker` asserts header |
+| `PutBucketNotification` returns 501 | Corrected | Stub returns success in `src/s3_service.rs`; test allows 200 in `tests/s3_config_stubs.rs` |
+| `PutBucketACL` only accepts private / rejects others with 501 | Corrected | Stub unconditionally returns success; test in `tests/s3_config_stubs.rs` |
+| `PutObjectACL` only accepts private | Corrected | Stub unconditionally returns success; test in `tests/s3_config_stubs.rs` |
+| Bucket CORS stubs | Verified | `404 NoSuchCORSConfiguration` for GET, `501 NotImplemented` for PUT/DELETE; tests in `tests/s3_config_stubs.rs` |
+| Versioning operations and headers | Verified | `src/s3_service.rs`, `tests/s3_versioning.rs` |
+| Multipart operations marked Done | Verified | `src/s3_service.rs`, `tests/s3_multipart.rs` |
+| `41 of 72` implemented | Not re-derived | Plausible but not re-counted in this audit |
+| `POST policy uploads` in Auth section | Corrected | Was listed as Done 8/10 but no implementation exists. Fixed to No 0/10. PostPolicyBucket operation table already said No |
 
-Verdict: this document had several stale entries. The versioning-header rows and some stub-operation notes are now corrected. The remaining big unresolved item is the `POST policy uploads` claim, which needs a dedicated audit because it conflicts with the operation table.
+Verdict: POST policy conflict resolved (marked No in both places). Version-id headers verified as working. Test file references updated to split test files.
