@@ -6,17 +6,64 @@ how to run benchmarks, see
 
 ---
 
-## Comprehensive matrix
+## L7: Full end-to-end (child process, TLS, SDK)
 
-L7 competitive matrix (AbixIO vs RustFS vs MinIO) pending re-run.
-Run with: `abixio-ui bench --layers L7`
+Measured 2026-04-13. AbixIO child process, HTTPS + SigV4 +
+UNSIGNED-PAYLOAD, aws-sdk-s3 client. 1 disk, Defender-excluded tmpdir.
+Run with: `abixio-ui bench --layers L7 --write-paths file,wal --write-cache both --servers abixio --clients sdk`
 
-The two AbixIO configs (`AbixIO-file`, `AbixIO-wal`) are the same
-binary launched with `--write-tier file|wal`. WAL is the default for
-objects <=64KB; file handles >64KB. Both are tested at all sizes to
-show the crossover. Write cache adds a second axis (on/off).
+4 configs: file, file+wc, wal, wal+wc. Competitive comparison
+(RustFS, MinIO) pending separate run.
 
-L7 results will be added here once the competitive run completes.
+### L7 PUT unsigned (MB/s)
+
+| Size | file | file+wc | wal | wal+wc |
+|---|---|---|---|---|
+| 4KB | 2.8 | **8.6** | 3.2 | **7.8** |
+| 64KB | 37.5 | **46.2** | 31.3 | 39.4 |
+| 10MB | 349.1 | **400.0** | **357.0** | 352.4 |
+| 1GB | **490.1** | 479.4 | 317.6 | 314.3 |
+
+Write cache dominates at 4KB: file+wc (8.6 MB/s) is 3x raw file
+(2.8) and 2.7x raw WAL (3.2). At 64KB file+wc still leads. At 10MB
+the tiers converge. At 1GB file wins by 1.5x over WAL.
+
+### L7 PUT signed (MB/s)
+
+| Size | file | file+wc | wal | wal+wc |
+|---|---|---|---|---|
+| 4KB | 2.8 | **8.0** | 2.9 | **7.5** |
+| 64KB | **30.4** | **32.1** | 27.8 | 27.6 |
+| 10MB | **110.4** | **110.8** | 97.7 | 97.8 |
+| 1GB | **112.7** | **112.5** | 92.4 | 94.4 |
+
+Signed PUT is 3-4x slower than unsigned at 10MB+ because the SDK
+must SHA-256 the entire body before sending. The tier/cache
+differences are compressed under the signing overhead.
+
+### L7 GET (MB/s)
+
+| Size | file | file+wc | wal | wal+wc |
+|---|---|---|---|---|
+| 4KB | 3.4 | **5.6** | 3.0 | **5.5** |
+| 64KB | 38.9 | **44.5** | **39.0** | 39.3 |
+| 10MB | 278.0 | **279.3** | 275.7 | 263.1 |
+| 1GB | **293.8** | 283.0 | 269.6 | 260.8 |
+
+GET is equalized across tiers at medium+ sizes (disk read dominates).
+Write cache helps GET at 4KB because recently-written objects are
+served from RAM.
+
+### L7 metadata ops (p50 latency)
+
+| Op | file | file+wc | wal | wal+wc |
+|---|---|---|---|---|
+| HEAD | 501us | **450us** | 460us | 472us |
+| LIST (100 obj) | **20.1ms** | 20.7ms | 21.0ms | 21.5ms |
+| DELETE | **794us** | 732us | 906us | 905us |
+
+Metadata ops are tier-independent. HEAD ~450-500us, DELETE ~730-900us,
+LIST 100 objects ~20ms.
 
 ---
 
@@ -222,5 +269,5 @@ All benchmarks live in `abixio-ui/src/bench/`. Run via `abixio-ui bench`.
 See [benchmark-requirements.md](benchmark-requirements.md) for the file
 layout, layer map, and testing spec.
 
-L3 and L6 results measured 2026-04-13 with 2-tier (file/wal) + write
-cache matrix. L7 competitive matrix pending re-run.
+L3, L6, and L7 results measured 2026-04-13 with 2-tier (file/wal) +
+write cache matrix. L7 competitive comparison (RustFS, MinIO) pending.
