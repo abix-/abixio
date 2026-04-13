@@ -2,9 +2,9 @@
 
 ## critical
 
+- [ ] unwrap() plague. 533 calls in src/ (was 374, growing). hot files: local_volume.rs 127, volume_pool.rs 108, write_slot_pool.rs 104, segment.rs 46, log_store.rs 40, cluster/mod.rs 27, heal/worker.rs 21 + 1 panic!. failure-path code is the one path that must not panic. convert to Result propagation starting with the write path files. every unwrap in a write path is a potential data-loss panic
 - [ ] log-structured storage: remaining phases. GC (phase 8), heal worker log-awareness (phase 7), versioned object support, chunked-transfer PUT support. S3 integration working for Content-Length PUTs <= 64KB. see docs/write-log.md
-- [ ] mc client throughput gap. AbixIO serves 1GB at 1220 MB/s via curl but only 354 MB/s through mc. MinIO gets 970 MB/s through the same mc. profile with mc --debug, diff headers, find the bottleneck
-- [ ] unwrap() plague. 374 calls in src/ (was 252, growing). hot files: local_volume.rs 75, cluster/mod.rs 27, heal/worker.rs 21 + 1 panic!. failure-path code is the one path that must not panic
+- [ ] mc client throughput gap. AbixIO serves 1GB at 1220 MB/s via curl but only 354 MB/s through mc. MinIO gets 970 MB/s through the same mc. profile with mc --debug, diff headers, find the bottleneck. default S3 client at 29% of curl speed is a bad first impression
 - [x] debug header in src/s3_route.rs (x-debug-s3s-ms). kept and extended: now also emits W3C `server-timing` header with per-layer breakdown (setup, validate, ec_encode, storage_write, etc). `src/timing.rs` module with tokio task_local, RAII Span, 7 unit tests. the "remove in production" comment was wrong -- it's a profiling feature, not debug clutter
 - [x] EC GET regression fixed. zero-alloc fast path slices directly from mmap. 4-disk GET: 803->1236 MB/s
 - [x] log-structured storage: needle.rs + segment.rs + log_store.rs + S3 integration. small PUTs with Content-Length <= 64KB route through log store end-to-end. verified with curl. 4 appends vs 12 fs ops per 4KB object on 4 disks
@@ -20,26 +20,28 @@
 
 ## high
 
-- [ ] ship v0.1.0: Dockerfile + github release with windows binary. 210 commits, zero releases. no one can use this without building from source
-- [ ] split tests/s3_integration.rs (3,935 lines) by operation category: bucket ops, object ops, multipart, versioning, tagging, conditional, hostile input
-- [ ] CHANGELOG. no release notes exist for 210 commits. add one, even if retroactive
-- [ ] failure injection tests (kill volumes, corrupt shards, partition nodes mid-write)
+- [ ] split tests/s3_integration.rs (3,936 lines) by operation category: bucket ops, object ops, multipart, versioning, tagging, conditional, hostile input. it is a monolith and every new test makes it worse
+- [ ] fix test count lie. README says 355, docs/index.md says 171, todo.md said 329, actual #[test] count is 111 (expansion makes ~355). pick one source of truth, add a CI check that asserts it, delete wrong numbers
+- [ ] refresh docs/index.md. "Current reality" block dated 2026-04-06 is stale: says 171 tests, lists conditional/versioning headers as missing (both done). fix or delete
+- [ ] failure injection tests. kill a volume mid-write, corrupt a shard checksum, partition a remote node during multi-node PUT. erasure coding that has never been tested under actual faults is Reed-Solomon arithmetic, not fault tolerance
+- [ ] document no-fsync ack semantics in README and write-path.md where users will see it. power loss eats recent writes. the README shows PUT/s numbers without mentioning the ack-from-page-cache tradeoff
+- [ ] ship v0.1.0: Dockerfile + github release with windows binary. 347 commits, zero releases. no one can use this without building from source
+- [ ] CHANGELOG. no release notes exist for 347 commits. add one, even if retroactive
+- [ ] s3-compliance.md: POST policy uploads listed as Done 8/10 in auth section but PostPolicyBucket listed as No in operation table. accuracy report flags this as unresolved. pick one
 - [ ] version-id response headers. x-amz-version-id and x-amz-delete-marker still "Pending" in s3-compliance.md
 - [ ] bucket delete fails when versioned objects exist
 - [ ] client relay returns chunk signatures in body (server not stripping chunked-transfer encoding)
-- [ ] doc test counts disagree. README says 320, docs/index.md says 171, actual #[test] count is 329. fix README and docs/index.md, then add a CI check that asserts both match reality so drift fails the build
-- [ ] docs/index.md "Current reality" block dated 2026-04-06 is stale. says 171 tests, lists conditional/versioning headers as missing (both done). refresh it
 - [x] wire versioning response headers (x-amz-version-id, x-amz-delete-marker) through s3s DTOs
 - [x] implement conditional requests (If-Match, If-None-Match, If-Modified-Since, If-Unmodified-Since) in s3_service.rs
 - [x] lifecycle endpoints store config but never enforce. now stores and returns actual rules; enforcement still missing
 
 ## medium
 
-- [ ] lifecycle enforcement. config is stored and returned but rules never execute. s3-compliance rates this 7/10, should be 3/10 until enforced
-- [ ] bucket policy enforcement. policies stored but never checked on requests. same problem as lifecycle
-- [ ] graceful shutdown. what happens to in-flight writes? do shard writers finalize? do partial .abixio.tmp dirs get cleaned up on startup?
-- [ ] observability. tracing is imported but no structured metrics, no request latency histograms, no error rate counters. operators need to know if it's healthy
-- [ ] encryption at rest (docs/encryption.md is design only, no implementation)
+- [ ] lifecycle enforcement. config is stored and returned but rules never execute. s3-compliance rates this 7/10, should be 3/10 until enforced. storing config you never enforce is worse than not implementing the feature because the user thinks it works
+- [ ] bucket policy enforcement. policies stored but never checked on requests. same problem as lifecycle -- false sense of security
+- [ ] graceful shutdown. what happens to in-flight writes? do shard writers finalize? do partial .abixio.tmp dirs get cleaned up on startup? half-written log segments? abandoned multipart uploads?
+- [ ] observability. tracing is imported but no structured metrics, no request latency histograms, no error rate counters. no health endpoint beyond admin API. operators cannot tell if it is healthy or slowly dying
+- [ ] encryption at rest (docs/encryption.md is design only, no implementation. listed in doc index like a feature)
 - [x] comparative benchmark vs rustfs and minio: abixio-ui/src/bench/ with SVG charts in docs
 - [x] per-layer benchmark suite (L1-L6) with JSON output and A/B comparison mode
 - [x] basic benchmark suite: abixio-ui/src/bench/: PUT/GET/HEAD/LIST/DELETE with 1-4 disks
