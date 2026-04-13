@@ -7,6 +7,9 @@ use super::metadata::{
     BucketSettings, ObjectMeta, ObjectMetaFile, read_meta_file, write_meta_file,
 };
 use super::pathing;
+use super::wal::{
+    self, MaterializeDispatch, MaterializeRequest, Wal, DEFAULT_WAL_THRESHOLD,
+};
 use super::write_slot_pool::{
     recover_pool_dir, run_rename_worker, PendingEntry, PendingRenames, RenameDispatch,
     RenameRequest, WriteSlot, WriteSlotPool,
@@ -31,6 +34,14 @@ pub struct LocalVolume {
     /// yet. Read paths consult this so an immediate GET-after-PUT
     /// finds the object before the worker finishes the rename.
     pending_renames: Option<PendingRenames>,
+    /// Write-ahead log. When enabled, small object PUTs append to a
+    /// log segment (fast) and a background worker materializes them
+    /// to shard.dat + meta.json. Replaces both log_store and write_pool
+    /// when --write-tier=wal.
+    wal: Option<Arc<std::sync::Mutex<Wal>>>,
+    wal_tx: Option<Arc<MaterializeDispatch>>,
+    wal_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    wal_threshold: usize,
 }
 
 /// Default threshold: objects <= 64KB use log-structured storage.
@@ -77,6 +88,10 @@ impl LocalVolume {
             rename_tx: None,
             pool_shutdown: None,
             pending_renames: None,
+            wal: None,
+            wal_tx: None,
+            wal_shutdown: None,
+            wal_threshold: DEFAULT_WAL_THRESHOLD,
         })
     }
 
@@ -229,6 +244,91 @@ impl LocalVolume {
     /// Whether the write pool is enabled.
     pub fn write_pool_enabled(&self) -> bool {
         self.write_pool.is_some()
+    }
+
+    /// Enable the write-ahead log for this volume. Creates the WAL
+    /// directory at `.abixio.sys/wal/`, recovers un-materialized entries
+    /// from any previous run, and spawns background materialize workers.
+    pub async fn enable_wal(&mut self) -> Result<(), StorageError> {
+        self.enable_wal_with_config(DEFAULT_WAL_THRESHOLD, 10_000, 2).await
+    }
+
+    /// Full WAL configuration.
+    pub async fn enable_wal_with_config(
+        &mut self,
+        threshold: usize,
+        channel_buffer: usize,
+        worker_count: usize,
+    ) -> Result<(), StorageError> {
+        if self.wal.is_some() {
+            return Ok(());
+        }
+        assert!(worker_count >= 1, "worker_count must be >= 1");
+        self.wal_threshold = threshold;
+
+        let wal_dir = self.root.join(".abixio.sys").join("wal");
+        let w = Wal::open(&wal_dir, super::segment::DEFAULT_SEGMENT_SIZE, &self.root)?;
+        let wal = Arc::new(std::sync::Mutex::new(w));
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+
+        // spawn N materialize workers with round-robin dispatch
+        let mut senders = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let (tx, rx) = tokio::sync::mpsc::channel::<MaterializeRequest>(channel_buffer);
+            senders.push(tx);
+            let worker_root = self.root.clone();
+            let worker_wal = Arc::clone(&wal);
+            let worker_shutdown = shutdown_rx.clone();
+            tokio::spawn(async move {
+                wal::run_materialize_worker(worker_root, worker_wal, rx, worker_shutdown).await;
+            });
+        }
+
+        let dispatch = Arc::new(MaterializeDispatch::new(senders));
+
+        // recover un-materialized entries from previous run
+        wal::recover_wal(&wal, &dispatch).await;
+
+        self.wal = Some(wal);
+        self.wal_tx = Some(dispatch);
+        self.wal_shutdown = Some(shutdown_tx);
+        Ok(())
+    }
+
+    /// Whether the WAL is enabled.
+    pub fn wal_enabled(&self) -> bool {
+        self.wal.is_some()
+    }
+
+    /// Read shard data from the WAL pending map.
+    fn read_shard_from_wal(
+        &self,
+        bucket: &str,
+        key: &str,
+    ) -> Result<Option<(Vec<u8>, ObjectMeta)>, StorageError> {
+        let Some(ref wal_mutex) = self.wal else {
+            return Ok(None);
+        };
+        let w = wal_mutex.lock().map_err(|e| {
+            StorageError::Internal(format!("wal lock: {}", e))
+        })?;
+        let Some(entry) = w.get(bucket, key) else {
+            return Ok(None);
+        };
+        let entry = *entry;
+        let data = w.read_data(&entry)
+            .ok_or(StorageError::ObjectNotFound)?;
+        let meta = w.read_meta(&entry)?;
+        Ok(Some((data, meta)))
+    }
+
+    /// Check if an object is in the WAL pending map.
+    fn is_in_wal(&self, bucket: &str, key: &str) -> bool {
+        self.wal
+            .as_ref()
+            .and_then(|m| m.lock().ok())
+            .map_or(false, |w| w.contains(bucket, key))
     }
 
     /// Write a shard to the log store (for small objects).
@@ -539,6 +639,113 @@ impl ShardWriter for LogShardWriter {
     }
 }
 
+/// Streaming shard writer for the WAL. Buffers chunks internally,
+/// then on finalize: serialize needle, append to WAL, send materialize
+/// request. If accumulated data exceeds the threshold, falls back to
+/// the file tier.
+pub struct WalShardWriter {
+    wal: Arc<std::sync::Mutex<Wal>>,
+    wal_tx: Arc<MaterializeDispatch>,
+    root: PathBuf,
+    bucket: String,
+    key: String,
+    buf: Vec<u8>,
+    threshold: usize,
+}
+
+impl WalShardWriter {
+    pub fn new(
+        wal: Arc<std::sync::Mutex<Wal>>,
+        wal_tx: Arc<MaterializeDispatch>,
+        root: PathBuf,
+        bucket: &str,
+        key: &str,
+        threshold: usize,
+    ) -> Self {
+        Self {
+            wal,
+            wal_tx,
+            root,
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            buf: Vec::with_capacity(threshold),
+            threshold,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl ShardWriter for WalShardWriter {
+    async fn write_chunk(&mut self, data: &[u8]) -> Result<(), StorageError> {
+        self.buf.extend_from_slice(data);
+        Ok(())
+    }
+
+    async fn finalize(self: Box<Self>, meta: &ObjectMeta) -> Result<(), StorageError> {
+        // if data exceeded WAL threshold, fall back to file tier
+        if self.buf.len() > self.threshold {
+            let obj_dir = pathing::object_dir(&self.root, &self.bucket, &self.key)?;
+            tokio::fs::create_dir_all(&obj_dir).await?;
+            let shard_path = obj_dir.join("shard.dat");
+            let meta_path = obj_dir.join("meta.json");
+            let mut version = meta.clone();
+            version.is_latest = true;
+            let mf = ObjectMetaFile {
+                bucket: self.bucket.clone(),
+                key: self.key.clone(),
+                versions: vec![version],
+            };
+            let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
+                StorageError::Internal(format!("simd_json meta serialize: {}", e))
+            })?;
+            tokio::try_join!(
+                tokio::fs::write(&shard_path, &self.buf),
+                tokio::fs::write(&meta_path, &meta_json),
+            )?;
+            return Ok(());
+        }
+
+        // small object: append to WAL
+        let needle = super::needle::Needle::new(&self.bucket, &self.key, meta, &self.buf)?;
+
+        // build materialize request before locking WAL (minimize lock hold)
+        let mut version = meta.clone();
+        version.is_latest = true;
+        let mf = ObjectMetaFile {
+            bucket: self.bucket.clone(),
+            key: self.key.clone(),
+            versions: vec![version],
+        };
+        // simd-json: 30% faster than serde_json (perf win #6)
+        let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
+            StorageError::Internal(format!("simd_json meta serialize: {}", e))
+        })?;
+        let data_copy = self.buf.clone();
+
+        let segment_id = {
+            let mut w = self.wal.lock().map_err(|e| {
+                StorageError::Internal(format!("wal lock: {}", e))
+            })?;
+            let entry = w.append(&needle)?;
+            entry.segment_id
+        };
+
+        // send materialize request to background worker
+        let req = MaterializeRequest {
+            bucket: self.bucket.clone(),
+            key: self.key.clone(),
+            data: data_copy,
+            meta_json,
+            segment_id,
+        };
+        self.wal_tx.send(req).await.map_err(|_| {
+            StorageError::Internal("WAL materialize worker channel closed".into())
+        })?;
+
+        Ok(())
+    }
+}
+
 /// Streaming shard writer for local disk. Opens a file on creation,
 /// appends chunks, writes meta on finalize.
 pub struct LocalShardWriter {
@@ -604,6 +811,19 @@ impl ShardWriter for LocalShardWriter {
 impl Backend for LocalVolume {
     async fn drain_pending_writes(&self) {
         self.drain_pending().await;
+        // also drain WAL pending
+        if let Some(ref wal_mutex) = self.wal {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let count = wal_mutex.lock().map(|w| w.pending_count()).unwrap_or(0);
+                if count == 0 { break; }
+                if std::time::Instant::now() >= deadline {
+                    tracing::warn!(pending = count, "WAL drain timed out");
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            }
+        }
     }
 
     async fn open_shard_writer(
@@ -614,7 +834,21 @@ impl Backend for LocalVolume {
     ) -> Result<Box<dyn ShardWriter>, StorageError> {
         let is_versioned = version_id.is_some();
 
-        // 1. pool (if enabled, not versioned, slot available)
+        // 1. WAL (if enabled, not versioned)
+        if !is_versioned {
+            if let (Some(wal), Some(tx)) = (&self.wal, &self.wal_tx) {
+                return Ok(Box::new(WalShardWriter::new(
+                    Arc::clone(wal),
+                    Arc::clone(tx),
+                    self.root.clone(),
+                    bucket,
+                    key,
+                    self.wal_threshold,
+                )));
+            }
+        }
+
+        // 2. pool (if enabled, not versioned, slot available)
         if !is_versioned {
             if let (Some(pool), Some(tx)) = (self.write_pool.as_ref(), self.rename_tx.as_ref()) {
                 if let Some(slot) = pool.try_pop() {
@@ -630,7 +864,7 @@ impl Backend for LocalVolume {
             }
         }
 
-        // 2. log store (if enabled, not versioned)
+        // 3. log store (if enabled, not versioned)
         if !is_versioned {
             if let Some(ref log) = self.log_store {
                 return Ok(Box::new(LogShardWriter::new(
@@ -642,7 +876,7 @@ impl Backend for LocalVolume {
             }
         }
 
-        // 3. file tier (fallback)
+        // 4. file tier (fallback)
         let shard_path = if let Some(vid) = version_id {
             let ver_dir = pathing::version_dir(&self.root, bucket, key, vid)?;
             tokio::fs::create_dir_all(&ver_dir).await?;
@@ -674,6 +908,45 @@ impl Backend for LocalVolume {
         pathing::validate_object_key(key)?;
 
         let is_versioned = !meta.version_id.is_empty();
+
+        // WAL fast path: append needle, send materialize request
+        if !is_versioned && (data.len() <= self.wal_threshold) {
+            if let (Some(wal_mutex), Some(tx)) = (&self.wal, &self.wal_tx) {
+                let needle = super::needle::Needle::new(bucket, key, meta, data)?;
+
+                // build materialize request before locking (minimize hold)
+                let mut version = meta.clone();
+                version.is_latest = true;
+                let mf = ObjectMetaFile {
+                    bucket: bucket.to_string(),
+                    key: key.to_string(),
+                    versions: vec![version],
+                };
+                let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
+                    StorageError::Internal(format!("simd_json meta serialize: {}", e))
+                })?;
+
+                let segment_id = {
+                    let mut w = wal_mutex.lock().map_err(|e| {
+                        StorageError::Internal(format!("wal lock: {}", e))
+                    })?;
+                    let entry = w.append(&needle)?;
+                    entry.segment_id
+                };
+
+                let req = MaterializeRequest {
+                    bucket: bucket.to_string(),
+                    key: key.to_string(),
+                    data: data.to_vec(),
+                    meta_json,
+                    segment_id,
+                };
+                tx.send(req).await.map_err(|_| {
+                    StorageError::Internal("WAL materialize worker channel closed".into())
+                })?;
+                return Ok(());
+            }
+        }
 
         // Pool fast path: if the write pool is enabled and a slot is
         // available, use the Phase 2 hot path (pop slot, concurrent
@@ -844,7 +1117,12 @@ impl Backend for LocalVolume {
             }
         }
 
-        // check log store first (small objects)
+        // check WAL pending (un-materialized objects)
+        if let Ok(Some((data, meta))) = self.read_shard_from_wal(bucket, key) {
+            return Ok((data, meta));
+        }
+
+        // check log store (small objects, legacy path)
         if let Ok(Some((data, meta))) = self.read_shard_from_log(bucket, key) {
             return Ok((data, meta));
         }
@@ -1005,7 +1283,19 @@ impl Backend for LocalVolume {
             }
         }
 
-        // check log store first
+        // check WAL pending
+        if self.is_in_wal(bucket, key) {
+            if let Some(ref wal_mutex) = self.wal {
+                if let Ok(mut w) = wal_mutex.lock() {
+                    w.mark_materialized(bucket, key);
+                    // the materialize worker will fail on the missing entry
+                    // (dest won't exist) -- that's fine, it logs and continues
+                    return Ok(());
+                }
+            }
+        }
+
+        // check log store (legacy path)
         if self.is_in_log(bucket, key) {
             if let Some(ref log_mutex) = self.log_store {
                 if let Ok(mut log) = log_mutex.lock() {
@@ -1033,7 +1323,18 @@ impl Backend for LocalVolume {
             Self::walk_keys(&bucket_dir, &bucket_dir, prefix, &mut keys).await?;
         }
 
-        // log store
+        // WAL pending
+        if let Some(ref wal_mutex) = self.wal {
+            if let Ok(w) = wal_mutex.lock() {
+                for k in w.list_keys(bucket, prefix) {
+                    if !keys.contains(&k) {
+                        keys.push(k);
+                    }
+                }
+            }
+        }
+
+        // log store (legacy path)
         if let Some(ref log_mutex) = self.log_store {
             if let Ok(log) = log_mutex.lock() {
                 for k in log.list_keys(bucket, prefix) {
@@ -1044,7 +1345,7 @@ impl Backend for LocalVolume {
             }
         }
 
-        // Phase 5: pending pool writes that haven't been renamed yet
+        // pending pool writes that haven't been renamed yet
         if let Some(ref pending) = self.pending_renames {
             for entry in pending.iter() {
                 let (b, k) = entry.key();
@@ -1137,7 +1438,18 @@ impl Backend for LocalVolume {
             }
         }
 
-        // check log store first
+        // check WAL pending
+        if let Some(ref wal_mutex) = self.wal {
+            if let Ok(w) = wal_mutex.lock() {
+                if let Some(entry) = w.get(bucket, key) {
+                    if let Ok(meta) = w.read_meta(entry) {
+                        return Ok(meta);
+                    }
+                }
+            }
+        }
+
+        // check log store (legacy path)
         if let Some(ref log_mutex) = self.log_store {
             if let Ok(log) = log_mutex.lock() {
                 if let Some(loc) = log.get(bucket, key) {

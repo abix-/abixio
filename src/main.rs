@@ -71,6 +71,12 @@ async fn main() {
                     Ok(mut v) => {
                         // apply --write-tier (default "file" = no extra wiring)
                         match cfg.write_tier.as_str() {
+                            "wal" => {
+                                if let Err(e) = v.enable_wal().await {
+                                    eprintln!("error: enable WAL on {}: {}", vp, e);
+                                    std::process::exit(1);
+                                }
+                            }
                             "log" => {
                                 if let Err(e) = v.enable_log_store() {
                                     eprintln!("error: enable log store on {}: {}", vp, e);
@@ -78,8 +84,6 @@ async fn main() {
                                 }
                             }
                             "pool" => {
-                                // depth 1024 matches Phase 8.5/8.7 best-config
-                                // (`docs/benchmarks.md::Stack breakdown`).
                                 if let Err(e) = v.enable_write_pool(1024).await {
                                     eprintln!("error: enable write pool on {}: {}", vp, e);
                                     std::process::exit(1);
