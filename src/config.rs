@@ -42,9 +42,10 @@ pub struct Config {
     #[arg(long, default_value_t = 2)]
     pub mrf_workers: usize,
 
-    /// Write tier for local volumes: `file` (default) or `wal`
-    /// (write-ahead log with background materialize). See `docs/write-path.md`.
-    #[arg(long, default_value = "file")]
+    /// Write tier for local volumes: `wal` (default, write-ahead log
+    /// with background materialize) or `file` (direct to disk).
+    /// See `docs/write-path.md`.
+    #[arg(long, default_value = "wal")]
     pub write_tier: String,
 
     /// RAM write cache size in MB. 0 disables the cache.
