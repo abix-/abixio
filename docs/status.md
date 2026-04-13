@@ -21,7 +21,7 @@ not a product.
 |---|---|---|
 | Erasure coding (RS encode/decode) | 8/10 | per-object FTT, streaming encode, zero-alloc decode, bitrot detection |
 | Write path (file tier) | 8/10 | direct mkdir+write, simple, correct |
-| Write path (log store) | 6/10 | working for <=64KB non-versioned PUTs, no GC yet, no versioned object support, no chunked-transfer PUT |
+| Write path (WAL) | 8/10 | append to mmap, background materialize, 3us at 4KB in release mode. no GC, no permanent index |
 | Write path (pool) | 7/10 | pre-opened slots, async rename, pending-reads work. no versioned support |
 | Write cache (RAM) | 5/10 | DashMap insert works, but no automatic flush, no eviction policy, not exercised by benchmarks |
 | Read path (GET) | 8/10 | mmap zero-copy for 1+0, zero-alloc mmap slices for EC, log index lookup, range support |

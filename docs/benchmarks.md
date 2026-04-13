@@ -245,7 +245,7 @@ not exist in two places.
 
 For the canonical end-to-end PUT path, see [write-path.md](write-path.md).
 For optimization history and allocation audit, see [layer-optimization.md](layer-optimization.md).
-For log-structured storage design, see [write-log.md](write-log.md).
+For write-ahead log design, see [write-wal.md](write-wal.md).
 For RAM write cache design, see [write-cache.md](write-cache.md).
 
 ## Accuracy Report

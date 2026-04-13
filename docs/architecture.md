@@ -91,8 +91,7 @@ HTTP request body
   -> VolumePool resolves EC, placement, and the write branch
   -> possible branches:
        RAM write cache (ack from RAM, disk later on explicit flush)
-       log store (append is the final resting place)
-       write pool (ack from temp files, rename later)
+       WAL (append to mmap segment, materialize to files in background)
        file tier (ack after final files are written)
        remote volume RPC (target node executes its own local branch)
   -> ack
@@ -107,8 +106,8 @@ timings, see [write-path.md](write-path.md).
 HTTP GET request
   -> s3s dispatches to AbixioS3::get_object()
 
-  check in-memory log index first:
-    FOUND -> mmap slice from log segment (zero-copy)
+  check WAL pending map first:
+    FOUND -> read from WAL segment mmap
     NOT FOUND -> fall through to file tier:
 
   file tier (non-range, non-versioned):
@@ -123,7 +122,7 @@ HTTP GET request
 ```
 
 The 1+0 fast path uses zero-copy mmap. EC uses zero-alloc mmap slices.
-Small-object reads come from the log segment mmap. End-to-end PUT and
+Un-materialized WAL objects are served from the segment mmap. End-to-end PUT and
 GET numbers per tier and per size live in
 [write-path.md::Where the time goes](write-path.md#where-the-time-goes).
 The L1-L7 storage-pipeline ceilings (raw write, mmap GET, blake3, RS,
@@ -167,7 +166,6 @@ src/
     needle.rs             # needle format: serialize_into (zero-alloc mmap write), checksum, msgpack
     segment.rs            # segment files: pre-alloc, MmapMut append, seal, scan
     wal.rs                # write-ahead log: append to mmap, background materialize, recovery
-    log_store.rs          # (legacy) log-structured store: in-memory index, segment lifecycle
     volume.rs             # VolumeFormat: read/write .abixio.sys/volume.json
   s3_service.rs           # impl S3 for AbixioS3: streaming GET, versioning cache, thin adapter (s3s)
   s3_auth.rs              # impl S3Auth: SigV4 credential lookup (s3s)
@@ -235,7 +233,7 @@ Audited against the codebase on 2026-04-11.
 | Versioning config is cached in `s3_service.rs` | Verified | `src/s3_service.rs:74`, `96-117`, `359-366`, `552-562` |
 | Small objects `<=64KB` use log-structured routing | Verified | `src/storage/volume_pool.rs:239-365`, `src/storage/local_volume.rs:564-568` |
 | Log-store PUT path includes `fsync + ack` | Corrected | Code comments and implementation explicitly say no fsync: `src/storage/local_volume.rs:251-253` |
-| Pool/default choice is still unsettled | Corrected | Newer docs and bench artifacts already establish the three-tier result; see `docs/benchmarks.md` and `docs/write-pool.md` |
+| Pool/default choice is still unsettled | Resolved | WAL replaces both log store and write pool. See `docs/write-wal.md` |
 | 1+0 mmap fast path and EC mmap decode exist | Verified | `src/s3_service.rs:458-474`, `src/storage/erasure_decode.rs`, `src/storage/volume_pool.rs` |
 | Per-tier and per-size performance numbers in this doc | Removed (moved out) | Architecture doc no longer carries perf claims; see [write-path.md](write-path.md), [layer-optimization.md](layer-optimization.md), [benchmarks.md](benchmarks.md) for the canonical sources |
 | Dependency table | Mostly verified at a glance | The listed crates are present and used, but I did not exhaustively reconcile every crate entry against `Cargo.toml` in this pass |

@@ -1,8 +1,7 @@
 # Write path
 
 **Authoritative for:** how a PUT moves through AbixIO. End-to-end flow,
-routing decisions, all five storage branches (RAM cache, log store,
-write pool, file tier, remote backend), ack semantics, and current
+routing decisions, the storage branches (RAM cache, WAL, file tier, remote backend), ack semantics, and current
 performance characteristics. If you need to know how a write works,
 this is the only doc.
 
@@ -28,10 +27,9 @@ numeric budget.
   - [5. EC resolution, hashing, and placement](#5-ec-resolution-hashing-and-placement)
 - [Storage branches](#storage-branches)
   - [Branch A: RAM write cache](#branch-a-ram-write-cache)
-  - [Branch B: Local log store](#branch-b-local-log-store)
-  - [Branch C: Local write pool](#branch-c-local-write-pool)
-  - [Branch D: Local file tier](#branch-d-local-file-tier)
-  - [Branch E: Remote backend](#branch-e-remote-backend)
+  - [Branch B: Write-ahead log (WAL)](#branch-b-write-ahead-log-wal)
+  - [Branch C: Local file tier](#branch-c-local-file-tier)
+  - [Branch D: Remote backend](#branch-d-remote-backend)
 - [Ack semantics by branch](#ack-semantics-by-branch)
 - [Where the time goes](#where-the-time-goes)
 - [How other docs should use this page](#how-other-docs-should-use-this-page)
@@ -66,8 +64,7 @@ client
   -> VolumePool::put_object_stream
   -> branch:
        RAM write cache -> ack -> explicit flush later
-       log store -> ack
-       write pool -> ack -> rename worker later
+       WAL -> ack -> materialize worker later
        file tier -> ack
        remote volume RPC -> ack after target node completes its local shard path
 ```
@@ -76,9 +73,9 @@ The main code anchors are:
 
 - `src/s3_service.rs`: request-level decisions
 - `src/storage/volume_pool.rs`: routing, EC, placement, quorum
-- `src/storage/local_volume.rs`: local log/pool/file write behavior
+- `src/storage/local_volume.rs`: local WAL/file write behavior
 - `src/storage/write_cache.rs`: RAM cache structure
-- `src/storage/write_slot_pool.rs`: pending-rename and worker behavior
+- `src/storage/wal.rs`: WAL append and materialize worker
 - `src/storage/remote_volume.rs`: remote shard buffering and finalize POST
 - `src/storage/storage_server.rs`: remote target dispatch
 
@@ -199,8 +196,6 @@ Current routing:
 | RAM cache insert succeeds | ack from RAM cache |
 | RAM cache insert fails or cache disabled | call `write_shard` per selected backend |
 | local backend + non-versioned + `data.len <= wal_threshold` + WAL enabled | WAL (append to mmap segment, background materialize) |
-| local backend + non-versioned + `meta.size <= 64KB` + log enabled | log store (legacy) |
-| local backend + write pool enabled and object qualifies for that local path | write pool (legacy) |
 | local backend fallback | file tier |
 | remote backend | HTTP POST to target node's storage server, which then executes its own local branch |
 | versioned object or unknown/large content length | streaming `encode_and_write` path |
@@ -401,98 +396,7 @@ Final resting place:
 See [write-wal.md](write-wal.md) for the full WAL design, recovery,
 and optimization history.
 
-### Branch C: Local log store (legacy)
-
-Isolated L3 storage pipeline. Direct VolumePool API call, no HTTP,
-no s3s. 1 disk, ftt=0, no write cache.
-
-Source: `abixio-ui bench --layers L3 --write-paths log`,
-`bench-results/l3-storage.json`
-
-| Size | PUT p50 | PUT throughput | GET p50 | GET throughput |
-|---|---|---|---|---|
-| 4KB | `135us` | `27.1 MB/s` | `34us` | `112.9 MB/s` |
-| 64KB | `280us` | `217.7 MB/s` | `60us` | `1045.6 MB/s` |
-| 10MB | `30.1ms` | `330.4 MB/s` | `436us` | `21172 MB/s` |
-| 100MB | `338.3ms` | `273.5 MB/s` | `629us` | `162396 MB/s` |
-| 1GB | `3.24s` | `317.1 MB/s` | `694us` | `1421301 MB/s` |
-
-The log store handles small objects (<=64KB) natively via needle
-append. At 4KB it is 5.9x faster than the file tier. At 10MB+ the
-LogShardWriter buffers chunks then falls back to file-tier write
-because objects exceed the 64KB log threshold, which adds overhead
-compared to the direct file tier path. GET uses the log index +
-mmap and is sub-millisecond at all sizes (page-cache hot).
-
-If the cache is disabled or full, `VolumePool` writes shards to the
-selected backends. On a `LocalVolume`, small non-versioned objects can
-route to the log store when that volume has log storage enabled.
-
-What happens before ack:
-
-- `LocalVolume::write_shard` calls the log-store append path
-- shard bytes and metadata are serialized into a needle
-- the needle is appended to the active segment
-- the in-memory log index is updated
-
-What ack means here:
-
-- the object is durable to the local OS page cache and addressable from
-  the log index
-- there is no second rename or flush stage inside AbixIO
-- there is also no per-object fsync
-
-Final resting place:
-
-- the append-only log segment itself is the final resting place
-
-### Branch D: Local write pool (legacy)
-
-Isolated L3 storage pipeline. Direct VolumePool API call, no HTTP,
-no s3s. 1 disk, ftt=0, pool depth 32, no write cache.
-
-Source: `abixio-ui bench --layers L3 --write-paths pool`,
-`bench-results/l3-storage.json`
-
-| Size | PUT p50 | PUT throughput | GET p50 | GET throughput |
-|---|---|---|---|---|
-| 4KB | `157us` | `10.5 MB/s` | `577us` | `6.8 MB/s` |
-| 64KB | `259us` | `109.1 MB/s` | `665us` | `95.0 MB/s` |
-| 10MB | `18.0ms` | `554.3 MB/s` | `699us` | `14068 MB/s` |
-| 100MB | `179.0ms` | `556.7 MB/s` | `830us` | `125704 MB/s` |
-| 1GB | `1.92s` | `534.9 MB/s` | `937us` | `47450 MB/s` |
-
-The pool writes to pre-opened temp files and queues a rename, so
-the PUT ack happens before the final path exists. At 4KB it is
-5.1x faster than the file tier. At 10MB+ it beats file tier on PUT
-because it avoids mkdir + File::create. GET reads from the pending
-temp file via pending_renames lookup.
-
-If a `LocalVolume` has the pre-opened temp-file pool enabled and a slot
-is available, the shard write goes through the pool path.
-
-What happens before ack:
-
-- a slot pair is popped from `WriteSlotPool`
-- data and metadata are written to the slot's pre-opened temp files
-- `pending_renames` is updated before queueing the worker request so
-  read-after-write stays visible
-- a `RenameRequest` is sent to the rename dispatcher
-- the shard write returns success
-
-What ack means here:
-
-- the object exists in temp files, not yet at its final object path
-- read-after-write is satisfied through `pending_renames`
-- the rename worker still has to create the destination directory,
-  rename the data file, rename the meta file, and replenish the slot
-
-Final resting place:
-
-- the final `bucket/key/.../shard.dat` and `meta.json` object paths,
-  after the rename worker completes
-
-### Branch E: Local file tier
+### Branch C: Local file tier
 
 Isolated L3 storage pipeline. Direct VolumePool API call, no HTTP,
 no s3s. 1 disk, ftt=0, no write cache.
@@ -513,7 +417,7 @@ final paths. No post-write rename, no pre-opened files. At 4KB it
 is the slowest tier because every PUT pays mkdir + File::create.
 GET uses mmap (page-cache hot).
 
-If the write does not hit RAM cache, log store, or write pool, it falls
+If the write does not hit RAM cache or WAL, it falls
 through to the file tier.
 
 There are two local file-tier shapes:
@@ -537,7 +441,7 @@ Final resting place:
 
 - the final object directory on disk
 
-### Branch F: Remote backend
+### Branch D: Remote backend
 
 | Metric | 4KB timing | 64KB timing | 10MB throughput | 1GB throughput | Notes | Source |
 |---|---|---|---|---|---|---|
@@ -570,8 +474,6 @@ reference.
 |---|---|---|
 | RAM write cache | object is in RAM cache and readable from cache | no |
 | WAL | object is in mmap segment and pending map; materialize queued | no (materialized in background) |
-| log store (legacy) | object is appended to the log and indexed | yes, modulo OS page-cache durability model |
-| write pool (legacy) | temp files are written and pending rename is registered | no |
 | file tier | final object files are written in their destination directory | yes, modulo OS page-cache durability model |
 | remote backend | target node completed its local shard write path | depends on the target branch |
 
@@ -696,8 +598,7 @@ tradeoff vs log is GET performance during the pending window.
 - `benchmarks.md` should keep measurements and link here for layer and
   durability interpretation.
 - `write-wal.md` is the authoritative WAL design doc.
-- `write-log.md`, `write-pool.md`, and `write-cache.md` cover legacy
-  tier internals.
+- `write-cache.md` covers the RAM write cache design.
 
 ## Integration: S3 + real storage (L6)
 
@@ -746,13 +647,13 @@ Audited against the codebase on 2026-04-11.
 | RAM write cache is tried before disk writes on the small-object path | Verified | `src/storage/volume_pool.rs` |
 | RAM-cache ack happens before disk persistence | Verified | `src/storage/volume_pool.rs`, `src/storage/write_cache.rs` |
 | RAM write cache currently relies on explicit `flush_write_cache()` rather than an automatic destage worker in this repo | Verified | `src/storage/volume_pool.rs`, `src/admin/handlers.rs`, absence of any spawned cache flush task in `src/main.rs` |
-| Local small non-versioned writes can route to the log store | Verified | `src/storage/local_volume.rs` |
-| Pool writes ack before the rename worker reaches the final destination path | Verified | `src/storage/local_volume.rs`, `src/storage/write_slot_pool.rs` |
+| Local small non-versioned writes route to the WAL when enabled | Verified | `src/storage/local_volume.rs`, `src/storage/wal.rs` |
+| WAL writes ack before the materialize worker reaches the final destination path | Verified | `src/storage/local_volume.rs`, `src/storage/wal.rs` |
 | File-tier writes place the object in its final path before ack | Verified | `src/storage/local_volume.rs` |
 | Remote shard writes POST into `/_storage/v1/*` and then execute the target node's local `write_shard` path | Verified | `src/storage/remote_volume.rs`, `src/storage/storage_server.rs` |
 | Timing tables on this page are measured-only | Verified | All numeric timings here are sourced from existing benchmark or trace docs; no new estimated timings were added |
 | The specific timing values were independently re-run in this pass | Not re-run in this pass | Values were taken from current repo docs and bench artifacts, not freshly benchmarked during this edit |
 | Per-branch tier tables (B/C/D) carry full 5-size PUT and GET p50 plus throughput | Verified | Source: `bench-results/phase8.7-tier-matrix.txt`. Throughput cells are derived as `size_bytes / 1.048576 / p50_us`, so each cell tracks the latency cell exactly and uses the same MB definition as the bench output (1 MB = 1048576 bytes) |
-| Cross-over from log -> pool -> file tier as object size grows | Verified | Tier matrix tables in §"Where the time goes" show log winning <=64KB PUT, pool winning at 1MB PUT, file winning at 10MB and 100MB PUT |
+| WAL wins at small sizes, file tier wins at large sizes | Verified | Tier matrix tables in "Where the time goes" show WAL winning <=64KB PUT, file tier winning at 10MB+ |
 
 Verdict: the routing and ack/final-resting-place semantics on this page are grounded in the current code. The timing sections are as authoritative as the current benchmark corpus, but they remain benchmark-derived rather than freshly re-measured in this pass.

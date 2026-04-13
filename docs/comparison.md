@@ -121,37 +121,20 @@ closest architectural match.
 
 ## Where AbixIO Is Different
 
-### Log-structured small object storage
+### Write-ahead log for small objects
 
-Small objects (<= 64KB) are written as needles to append-only log segments
-instead of individual files. Inspired by older log-structured storage
-ideas: objects are written exactly once to the log, never overwritten, GC
-reclaims dead space. The specific design choices (64KB threshold, one
-segment per disk, hash index in RAM, no fsync) come from our own benchmark
-measurements. See [write-log.md](write-log.md) for the latency breakdown
-that drove each one. This eliminates the filesystem metadata overhead
-(mkdir + file create) that makes 4KB operations slow on every
-file-per-object storage system.
+Small objects (<= 64KB) are written as checksummed needles directly
+into a writable mmap segment (zero syscalls, zero allocation). A
+background worker materializes each entry to its final file-per-object
+location (shard.dat + meta.json). The WAL is ephemeral -- entries are
+deleted after materialization. No GC, no compaction, no permanent
+in-memory index. 4KB PUT: 3us in release-mode head-to-head, 148us
+through the full VolumePool pipeline. See [write-wal.md](write-wal.md).
 
-MinIO and RustFS mitigate small-object overhead by inlining data into their
-metadata files (one file instead of two). AbixIO goes further by eliminating
-the per-object file entirely. A 4KB PUT on 4 disks creates 4 sequential
-appends instead of 12 filesystem operations.
-
-### Pre-opened temp file pool (alternative to the log store)
-
-A second take on the same goal as the log store: keep a small pool of
-already-open temp files per disk so that PUTs don't pay for `mkdir`,
-file create, or file open on the hot path. The PUT writes shard bytes
-to one slot's pre-opened data file and meta JSON to its companion meta
-file, then acks. The mkdir and the rename to the destination happen on
-a background worker. Two syscalls on the hot path instead of seven.
-
-The pool is designed as a replacement for the log store. The motivation
-is GC simplicity: one file per object means `unlink()` reclaims space
-natively, with no segment compactor. The two approaches are benchmarked
-side-by-side; the winner ships as the default. See
-[write-pool.md](write-pool.md).
+MinIO and RustFS mitigate small-object overhead by inlining data into
+their metadata files. AbixIO goes further by eliminating the per-object
+file creation from the hot path entirely. A 4KB PUT appends one needle
+to the mmap -- no mkdir, no file create, no syscalls.
 
 ### Per-object erasure coding
 

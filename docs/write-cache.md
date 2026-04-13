@@ -59,7 +59,7 @@ PUT 4KB (2+ node cluster):
   Ack to client                        total server: ~0.1ms
     |
     v (async, ~100ms later)
-  Background flush to disk             (log store / file tier)
+  Background flush to disk             (WAL / file tier)
 ```
 
 ```
@@ -72,7 +72,7 @@ GET 4KB:
     |
     +---> HIT: return from RAM         (zero disk I/O)
     |
-    +---> MISS: check log store -> file tier -> disk read
+    +---> MISS: check WAL pending -> file tier -> disk read
 ```
 
 ## Safety model
@@ -114,9 +114,9 @@ Pure RAM on both sides.
 
 ## When the RAM cache wins
 
-1. **Concurrent requests**: `DashMap` is lock-free. The log store uses
+1. **Concurrent requests**: `DashMap` is lock-free. The WAL uses
    `Mutex`. Under concurrent connections, `DashMap` scales linearly
-   while the log-store mutex serializes.
+   while the WAL mutex serializes.
 
 2. **Peer replication** (future): removes disk from the write path
    entirely. Storage cost is RAM insert (local) + RAM insert (peer).
@@ -162,7 +162,7 @@ Each node runs an independent flush task:
 ```
 loop every 100ms:
   for each cached entry older than min_age (10ms):
-    write each shard to the appropriate disk (log store or file tier)
+    write each shard to the appropriate disk (WAL or file tier)
     if all shards written: remove from local cache
     // peer flushes independently on its own schedule
 ```
