@@ -279,3 +279,36 @@ PUT hot path allocation-free.
 write amplification of WAL (write to segment + write to final files)
 is only worth it when filesystem metadata overhead is a significant
 fraction of total write time. At large sizes, raw I/O dominates.
+
+## Three-tier architecture
+
+The WAL is part of a three-tier storage architecture:
+
+| Tier | Owns | Status |
+|---|---|---|
+| **WAL** | fast writes (append to mmap, materialize in background) | implemented |
+| **Read cache** | fast reads for hot small objects (LRU/frequency, bounded RAM) | planned |
+| **File tier** | permanent storage (shard.dat + meta.json, inspectable) | implemented |
+
+Each tier is independent and does one job:
+
+- WAL does not try to serve reads long-term (that's the read cache's job)
+- Read cache does not try to write durably (that's the WAL's job)
+- File tier does not try to be fast (that's the WAL and read cache's job)
+
+The log store tried to be both fast write AND fast read AND permanent
+storage in one system. That forced it into GC, permanent in-memory
+indexes, and startup rebuilds. Splitting the responsibilities into
+three tiers eliminates all three problems.
+
+## What the WAL replaces
+
+The WAL supersedes both the log store and the write pool:
+
+| Old system | Problem | WAL solution |
+|---|---|---|
+| log store (`log_store.rs`) | permanent log needs GC, RAM index scales with total data, startup rebuilds all segments | WAL is ephemeral, entries leave after materialize, startup only processes un-materialized entries |
+| write pool (`write_slot_pool.rs`) | slot management, DashMap of pending renames, replenishment logic | WAL appends to a single mmap, no slots to manage |
+
+The log store's GET advantage (33us vs 533us) will be addressed by
+the planned read cache, not by keeping the log store alive.

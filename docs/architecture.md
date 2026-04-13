@@ -56,27 +56,26 @@ cluster-control direction.
     must fail closed. A node that cannot confirm safe cluster state stops
     serving instead of risking stale writes or split-brain.
 
-13. **Log-structured storage for small objects.** Objects <= 64KB are written
-    as needles to append-only log segments. One sequential append per disk
-    instead of mkdir + shard.dat + meta.json (3 fs ops). The log IS the
-    permanent storage. No flush, no second format.
-    In-memory index maps bucket+key to segment:offset. GC reclaims dead space.
-    Large objects keep the file-per-object layout. Recent published 4KB
-    numbers in the docs are ~0.91ms PUT and ~0.76ms GET in the dedicated
-    log-store benchmark. No fsync. Page cache
-    serves both read and write paths. See [write-log.md](write-log.md).
+13. **Write-ahead log (WAL) for small objects.** Objects <= 64KB are
+    written as checksummed needles directly into a writable mmap segment
+    (zero syscalls, zero allocation). A background worker materializes
+    each entry to its final file-per-object location (shard.dat +
+    meta.json). Once materialized, the WAL entry is deleted. When all
+    entries in a segment are materialized, the segment file is deleted.
+    The WAL is ephemeral -- it is a landing zone, not permanent storage.
+    No GC, no compaction, no permanent in-memory index, bounded startup
+    cost. 4KB PUT: 148us (5.4x faster than file tier). Head-to-head
+    release-mode unit test: WAL 3us vs file 878us. The WAL replaces
+    the earlier log store (permanent log with GC problem) and write pool
+    (pre-opened temp files with slot management). No fsync. Page cache
+    serves both read and write paths. See [write-wal.md](write-wal.md).
 
-14. **Pre-opened temp file pool (alternative to the log store).**
-    A write path that keeps a small pool of already-open temp files
-    per disk under `.abixio.sys/tmp/`. PUT writes shard bytes and meta
-    JSON into a slot's two pre-opened files and acks. The mkdir +
-    rename to the destination happen on a background worker. Two
-    syscalls on the hot path instead of seven. Designed as a
-    replacement for the log store, motivated by GC simplicity (one
-    file per object means `unlink()` reclaims space natively, no
-    compactor needed). Current benchmark conclusion is that the pool
-    wins a mid-range write window, while the log store wins <=64KB and
-    the file tier wins large writes. See [write-pool.md](write-pool.md).
+14. **Three-tier storage architecture.** WAL handles fast writes (append
+    to mmap, ack, materialize in background). A planned read cache will
+    handle fast reads for hot small objects (LRU/frequency eviction,
+    bounded RAM). The file tier is the permanent storage (shard.dat +
+    meta.json, inspectable, no GC). Each tier is independent: WAL owns
+    writes, read cache will own reads, file tier owns durability.
 
 ## Data flow
 
@@ -165,9 +164,10 @@ src/
     volume_pool.rs        # VolumePool: volume pool with per-object FTT resolution
     erasure_encode.rs     # unified streaming encode: encode_and_write via ShardWriter trait
     erasure_decode.rs     # read + decode: buffered (read_and_decode) and streaming (read_and_decode_stream)
-    needle.rs             # needle format for log-structured storage (serialize, checksum, msgpack)
-    segment.rs            # log segment files (pre-alloc, append, seal, mmap, scan)
-    log_store.rs          # log-structured store: in-memory index, segment lifecycle, recovery
+    needle.rs             # needle format: serialize_into (zero-alloc mmap write), checksum, msgpack
+    segment.rs            # segment files: pre-alloc, MmapMut append, seal, scan
+    wal.rs                # write-ahead log: append to mmap, background materialize, recovery
+    log_store.rs          # (legacy) log-structured store: in-memory index, segment lifecycle
     volume.rs             # VolumeFormat: read/write .abixio.sys/volume.json
   s3_service.rs           # impl S3 for AbixioS3: streaming GET, versioning cache, thin adapter (s3s)
   s3_auth.rs              # impl S3Auth: SigV4 credential lookup (s3s)
