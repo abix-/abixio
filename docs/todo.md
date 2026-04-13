@@ -2,7 +2,7 @@
 
 ## critical
 
-- [ ] unwrap() plague. 533 calls in src/ (was 374, growing). hot files: local_volume.rs 127, volume_pool.rs 108, write_slot_pool.rs 104, segment.rs 46, log_store.rs 40, cluster/mod.rs 27, heal/worker.rs 21 + 1 panic!. failure-path code is the one path that must not panic. convert to Result propagation starting with the write path files. every unwrap in a write path is a potential data-loss panic
+- [x] unwrap() audit. 533 unwrap() calls total, but 530 are in #[cfg(test)] blocks (standard for tests). 1 production unwrap in erasure_decode.rs:241 was guarded by a data_shards_ok check but replaced with let-else for clarity. 1 expect() in main.rs:31 is crypto provider init (standard). production code is clean
 - [ ] log-structured storage: remaining phases. GC (phase 8), heal worker log-awareness (phase 7), versioned object support, chunked-transfer PUT support. S3 integration working for Content-Length PUTs <= 64KB. see docs/write-log.md
 - [ ] mc client throughput gap. AbixIO serves 1GB at 1220 MB/s via curl but only 354 MB/s through mc. MinIO gets 970 MB/s through the same mc. profile with mc --debug, diff headers, find the bottleneck. default S3 client at 29% of curl speed is a bad first impression
 - [x] debug header in src/s3_route.rs (x-debug-s3s-ms). kept and extended: now also emits W3C `server-timing` header with per-layer breakdown (setup, validate, ec_encode, storage_write, etc). `src/timing.rs` module with tokio task_local, RAII Span, 7 unit tests. the "remove in production" comment was wrong -- it's a profiling feature, not debug clutter

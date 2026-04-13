@@ -238,7 +238,8 @@ pub async fn read_and_decode_stream(
                 // view into the mmap. hyper sends them to TCP sequentially.
                 let mut sent = 0usize;
                 for shard_idx in 0..dn {
-                    let bytes = shard_bytes[shard_idx].as_ref().unwrap();
+                    // SAFETY: data_shards_ok guard above verified all data shards are Some
+                    let Some(bytes) = shard_bytes[shard_idx].as_ref() else { break };
                     let end = (shard_read_offset + shard_chunk_size).min(bytes.len());
                     let slice_len = end - shard_read_offset;
 
