@@ -82,21 +82,29 @@ impl Needle {
         HEADER_SIZE + self.bucket.len() + self.key.len() + self.meta_bytes.len() + self.data.len()
     }
 
-    /// Serialize the needle into a byte buffer for appending to a segment.
-    pub fn serialize(&self) -> Vec<u8> {
+    /// Write the needle directly into a destination buffer (e.g. mmap).
+    /// Zero allocation, one copy of each field. The destination must be
+    /// at least `serialized_size()` bytes. Returns bytes written.
+    pub fn serialize_into(&self, dest: &mut [u8]) -> usize {
         let total = self.serialized_size();
-        let mut buf = Vec::with_capacity(total);
+        debug_assert!(dest.len() >= total);
 
-        // compute checksum over payload (everything after header)
-        let payload_start = HEADER_SIZE;
-        let mut payload = Vec::with_capacity(total - payload_start);
-        payload.extend_from_slice(self.bucket.as_bytes());
-        payload.extend_from_slice(self.key.as_bytes());
-        payload.extend_from_slice(&self.meta_bytes);
-        payload.extend_from_slice(&self.data);
-        let checksum = xxhash_rust::xxh64::xxh64(&payload, 0);
+        // write payload fields after header, then compute checksum over
+        // the payload region in-place (no intermediate Vec)
+        let mut off = HEADER_SIZE;
+        dest[off..off + self.bucket.len()].copy_from_slice(self.bucket.as_bytes());
+        off += self.bucket.len();
+        dest[off..off + self.key.len()].copy_from_slice(self.key.as_bytes());
+        off += self.key.len();
+        dest[off..off + self.meta_bytes.len()].copy_from_slice(&self.meta_bytes);
+        off += self.meta_bytes.len();
+        dest[off..off + self.data.len()].copy_from_slice(&self.data);
+        off += self.data.len();
 
-        // write header
+        // checksum over payload region already in dest
+        let checksum = xxhash_rust::xxh64::xxh64(&dest[HEADER_SIZE..total], 0);
+
+        // write header at the front
         let header = RawHeader {
             magic: NEEDLE_MAGIC,
             flags: self.flags,
@@ -114,8 +122,17 @@ impl Needle {
                 HEADER_SIZE,
             )
         };
-        buf.extend_from_slice(header_bytes);
-        buf.extend_from_slice(&payload);
+        dest[..HEADER_SIZE].copy_from_slice(header_bytes);
+
+        total
+    }
+
+    /// Serialize the needle into a byte buffer for appending to a segment.
+    /// Prefer `serialize_into` when writing to mmap to avoid allocation.
+    pub fn serialize(&self) -> Vec<u8> {
+        let total = self.serialized_size();
+        let mut buf = vec![0u8; total];
+        self.serialize_into(&mut buf);
         buf
     }
 

@@ -99,14 +99,17 @@ impl ActiveSegment {
 
     /// Append a needle to this segment. Returns the needle location.
     /// Returns None if the needle doesn't fit (segment full).
+    ///
+    /// Zero allocation: writes directly into the mmap via serialize_into.
+    /// One copy of the data (into mmap), zero intermediate buffers.
     pub fn append(&mut self, needle: &Needle) -> Result<Option<NeedleLocation>, StorageError> {
-        let buf = needle.serialize();
-        if self.write_offset + buf.len() > self.capacity {
+        let total = needle.serialized_size();
+        if self.write_offset + total > self.capacity {
             return Ok(None); // segment full
         }
 
-        // memcpy into mmap -- zero syscalls
-        self.mmap[self.write_offset..self.write_offset + buf.len()].copy_from_slice(&buf);
+        // write directly into mmap -- zero allocation, zero syscalls
+        needle.serialize_into(&mut self.mmap[self.write_offset..self.write_offset + total]);
 
         let needle_offset = self.write_offset as u32;
 
@@ -126,7 +129,7 @@ impl ActiveSegment {
             created_at: 0, // caller sets from ObjectMeta
         };
 
-        self.write_offset += buf.len();
+        self.write_offset += total;
         Ok(Some(location))
     }
 
