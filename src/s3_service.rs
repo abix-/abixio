@@ -14,25 +14,50 @@ use crate::storage::Store;
 use crate::storage::metadata::{ListOptions, PutOptions};
 use crate::storage::volume_pool::VolumePool;
 
-/// Wrapper to add Sync to a Send stream. Safe because streams are only polled
-/// from one task at a time (s3s serializes response body polling).
-struct SyncStream<S>(S);
+use crate::storage::StorageError;
+
+/// Streaming body wrapper that reports exact remaining length to s3s/hyper.
+/// Without this, StreamingBlob::wrap() uses StreamWrapper which returns
+/// RemainingLength::unknown(), causing hyper to use chunked transfer encoding
+/// instead of Content-Length. mc (and some other S3 clients) handle chunked
+/// responses slower than Content-Length responses.
+struct SizedStream<S> {
+    inner: S,
+    remaining: usize,
+}
 
 // SAFETY: the inner stream is Send. We only expose it through Pin<&mut Self>
 // which requires exclusive access, so Sync is safe.
-unsafe impl<S: Send> Sync for SyncStream<S> {}
+unsafe impl<S: Send> Sync for SizedStream<S> {}
 
-impl<S: Stream + Unpin> Stream for SyncStream<S> {
-    type Item = S::Item;
+impl<S> Stream for SizedStream<S>
+where
+    S: Stream<Item = Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>> + Unpin,
+{
+    type Item = Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        Pin::new(&mut self.0).poll_next(cx)
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            Poll::Ready(Some(Ok(b))) => {
+                self.remaining -= b.len();
+                Poll::Ready(Some(Ok(b)))
+            }
+            other => other,
+        }
     }
 }
-use crate::storage::StorageError;
 
-/// Pre-built byte chunks for GET responses. Implements ByteStream directly,
-/// avoiding the SyncStream + StreamWrapper chain. poll_next is a simple
-/// VecDeque::pop_front -- zero async overhead per frame.
+impl<S> s3s::stream::ByteStream for SizedStream<S>
+where
+    Self: Stream<Item = Result<bytes::Bytes, Box<dyn std::error::Error + Send + Sync>>> + Send + Sync + Unpin,
+{
+    fn remaining_length(&self) -> s3s::stream::RemainingLength {
+        s3s::stream::RemainingLength::new_exact(self.remaining)
+    }
+}
+
+/// Pre-built byte chunks for GET responses. Implements ByteStream with exact
+/// remaining_length so s3s/hyper use Content-Length instead of chunked encoding.
+/// poll_next is a simple VecDeque::pop_front -- zero async overhead per frame.
 struct ChunkedBytes {
     queue: std::collections::VecDeque<bytes::Bytes>,
     remaining: usize,
@@ -170,9 +195,10 @@ impl AbixioS3 {
         };
 
         let content_length = body_data.len() as i64;
-        let blob = StreamingBlob::wrap(futures::stream::once(async move {
-            Ok::<_, std::io::Error>(hyper::body::Bytes::from(body_data))
-        }));
+        let blob = StreamingBlob::new(ChunkedBytes::new(
+            vec![bytes::Bytes::from(body_data)],
+            content_length as usize,
+        ));
 
         let mut output = GetObjectOutput {
             body: Some(blob),
@@ -466,8 +492,8 @@ impl S3 for AbixioS3 {
         let content_length = info.size as i64;
 
         // small/medium objects (<= 64MB): collect into ChunkedBytes for a leaner
-        // response path (no SyncStream wrapper, no StreamWrapper, no error
-        // conversion per frame). For 1+0 mmap, chunks yield instantly.
+        // response path (no error conversion per frame, exact remaining_length).
+        // For 1+0 mmap, chunks yield instantly.
         // large objects (> 64MB): stream to avoid buffering delay; the
         // server-timing header captured at the dispatch layer will not
         // include body transfer time for the streamed branch.
@@ -483,9 +509,9 @@ impl S3 for AbixioS3 {
         } else {
             crate::timing::record("body_streamed", std::time::Duration::ZERO);
             let mapped = stream.map(|r| {
-                r.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))
+                r.map_err(|e| Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())) as Box<dyn std::error::Error + Send + Sync>)
             });
-            StreamingBlob::wrap(SyncStream(mapped))
+            StreamingBlob::new(SizedStream { inner: mapped, remaining: content_length as usize })
         };
 
         let _resp_span = crate::timing::Span::new("response_build");
