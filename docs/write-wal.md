@@ -6,15 +6,18 @@ the log store and write pool.
 
 ## What it is
 
-The WAL is a fast write path for small objects. PUTs append to an
-already-open segment file and ack immediately. A background worker
+The WAL is a fast write path for small objects. There is always an
+active segment open and ready for writes. PUTs append to this segment
+via mmap (zero syscalls) and ack immediately. A background worker
 materializes each entry to its final file-per-object location
-(shard.dat + meta.json). Once materialized, the WAL entry is deleted.
-When all entries in a segment are materialized, the segment file is
-deleted.
+(shard.dat + meta.json). Once materialized, the WAL entry is removed
+from the pending map. When the active segment fills up, it is sealed
+and a new active segment is created. Sealed segments are deleted
+after all their entries have been materialized.
 
 The WAL is ephemeral. It is not the permanent storage. The final
-resting place is always the file tier.
+resting place is always the file tier. But the active segment is
+always open and always fast.
 
 ## Why it exists
 
