@@ -27,7 +27,7 @@ competitive comparison.
 | Competitive comparison | child processes (AbixIO, RustFS, MinIO) |
 
 L3, L6, and L7 include real storage, so they test all write path
-configurations (3 tiers x 2 cache states).
+configurations (2 tiers x 2 cache states).
 
 L7 and competitive comparison spawn real server binaries. Everything
 else calls abixio library code directly.
@@ -41,12 +41,9 @@ src/bench/
     l1_http.rs          -- hyper transport floor (PUT/GET, no S3)
     l2_s3proto.rs       -- s3s protocol overhead (NullBackend, no real storage)
     l3_storage.rs       -- VolumePool put/get/put_stream/get_stream, 1+4 disks
-    l3_pool_internals.rs -- pool write path internals (slot primitives, write strategies,
-                           JSON serializers, rename worker, integrated write_shard, breakdowns)
     l4_compute.rs       -- hashing (blake3, md5, sha256) + reed-solomon encode
     l5_disk.rs          -- raw disk I/O (write, write+fsync, read)
     l6_s3storage.rs     -- s3s + real VolumePool (write path x cache matrix)
-    l6_stack_breakdown.rs -- 5-stage latency attribution (hyper -> s3s -> file -> pool)
     l7_e2e.rs           -- full SDK client, child servers, competitive comparison
     tls.rs              -- TLS cert generation for HTTPS benchmarks
     servers.rs          -- AbixioServer builder, ExternalServer (RustFS/MinIO)
@@ -59,13 +56,11 @@ src/bench/
 |---|---|---|---|
 | L1 | l1_http.rs | hyper PUT/GET, no S3 | no |
 | L2 | l2_s3proto.rs | s3s SigV4+XML, NullBackend | no |
-| L3 | l3_storage.rs | VolumePool put/get, streaming, 1+4 disks | yes (file/log/pool x cache on/off) |
-| L3 pool | l3_pool_internals.rs | slot acquire/release, write strategies, JSON serializers, rename worker drain, integrated write_shard, per-step breakdowns | pool only |
+| L3 | l3_storage.rs | VolumePool put/get, streaming, 1+4 disks | yes (file/wal x cache on/off) |
 | L4 | l4_compute.rs | blake3, md5, sha256, reed-solomon encode | no |
 | L5 | l5_disk.rs | tokio::fs write/read, fsync | no |
-| L6 | l6_s3storage.rs | s3s + real VolumePool | yes (file/log/pool x cache on/off) |
-| L6 stack | l6_stack_breakdown.rs | 5-stage attribution at 4KB (A through E variants) | file + pool |
-| L7 | l7_e2e.rs | full SDK/aws-cli/rclone, AbixIO/RustFS/MinIO, all ops | yes (file/log/pool x cache on/off) |
+| L6 | l6_s3storage.rs | s3s + real VolumePool | yes (file/wal x cache on/off) |
+| L7 | l7_e2e.rs | full SDK/aws-cli/rclone, AbixIO/RustFS/MinIO, all ops | yes (file/wal x cache on/off) |
 
 ## Critical: release mode only
 
@@ -100,7 +95,7 @@ Comma-separated values to select multiple. Single value to narrow.
 |---|---|---|
 | `--sizes` | `4KB,64KB,10MB,100MB,1GB` | all |
 | `--layers` | `L1,L2,L3,L4,L5,L6,L7` | all |
-| `--write-paths` | `file,wal,log,pool` | all |
+| `--write-paths` | `file,wal` | all |
 | `--write-cache` | `on,off,both` | both |
 | `--servers` | `abixio,rustfs,minio` | all |
 | `--clients` | `sdk,aws-cli,rclone` | all |
@@ -116,8 +111,8 @@ Examples:
 # full suite
 abixio-ui bench
 
-# just 4KB PUT through the pool write path, no write cache
-abixio-ui bench --sizes 4KB --ops PUT --write-paths pool --write-cache off
+# just 4KB PUT through the WAL write path, no write cache
+abixio-ui bench --sizes 4KB --ops PUT --write-paths wal --write-cache off
 
 # just the competitive comparison at 10MB
 abixio-ui bench --sizes 10MB --layers L7
@@ -185,16 +180,16 @@ compose together.
 |---|---|---|---|
 | L1 | HTTP transport | bare hyper, reqwest client, no S3 | no |
 | L2 | S3 protocol | s3s dispatch via in-memory pipe, NullBackend | no |
-| L3 | storage pipeline | direct VolumePool API, no HTTP | yes (file/log/pool x cache on/off) |
+| L3 | storage pipeline | direct VolumePool API, no HTTP | yes (file/wal x cache on/off) |
 | L4 | hashing + erasure coding | direct function calls | no |
 | L5 | raw disk I/O | direct tokio::fs calls | no |
-| L6 | S3 + real storage (integration) | in-process s3s + VolumePool | yes (file/log/pool x cache on/off) |
-| L7 | full e2e (integration) | child process server, real SDK client | yes (file/log/pool x cache on/off) |
+| L6 | S3 + real storage (integration) | in-process s3s + VolumePool | yes (file/wal x cache on/off) |
+| L7 | full e2e (integration) | child process server, real SDK client | yes (file/wal x cache on/off) |
 
 Each layer tested at every size.
 
 L3, L6, and L7 include real storage, so they must be tested across
-all write path configurations (3 tiers x 2 cache states = 6 configs).
+all write path configurations (2 tiers x 2 cache states = 4 configs).
 L1, L2, L4, L5 have no storage, so write path does not apply.
 
 ## Requirement 3: Per-write-path performance
@@ -205,14 +200,19 @@ Two independent axes: write tier and write cache. Test every combination.
 
 | Tier | What it is | CLI flag |
 |---|---|---|
-| file | baseline, direct filesystem writes | `--write-tier file` |
+| file | direct filesystem writes (mkdir + create + write) | `--write-tier file` |
+| wal | write-ahead log, mmap append + background materialize | `--write-tier wal` (default) |
+
+WAL is the default and handles objects <=64KB in production. File
+handles >64KB. Benchmarks test both tiers at all sizes to show the
+crossover point.
 
 ### Write cache
 
 | State | What it is | CLI flag |
 |---|---|---|
-| off | no RAM cache, writes go directly to the tier | `--no-write-cache` |
-| on | RAM DashMap, immediate ack, async flush to disk | (default, no flag needed) |
+| off | no RAM cache, writes go directly to the tier | `--write-cache 0` |
+| on | RAM DashMap, immediate ack, async flush to disk | `--write-cache 256` (default) |
 
 ### Test matrix
 
@@ -220,14 +220,12 @@ Every tier tested with write cache off AND write cache on:
 
 | Config | CLI flags |
 |---|---|
-| file | `--write-tier file --no-write-cache` |
+| file | `--write-tier file --write-cache 0` |
 | file+wc | `--write-tier file` |
-| log | `--write-tier log --no-write-cache` |
-| log+wc | `--write-tier log` |
-| pool | `--write-tier pool --no-write-cache` |
-| pool+wc | `--write-tier pool` |
+| wal | `--write-tier wal --write-cache 0` |
+| wal+wc | `--write-tier wal` |
 
-This produces 6 AbixIO configurations. The raw tier rows (without
+This produces 4 AbixIO configurations. The raw tier rows (without
 write cache) show true disk-tier performance. The +wc rows show the
 write cache benefit on top of each tier.
 

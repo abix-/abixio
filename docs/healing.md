@@ -75,7 +75,7 @@ Scanner wakes up
 This is the core repair logic. Called by both MRF worker and scanner.
 
 The healer is **per-object FTT aware**: it reads each object's `erasure.ftt`
-from the stored metadata rather than using global config. A volume pool can
+from the stored metadata rather than using global config. A volume set can
 contain objects with different FTT (e.g., one at FTT=5 and another at FTT=2),
 and each is healed using its own parameters.
 
@@ -211,7 +211,7 @@ Audited against the codebase on 2026-04-11.
 | Heal logic is per-object FTT aware and derives EC params from stored metadata | Verified | `src/heal/worker.rs:33-58` |
 | Metadata consensus uses `quorum_eq()` and must meet `data_n` quorum | Verified | `src/heal/worker.rs:136-158` |
 | Shard integrity uses blake3-based checksum verification, not SHA-256 | Corrected | `src/storage/bitrot.rs`, `src/heal/worker.rs:72-78` |
-| Repaired shards are always written via a temp-dir + rename sequence | Needs nuance | Heal code calls backend `write_shard()`; the exact local write mechanics then depend on log/pool/file branch selection (`src/heal/worker.rs:98-127`, `src/storage/local_volume.rs`) |
+| Repaired shards are always written via a temp-dir + rename sequence | Needs nuance | Heal code calls backend `write_shard()`; the exact local write mechanics then depend on WAL/file branch selection (`src/heal/worker.rs:98-127`, `src/storage/local_volume.rs`) |
 | Example scenarios like missing/corrupt shard repair and unrecoverable objects are covered by tests | Verified | `src/heal/worker.rs` tests and `tests/admin_integration.rs:558-637` |
 
 Verdict: the healing architecture is sound and mostly accurate, but the old checksum wording and the claim that repair always uses one fixed temp-dir write pattern were too absolute for the current backend-routed implementation.

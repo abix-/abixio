@@ -22,11 +22,11 @@ not a product.
 | Erasure coding (RS encode/decode) | 8/10 | per-object FTT, streaming encode, zero-alloc decode, bitrot detection |
 | Write path (file tier) | 8/10 | direct mkdir+write, simple, correct |
 | Write path (WAL) | 8/10 | append to mmap, background materialize, 3us at 4KB in release mode. no GC, no permanent index |
-| Write path (pool) | 7/10 | pre-opened slots, async rename, pending-reads work. no versioned support |
+| Write path (pool) | -- | removed, WAL supersedes pool |
 | Write cache (RAM) | 5/10 | DashMap insert works, but no automatic flush, no eviction policy, not exercised by benchmarks |
 | Read path (GET) | 8/10 | mmap zero-copy for 1+0, zero-alloc mmap slices for EC, log index lookup, range support |
 | Streaming large objects | 7/10 | unified ShardWriter encode path, no full-body buffering. streaming GET works |
-| Volume pool / placement | 7/10 | deterministic placement, quorum writes, multi-disk spread. no rebalance |
+| Volume placement | 7/10 | deterministic placement, quorum writes, multi-disk spread. no rebalance |
 | Metadata / on-disk format | 7/10 | self-describing volumes, meta.json per object, volume.json identity |
 
 ## S3 API coverage: 5/10
@@ -83,7 +83,7 @@ not a product.
 | MRF (reactive heal) | 7/10 | bounded dedup queue, drain worker, triggers on partial write failure |
 | Integrity scanner | 6/10 | walks all objects, verifies checksums, per-object EC aware. single worker |
 | Per-shard checksums | 8/10 | blake3, SIMD-accelerated, checked on read |
-| Log store heal awareness | 3/10 | not implemented (todo phase 7) |
+| WAL heal awareness | 3/10 | not implemented (todo phase 7) |
 | Failure injection tests | 0/10 | none exist |
 
 ## Testing: 5/10
@@ -103,7 +103,7 @@ not a product.
 |---|---|---|
 | Admin API | 7/10 | status, disks, healing, inspect, bucket EC endpoints |
 | Structured logging | 3/10 | tracing imported, no metrics, no histograms, no error counters |
-| Graceful shutdown | 6/10 | implemented: stop accepting, drain in-flight HTTP, flush write cache, drain pool renames. no SIGTERM on Windows (Ctrl+C only) |
+| Graceful shutdown | 6/10 | implemented: stop accepting, drain in-flight HTTP, flush write cache. no SIGTERM on Windows (Ctrl+C only) |
 | Health checks | 4/10 | /_admin/status exists. no deep health probes |
 | Monitoring integration | 0/10 | no prometheus, no opentelemetry |
 
@@ -135,9 +135,9 @@ not a product.
 
 | Area | Rating | Notes |
 |---|---|---|
-| Small object PUT (4KB) | 9/10 | 1716 obj/s via SDK+TLS, 4.7x MinIO, 5.7x RustFS |
-| Medium PUT (10MB) | 8/10 | 421 MB/s (pool tier), +35% over competitors |
-| Large PUT (1GB) | 8/10 | 535 MB/s (log tier), +35% over MinIO |
+| Small object PUT (4KB) | 9/10 | L3: WAL 134us (7313 obj/s), file 693us (1344 obj/s). WAL 5.2x faster. L7 pending |
+| Medium PUT (10MB) | 8/10 | L3: file 23.6ms (422 MB/s), WAL 25.9ms (380 MB/s). file wins 1.1x |
+| Large PUT (1GB) | 8/10 | L3: file 2.26s (452 MB/s), WAL 3.20s (320 MB/s). file wins 1.4x |
 | GET (mmap) | 8/10 | zero-copy 1+0, zero-alloc EC, 1220 MB/s at 1GB |
 | Concurrent / parallel clients | 0/10 | not benchmarked, not tested |
 
@@ -147,7 +147,7 @@ not a product.
 
 These are the minimum items before anyone should use this:
 
-1. ~~**Graceful shutdown**~~ -- implemented: HTTP drain, write cache flush, pool rename drain
+1. ~~**Graceful shutdown**~~ -- implemented: HTTP drain, write cache flush
 2. **Binary release** -- Dockerfile + GitHub release with Windows binary
 3. **CHANGELOG** -- retroactive release notes
 4. **On-disk format version** -- so future versions can detect and migrate
