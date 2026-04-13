@@ -275,35 +275,60 @@ pub async fn run_rename_worker(
     loop {
         tokio::select! {
             biased;
-            _ = shutdown.changed() => break,
+            _ = shutdown.changed() => {
+                // drain remaining items in the channel before exiting
+                // so acked PUTs reach their final destination
+                drain_remaining(&pool, &pending, &mut rx).await;
+                break;
+            }
             msg = rx.recv() => {
                 let Some(req) = msg else { break; };
-                // Phase 5.6: clone the bucket/key out before moving the
-                // request into process_rename_request, so we can use
-                // them for the pending-table removal afterwards.
-                let req_bucket = req.bucket.clone();
-                let req_key = req.key.clone();
-                let req_slot_id = req.slot.slot_id;
-                let req_data_src_display = req.slot.data_path.display().to_string();
-                let result = process_rename_request(&pool, req).await;
-                if let Err(ref e) = result {
-                    tracing::warn!(
-                        slot_id = req_slot_id,
-                        data_src = %req_data_src_display,
-                        error = %e,
-                        "rename worker request failed",
-                    );
-                }
-                if result.is_ok() {
-                    if let Some(ref pending) = pending {
-                        let key = (
-                            Arc::<str>::from(req_bucket.as_str()),
-                            Arc::<str>::from(req_key.as_str()),
-                        );
-                        pending.remove(&key);
-                    }
-                }
+                process_one(&pool, &pending, req).await;
             }
+        }
+    }
+}
+
+async fn drain_remaining(
+    pool: &Arc<WriteSlotPool>,
+    pending: &Option<PendingRenames>,
+    rx: &mut tokio::sync::mpsc::Receiver<RenameRequest>,
+) {
+    let mut count = 0u32;
+    while let Ok(req) = rx.try_recv() {
+        process_one(pool, pending, req).await;
+        count += 1;
+    }
+    if count > 0 {
+        tracing::info!(count, "rename worker drained remaining requests on shutdown");
+    }
+}
+
+async fn process_one(
+    pool: &Arc<WriteSlotPool>,
+    pending: &Option<PendingRenames>,
+    req: RenameRequest,
+) {
+    let req_bucket = req.bucket.clone();
+    let req_key = req.key.clone();
+    let req_slot_id = req.slot.slot_id;
+    let req_data_src_display = req.slot.data_path.display().to_string();
+    let result = process_rename_request(pool, req).await;
+    if let Err(ref e) = result {
+        tracing::warn!(
+            slot_id = req_slot_id,
+            data_src = %req_data_src_display,
+            error = %e,
+            "rename worker request failed",
+        );
+    }
+    if result.is_ok() {
+        if let Some(pending) = pending {
+            let key = (
+                Arc::<str>::from(req_bucket.as_str()),
+                Arc::<str>::from(req_key.as_str()),
+            );
+            pending.remove(&key);
         }
     }
 }

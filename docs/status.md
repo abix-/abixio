@@ -103,7 +103,7 @@ not a product.
 |---|---|---|
 | Admin API | 7/10 | status, disks, healing, inspect, bucket EC endpoints |
 | Structured logging | 3/10 | tracing imported, no metrics, no histograms, no error counters |
-| Graceful shutdown | 1/10 | not implemented. in-flight writes may corrupt |
+| Graceful shutdown | 6/10 | implemented: stop accepting, drain in-flight HTTP, flush write cache, drain pool renames. no SIGTERM on Windows (Ctrl+C only) |
 | Health checks | 4/10 | /_admin/status exists. no deep health probes |
 | Monitoring integration | 0/10 | no prometheus, no opentelemetry |
 
@@ -147,7 +147,7 @@ not a product.
 
 These are the minimum items before anyone should use this:
 
-1. **Graceful shutdown** -- in-flight writes must not corrupt data
+1. ~~**Graceful shutdown**~~ -- implemented: HTTP drain, write cache flush, pool rename drain
 2. **Binary release** -- Dockerfile + GitHub release with Windows binary
 3. **CHANGELOG** -- retroactive release notes
 4. **On-disk format version** -- so future versions can detect and migrate

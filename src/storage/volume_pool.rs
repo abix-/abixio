@@ -114,6 +114,21 @@ impl VolumePool {
         Ok(())
     }
 
+    /// Graceful shutdown: flush write cache, drain all backend pending
+    /// writes (pool renames, log segments), then close. Called from
+    /// main before exit.
+    pub async fn shutdown(&self) {
+        // flush RAM cache entries to disk first
+        if let Err(e) = self.flush_write_cache().await {
+            tracing::warn!(error = %e, "write cache flush failed during shutdown");
+        }
+        // drain each backend's pending background work
+        for disk in &self.disks {
+            disk.drain_pending_writes().await;
+        }
+        tracing::info!("volume pool shutdown complete");
+    }
+
     /// Read bucket FTT from settings and compute (data, parity).
     /// Falls back to default FTT if bucket has no config (legacy buckets).
     pub async fn bucket_ec(&self, bucket: &str) -> (usize, usize) {

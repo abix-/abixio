@@ -257,18 +257,38 @@ async fn main() {
     let addr = parse_listen_addr(&cfg.listen);
 
     // run server with graceful shutdown
-    tokio::select! {
-        result = serve(dispatch, addr, cfg.tls_cert.clone(), cfg.tls_key.clone()) => {
-            if let Err(e) = result {
-                eprintln!("error: {}", e);
-                std::process::exit(1);
-            }
-        }
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("shutting down");
-            let _ = shutdown_tx.send(true);
-        }
+    let shutdown_token = tokio_util::sync::CancellationToken::new();
+    let server_token = shutdown_token.clone();
+
+    let server_handle = tokio::spawn(serve(
+        dispatch,
+        addr,
+        cfg.tls_cert.clone(),
+        cfg.tls_key.clone(),
+        server_token,
+    ));
+
+    // wait for ctrl+c
+    let _ = tokio::signal::ctrl_c().await;
+    tracing::info!("shutdown signal received");
+
+    // 1. signal heal workers and peer monitor to stop
+    let _ = shutdown_tx.send(true);
+
+    // 2. stop accepting new connections, let in-flight requests finish
+    shutdown_token.cancel();
+    let drain_timeout = tokio::time::Duration::from_secs(5);
+    match tokio::time::timeout(drain_timeout, server_handle).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(e))) => tracing::warn!(error = %e, "server error during shutdown"),
+        Ok(Err(e)) => tracing::warn!(error = %e, "server task panicked during shutdown"),
+        Err(_) => tracing::warn!("in-flight requests did not finish within 5s, proceeding"),
     }
+
+    // 3. flush write cache and drain pool renames
+    set.shutdown().await;
+
+    tracing::info!("shutdown complete");
 }
 
 async fn serve(
@@ -276,6 +296,7 @@ async fn serve(
     addr: SocketAddr,
     tls_cert: Option<String>,
     tls_key: Option<String>,
+    shutdown: tokio_util::sync::CancellationToken,
 ) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     let tls_acceptor = match (tls_cert, tls_key) {
@@ -285,46 +306,69 @@ async fn serve(
     };
     tracing::info!(tls = tls_acceptor.is_some(), "abixio listening on {}", addr);
 
-    loop {
-        let (stream, _) = listener.accept().await?;
-        stream.set_nodelay(true)?;
-        let dispatch = dispatch.clone();
-        let tls_acceptor = tls_acceptor.clone();
+    // track in-flight connections so we can wait for them on shutdown
+    let graceful = hyper_util::server::graceful::GracefulShutdown::new();
 
-        tokio::spawn(async move {
-            let service = hyper::service::service_fn(move |req| {
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => break,
+            result = listener.accept() => {
+                let (stream, _) = result?;
+                stream.set_nodelay(true)?;
                 let dispatch = dispatch.clone();
-                async move { Ok::<_, hyper::Error>(dispatch.dispatch(req).await) }
-            });
-            match tls_acceptor {
-                Some(acceptor) => match acceptor.accept(stream).await {
-                    Ok(tls_stream) => {
+
+                match tls_acceptor {
+                    Some(ref acceptor) => {
+                        let tls_stream = match acceptor.accept(stream).await {
+                            Ok(s) => s,
+                            Err(e) => {
+                                tracing::error!("tls handshake error: {}", e);
+                                continue;
+                            }
+                        };
                         let io = hyper_util::rt::TokioIo::new(tls_stream);
-                        if let Err(e) = hyper::server::conn::http1::Builder::new()
+                        let service = hyper::service::service_fn(move |req| {
+                            let dispatch = dispatch.clone();
+                            async move { Ok::<_, hyper::Error>(dispatch.dispatch(req).await) }
+                        });
+                        let conn = hyper::server::conn::http1::Builder::new()
                             .writev(true)
                             .max_buf_size(4 * 1024 * 1024)
-                            .serve_connection(io, service)
-                            .await
-                        {
-                            tracing::error!("connection error: {}", e);
-                        }
+                            .serve_connection(io, service);
+                        let watched = graceful.watch(conn);
+                        tokio::spawn(async move {
+                            if let Err(e) = watched.await {
+                                tracing::error!("connection error: {}", e);
+                            }
+                        });
                     }
-                    Err(e) => tracing::error!("tls handshake error: {}", e),
-                },
-                None => {
-                    let io = hyper_util::rt::TokioIo::new(stream);
-                    if let Err(e) = hyper::server::conn::http1::Builder::new()
-                        .writev(true)
-                        .max_buf_size(4 * 1024 * 1024)
-                        .serve_connection(io, service)
-                        .await
-                    {
-                        tracing::error!("connection error: {}", e);
+                    None => {
+                        let io = hyper_util::rt::TokioIo::new(stream);
+                        let service = hyper::service::service_fn(move |req| {
+                            let dispatch = dispatch.clone();
+                            async move { Ok::<_, hyper::Error>(dispatch.dispatch(req).await) }
+                        });
+                        let conn = hyper::server::conn::http1::Builder::new()
+                            .writev(true)
+                            .max_buf_size(4 * 1024 * 1024)
+                            .serve_connection(io, service);
+                        let watched = graceful.watch(conn);
+                        tokio::spawn(async move {
+                            if let Err(e) = watched.await {
+                                tracing::error!("connection error: {}", e);
+                            }
+                        });
                     }
-                }
+                };
             }
-        });
+        }
     }
+
+    // stop accepting, wait for in-flight connections to finish
+    tracing::info!("waiting for in-flight requests to complete");
+    graceful.shutdown().await;
+    Ok(())
 }
 
 fn load_tls_config(

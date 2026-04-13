@@ -12,7 +12,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 hyper = { version = "1", features = ["full"] }
-hyper-util = { version = "0.1", features = ["tokio"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-graceful"] }
+tokio-util = "0.7"
 http-body-util = "0.1"
 tokio-rustls = "0.26"
 rustls-pemfile = "2"

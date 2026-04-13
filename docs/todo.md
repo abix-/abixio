@@ -39,7 +39,7 @@
 
 - [ ] lifecycle enforcement. config is stored and returned but rules never execute. s3-compliance rates this 7/10, should be 3/10 until enforced. storing config you never enforce is worse than not implementing the feature because the user thinks it works
 - [ ] bucket policy enforcement. policies stored but never checked on requests. same problem as lifecycle -- false sense of security
-- [ ] graceful shutdown. what happens to in-flight writes? do shard writers finalize? do partial .abixio.tmp dirs get cleaned up on startup? half-written log segments? abandoned multipart uploads?
+- [x] graceful shutdown. ctrl+c triggers: stop accepting connections, drain in-flight HTTP (5s timeout via hyper-util GracefulShutdown), flush write cache, drain pool rename workers (channel drain on shutdown signal). crash recovery for pool temps already existed. remaining: log segment seal on shutdown, multipart temp cleanup on startup
 - [ ] observability. tracing is imported but no structured metrics, no request latency histograms, no error rate counters. no health endpoint beyond admin API. operators cannot tell if it is healthy or slowly dying
 - [ ] encryption at rest (docs/encryption.md is design only, no implementation. listed in doc index like a feature)
 - [x] comparative benchmark vs rustfs and minio: abixio-ui/src/bench/ with SVG charts in docs
