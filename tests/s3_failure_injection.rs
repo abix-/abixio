@@ -106,7 +106,6 @@ fn large_payload() -> Vec<u8> {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore] // BUG: server panics on corrupted shard during streaming GET. RS reconstruction works at VolumePool level but crashes through HTTP.
 async fn bitrot_one_shard_corrupted_recovers() {
     // 4 disks, default 3+1: corrupt 1 shard, RS reconstructs
     let (_base, paths) = setup_n(4);
@@ -135,7 +134,6 @@ async fn bitrot_one_shard_corrupted_recovers() {
 }
 
 #[tokio::test]
-#[ignore] // BUG: same streaming GET panic as bitrot_one_shard_corrupted_recovers
 async fn bitrot_two_shards_corrupted_exceeds_default_tolerance() {
     // 4 disks, default 3+1: 2 corrupted exceeds FTT=1
     let (_base, paths) = setup_n(4);
@@ -165,7 +163,6 @@ async fn bitrot_two_shards_corrupted_exceeds_default_tolerance() {
 }
 
 #[tokio::test]
-#[ignore] // BUG: same streaming GET panic as bitrot_one_shard_corrupted_recovers
 async fn bitrot_two_shards_with_ftt2_recovers() {
     // 4 disks, FTT=2 -> 2+2: can tolerate 2 corrupted shards
     let (_base, paths) = setup_n(4);
@@ -383,7 +380,7 @@ async fn both_shard_and_meta_corrupted_on_one_disk_get_succeeds() {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore] // BUG: same streaming GET panic -- shard size mismatch causes panic in decode path
+#[ignore] // 1+0 path intentionally skips checksum (zero-copy mmap, no parity to reconstruct from). separate design decision.
 async fn no_parity_corruption_serves_corrupted_data() {
     // 1 disk, FTT=0 -> 1+0: no parity, no checksum on read.
     // corruption is served as-is (zero-copy mmap fast path).
@@ -453,7 +450,6 @@ async fn head_succeeds_after_one_shard_corruption() {
 // -----------------------------------------------------------------------
 
 #[tokio::test]
-#[ignore] // BUG: same streaming GET panic as bitrot_one_shard_corrupted_recovers
 async fn bitrot_large_object_reconstruction() {
     let (_base, paths) = setup_n(4);
     let (addr, _handle) = start_server(&paths).await;

@@ -167,6 +167,10 @@ pub async fn read_and_decode_stream(
 
     for result in raw_results {
         if let Ok((mmap, meta)) = result {
+            // bitrot check (same as buffered read_and_decode path)
+            if !verify_shard_checksum(mmap.as_ref(), &meta.checksum) {
+                continue; // treat as missing
+            }
             let shard_idx = meta.erasure.index;
             if shard_idx < total {
                 if good_meta.is_none() {
