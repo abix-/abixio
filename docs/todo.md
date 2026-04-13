@@ -20,7 +20,7 @@
 
 ## high
 
-- [ ] split tests/s3_integration.rs (3,936 lines) by operation category: bucket ops, object ops, multipart, versioning, tagging, conditional, hostile input. it is a monolith and every new test makes it worse
+- [x] split tests/s3_integration.rs into 9 files by category: s3_bucket_ops, s3_object_ops, s3_multipart, s3_versioning, s3_tagging_conditional, s3_config_stubs, s3_ec, s3_hostile_input, s3_protocol. 125 tests, all passing
 - [ ] fix test count lie. README says 355, docs/index.md says 171, todo.md said 329, actual #[test] count is 111 (expansion makes ~355). pick one source of truth, add a CI check that asserts it, delete wrong numbers
 - [ ] refresh docs/index.md. "Current reality" block dated 2026-04-06 is stale: says 171 tests, lists conditional/versioning headers as missing (both done). fix or delete
 - [ ] failure injection tests. kill a volume mid-write, corrupt a shard checksum, partition a remote node during multi-node PUT. erasure coding that has never been tested under actual faults is Reed-Solomon arithmetic, not fault tolerance
