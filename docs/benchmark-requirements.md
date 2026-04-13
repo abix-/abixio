@@ -67,6 +67,24 @@ src/bench/
 | L6 stack | l6_stack_breakdown.rs | 5-stage attribution at 4KB (A through E variants) | file + pool |
 | L7 | l7_e2e.rs | full SDK/aws-cli/rclone, AbixIO/RustFS/MinIO, all ops | yes (file/log/pool x cache on/off) |
 
+## Critical: release mode only
+
+Never benchmark with `cargo test` (debug mode). Debug mode inflates
+hash functions by 48x, mmap writes by 10x, and serialization by 5x.
+All numbers become meaningless.
+
+Use `abixio-ui bench` (always release), or `cargo test --release`
+for in-tree benchmark tests.
+
+## Critical: Defender-excluded directory
+
+Benchmark disk paths must be in a Windows Defender exclusion directory.
+Default: `C:\code\bench-tmp` (configured in abixio-ui `--tmp-dir`).
+Defender real-time scanning adds 2-10x overhead to file I/O.
+
+Check exclusions: `powershell -Command "(Get-MpPreference).ExclusionPath"`
+(requires admin).
+
 ## Design principle
 
 One configurable harness, not dozens of separate tests.
@@ -82,7 +100,7 @@ Comma-separated values to select multiple. Single value to narrow.
 |---|---|---|
 | `--sizes` | `4KB,64KB,10MB,100MB,1GB` | all |
 | `--layers` | `L1,L2,L3,L4,L5,L6,L7` | all |
-| `--write-paths` | `file,log,pool` | all |
+| `--write-paths` | `file,wal,log,pool` | all |
 | `--write-cache` | `on,off,both` | both |
 | `--servers` | `abixio,rustfs,minio` | all |
 | `--clients` | `sdk,aws-cli,rclone` | all |

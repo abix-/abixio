@@ -159,44 +159,67 @@ keeps up, so recovery processes near-zero entries.
 --write-tier file      default, no WAL (direct to file tier)
 ```
 
-## Performance (L3, 1 disk, ftt=0, no write cache, Defender-excluded)
+## Performance
 
-### PUT p50
+### IMPORTANT: always benchmark in release mode
+
+`cargo test` builds in debug (unoptimized) by default. Debug mode
+inflates xxhash64 by 48x (192us vs 4us at 64KB) and mmap writes by
+10x. Always use `cargo test --release` for benchmark tests or use
+the `abixio-ui bench` harness (which is always release).
+
+### Head-to-head (release, same process, same disk, non-interleaved)
+
+| Size | wal | log | file |
+|---|---|---|---|
+| 4KB write_shard p50 | **3us** | **3us** | 878us |
+| 64KB write_shard p50 | **30us** | **31us** | -- |
+
+WAL and log are identical in release mode. Both are 293x faster
+than the file tier at 4KB. The entire WAL-vs-log gap observed in
+earlier debug-mode tests was compiler optimization overhead, not a
+real code difference.
+
+### 64KB step breakdown (release)
+
+| Step | p50 |
+|---|---|
+| Needle::new (msgpack serialize) | 24us |
+| segment.append (serialize_into mmap) | 26us |
+| xxhash64 checksum (64KB) | 4us |
+| msgpack serialize alone | <1us |
+| **WAL write_shard total** | **30us** |
+| **log write_shard total** | **31us** |
+
+At 64KB, the mmap memcpy (26us) and needle construction (24us)
+dominate. The WAL overhead (pending map + try_send) is invisible.
+
+### L3 bench (abixio-ui, release, 1 disk, ftt=0, no write cache, Defender-excluded)
+
+#### PUT p50
 
 | Size | file | **wal** | log | pool |
 |---|---|---|---|---|
 | 4KB | 793us | **147us** | 143us | 159us |
 | 64KB | 1.0ms | **326us** | 301us | 264us |
 
-### GET p50
+The L3 bench numbers are higher than the head-to-head because they
+include VolumePool routing overhead (EC resolution, placement, quorum
+checks). The relative ordering can vary between runs due to filesystem
+state differences between sequential tier tests.
+
+#### GET p50
 
 | Size | file | wal | **log** | pool |
 |---|---|---|---|---|
 | 4KB | 452us | 497us | **33us** | 660us |
 | 64KB | 496us | 501us | **52us** | 644us |
 
-### PUT analysis
-
-At 4KB the WAL is the fastest or tied-fastest PUT path: 147us vs
-log 143us (within noise). Both are 5.4x faster than file tier.
-
-Head-to-head unit test (non-interleaved, same process, same disk):
-WAL 25us, log 30us -- WAL wins by 5us. The L3 bench adds VolumePool
-routing overhead that masks the raw difference.
-
-At 64KB the WAL (326us) is within 8% of log (301us). Pool wins at
-264us because pre-opened file writes avoid needle serialization
-overhead at that size.
-
-### GET analysis
-
-WAL GET at 4KB (497us) is comparable to file tier (452us) because
-after materialization, reads go through the file tier. During the
-WAL pending window, reads are served from the segment mmap.
-
-Log GET is 15x faster (33us) because it serves from the permanent
-in-memory index + mmap forever. This is the tradeoff: the WAL trades
-fast GET for no GC, no permanent index, and file-per-object layout.
+WAL GET is comparable to file tier because after materialization,
+reads go through the file tier. Log GET is 15x faster because it
+serves from the permanent in-memory index + mmap. This is the
+tradeoff: the WAL trades fast GET for no GC, no permanent index,
+and file-per-object layout.
 
 ## Optimizations applied
 
