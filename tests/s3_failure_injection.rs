@@ -35,7 +35,7 @@ fn build_dispatch(set: Arc<VolumePool>, cluster: Arc<ClusterManager>) -> Arc<Abi
     let mut builder = s3s::service::S3ServiceBuilder::new(s3);
     builder.set_auth(AlwaysAllowAuth);
     builder.set_validation(abixio::s3_service::RelaxedNameValidation);
-    builder.set_access(abixio::s3_access::AbixioAccess::new(Arc::clone(&cluster)));
+    builder.set_access(abixio::s3_access::AbixioAccess::new(Arc::clone(&cluster), Arc::clone(&set), String::new()));
     let s3_service = builder.build();
     Arc::new(AbixioDispatch::new(s3_service, None, None))
 }

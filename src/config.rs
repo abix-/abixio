@@ -51,6 +51,49 @@ pub struct Config {
     /// RAM write cache size in MB. 0 disables the cache.
     #[arg(long, default_value_t = 256)]
     pub write_cache: u64,
+
+    /// Background flush interval in milliseconds. Every tick, entries older
+    /// than --write-cache-min-age-ms are destaged from RAM cache to disk.
+    #[arg(long, default_value_t = 100)]
+    pub write_cache_flush_ms: u64,
+
+    /// Minimum entry age in milliseconds before it is eligible for
+    /// background flush. Gives GETs a window to hit the cache.
+    #[arg(long, default_value_t = 10)]
+    pub write_cache_min_age_ms: u64,
+
+    /// Replicate each cache insert to one peer before acking the
+    /// client. Required for the cache's crash-safety claim in a
+    /// multi-node deployment. Has no effect on standalone nodes.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub write_cache_peer_replicate: bool,
+
+    /// Run the bucket lifecycle enforcement loop. When off, rules are
+    /// still accepted and returned by GetBucketLifecycleConfiguration
+    /// but are never applied.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub lifecycle_enable: bool,
+
+    /// Interval between lifecycle enforcement passes (e.g. "1h",
+    /// "10m", "30s").
+    #[arg(long, default_value = "1h")]
+    pub lifecycle_interval: String,
+
+    /// LRU read cache size in MB. 0 disables the read cache.
+    #[arg(long, default_value_t = 256)]
+    pub read_cache: u64,
+
+    /// Maximum object size (bytes) eligible for the read cache.
+    /// Larger GETs bypass the cache entirely so they do not starve
+    /// hot small keys.
+    #[arg(long, default_value_t = 65536)]
+    pub read_cache_max_object: u64,
+}
+
+impl Config {
+    pub fn lifecycle_interval_duration(&self) -> Duration {
+        parse_duration(&self.lifecycle_interval).unwrap_or(Duration::from_secs(3600))
+    }
 }
 
 impl Config {
@@ -88,6 +131,8 @@ impl Config {
             .map_err(|_| format!("invalid scan_interval: {}", self.scan_interval))?;
         parse_duration(&self.heal_interval)
             .map_err(|_| format!("invalid heal_interval: {}", self.heal_interval))?;
+        parse_duration(&self.lifecycle_interval)
+            .map_err(|_| format!("invalid lifecycle_interval: {}", self.lifecycle_interval))?;
         // validate write tier
         match self.write_tier.as_str() {
             "file" | "wal" => {}
@@ -233,6 +278,13 @@ mod tests {
             mrf_workers: 2,
             write_tier: "file".to_string(),
             write_cache: 256,
+            write_cache_flush_ms: 100,
+            write_cache_min_age_ms: 10,
+            write_cache_peer_replicate: true,
+            lifecycle_enable: true,
+            lifecycle_interval: "1h".to_string(),
+            read_cache: 256,
+            read_cache_max_object: 65536,
         }
     }
 

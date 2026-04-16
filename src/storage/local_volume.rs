@@ -40,6 +40,8 @@ impl LocalVolume {
         std::fs::create_dir_all(&tmp)?;
         // read volume_id from volume.json if available
         let volume_id = crate::storage::volume::read_volume_format(root)
+            .ok()
+            .flatten()
             .map(|f| f.volume_id)
             .unwrap_or_default();
         Ok(Self {
@@ -114,13 +116,26 @@ impl LocalVolume {
         bucket: &str,
         key: &str,
     ) -> Result<Option<(Vec<u8>, ObjectMeta)>, StorageError> {
+        self.read_shard_from_wal_versioned(bucket, key, "")
+    }
+
+    /// Read a versioned (or unversioned, empty string) shard from the
+    /// WAL pending map. Unversioned reads fall back to the latest
+    /// un-materialized version for (bucket, key) if the exact
+    /// (bucket, key, "") entry is missing but some version is present.
+    fn read_shard_from_wal_versioned(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: &str,
+    ) -> Result<Option<(Vec<u8>, ObjectMeta)>, StorageError> {
         let Some(ref wal_mutex) = self.wal else {
             return Ok(None);
         };
         let w = wal_mutex.lock().map_err(|e| {
             StorageError::Internal(format!("wal lock: {}", e))
         })?;
-        let Some(entry) = w.get(bucket, key) else {
+        let Some(entry) = w.get_versioned(bucket, key, version_id) else {
             return Ok(None);
         };
         let entry = *entry;
@@ -239,6 +254,7 @@ pub struct WalShardWriter {
     root: PathBuf,
     bucket: Arc<str>,
     key: Arc<str>,
+    version_id: Arc<str>,
     buf: Vec<u8>,
     threshold: usize,
 }
@@ -250,6 +266,7 @@ impl WalShardWriter {
         root: PathBuf,
         bucket: &str,
         key: &str,
+        version_id: Option<&str>,
         threshold: usize,
     ) -> Self {
         Self {
@@ -258,6 +275,7 @@ impl WalShardWriter {
             root,
             bucket: Arc::from(bucket),
             key: Arc::from(key),
+            version_id: Arc::from(version_id.unwrap_or("")),
             buf: Vec::with_capacity(threshold),
             threshold,
         }
@@ -272,8 +290,34 @@ impl ShardWriter for WalShardWriter {
     }
 
     async fn finalize(self: Box<Self>, meta: &ObjectMeta) -> Result<(), StorageError> {
+        let is_versioned = !self.version_id.is_empty();
         // if data exceeded WAL threshold, fall back to file tier
         if self.buf.len() > self.threshold {
+            if is_versioned {
+                let ver_dir = pathing::version_dir(&self.root, &self.bucket, &self.key, &self.version_id)?;
+                tokio::fs::create_dir_all(&ver_dir).await?;
+                let shard_path = pathing::version_shard_path(&self.root, &self.bucket, &self.key, &self.version_id)?;
+                let meta_path = pathing::object_meta_path(&self.root, &self.bucket, &self.key)?;
+
+                // read-modify-write meta.json: prepend the new version
+                let mut mf = read_meta_file(&meta_path).await.unwrap_or_else(|_| ObjectMetaFile {
+                    bucket: self.bucket.to_string(),
+                    key: self.key.to_string(),
+                    versions: Vec::new(),
+                });
+                if mf.bucket.is_empty() { mf.bucket = self.bucket.to_string(); }
+                if mf.key.is_empty() { mf.key = self.key.to_string(); }
+                mf.versions.retain(|v| v.version_id != self.version_id.as_ref());
+                for v in &mut mf.versions { v.is_latest = false; }
+                let mut version = meta.clone();
+                version.is_latest = true;
+                version.version_id = self.version_id.to_string();
+                mf.versions.insert(0, version);
+
+                tokio::fs::write(&shard_path, &self.buf).await?;
+                write_meta_file(&meta_path, &mf).await.map_err(StorageError::Io)?;
+                return Ok(());
+            }
             let obj_dir = pathing::object_dir(&self.root, &self.bucket, &self.key)?;
             tokio::fs::create_dir_all(&obj_dir).await?;
             let shard_path = obj_dir.join("shard.dat");
@@ -296,7 +340,8 @@ impl ShardWriter for WalShardWriter {
         }
 
         // small object: append to WAL, send lightweight request (no data copy)
-        let needle = super::needle::Needle::new(&self.bucket, &self.key, meta, &self.buf)?;
+        let vid_opt = if is_versioned { Some(self.version_id.as_ref()) } else { None };
+        let needle = super::needle::Needle::new(&self.bucket, &self.key, vid_opt, meta, &self.buf)?;
 
         let entry = {
             let mut w = self.wal.lock().map_err(|e| {
@@ -312,6 +357,7 @@ impl ShardWriter for WalShardWriter {
         let req = MaterializeRequest {
             bucket: self.bucket.clone(),
             key: self.key.clone(),
+            version_id: self.version_id.clone(),
             entry,
         };
         let _ = self.wal_tx.try_send(req);
@@ -405,20 +451,17 @@ impl Backend for LocalVolume {
         key: &str,
         version_id: Option<&str>,
     ) -> Result<Box<dyn ShardWriter>, StorageError> {
-        let is_versioned = version_id.is_some();
-
-        // 1. WAL (if enabled, not versioned)
-        if !is_versioned {
-            if let (Some(wal), Some(tx)) = (&self.wal, &self.wal_tx) {
-                return Ok(Box::new(WalShardWriter::new(
-                    Arc::clone(wal),
-                    Arc::clone(tx),
-                    self.root.clone(),
-                    bucket,
-                    key,
-                    self.wal_threshold,
-                )));
-            }
+        // 1. WAL (if enabled): routes both versioned and unversioned
+        if let (Some(wal), Some(tx)) = (&self.wal, &self.wal_tx) {
+            return Ok(Box::new(WalShardWriter::new(
+                Arc::clone(wal),
+                Arc::clone(tx),
+                self.root.clone(),
+                bucket,
+                key,
+                version_id,
+                self.wal_threshold,
+            )));
         }
 
         // 3. file tier (fallback)
@@ -453,11 +496,12 @@ impl Backend for LocalVolume {
         pathing::validate_object_key(key)?;
 
         let is_versioned = !meta.version_id.is_empty();
+        let version_id_opt = if is_versioned { Some(meta.version_id.as_str()) } else { None };
 
         // WAL fast path: append needle, send lightweight request (no data copy)
-        if !is_versioned && (data.len() <= self.wal_threshold) {
+        if data.len() <= self.wal_threshold {
             if let (Some(wal_mutex), Some(tx)) = (&self.wal, &self.wal_tx) {
-                let needle = super::needle::Needle::new(bucket, key, meta, data)?;
+                let needle = super::needle::Needle::new(bucket, key, version_id_opt, meta, data)?;
 
                 let entry = {
                     let mut w = wal_mutex.lock().map_err(|e| {
@@ -469,6 +513,7 @@ impl Backend for LocalVolume {
                 let req = MaterializeRequest {
                     bucket: Arc::from(bucket),
                     key: Arc::from(key),
+                    version_id: Arc::from(version_id_opt.unwrap_or("")),
                     entry,
                 };
                 let _ = tx.try_send(req);
@@ -847,6 +892,14 @@ impl Backend for LocalVolume {
         key: &str,
         version_id: &str,
     ) -> Result<(Vec<u8>, ObjectMeta), StorageError> {
+        // check WAL pending first
+        if let Ok(Some((data, mut meta))) = self.read_shard_from_wal_versioned(bucket, key, version_id) {
+            if meta.version_id.is_empty() {
+                meta.version_id = version_id.to_string();
+            }
+            return Ok((data, meta));
+        }
+
         let mf = read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await
             .map_err(|_| StorageError::ObjectNotFound)?;
 
@@ -886,10 +939,45 @@ impl Backend for LocalVolume {
     }
 
     async fn read_meta_versions(&self, bucket: &str, key: &str) -> Result<Vec<ObjectMeta>, StorageError> {
-        match read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await {
-            Ok(mf) => Ok(mf.versions),
-            Err(_) => Ok(Vec::new()),
+        let mut disk_versions = match read_meta_file(&pathing::object_meta_path(&self.root, bucket, key)?).await {
+            Ok(mf) => mf.versions,
+            Err(_) => Vec::new(),
+        };
+
+        // merge WAL-pending versions: WAL wins on conflict
+        if let Some(ref wal_mutex) = self.wal {
+            if let Ok(w) = wal_mutex.lock() {
+                let vids = w.versions_for(bucket, key);
+                for vid in vids {
+                    if vid.is_empty() {
+                        continue;
+                    }
+                    if let Some(entry) = w.get_versioned(bucket, key, &vid) {
+                        let entry = *entry;
+                        if let Ok(mut meta) = w.read_meta(&entry) {
+                            if meta.version_id.is_empty() {
+                                meta.version_id = vid.clone();
+                            }
+                            meta.is_latest = false;
+                            disk_versions.retain(|v| v.version_id != vid);
+                            disk_versions.insert(0, meta);
+                        }
+                    }
+                }
+            }
         }
+
+        // ensure only the first version is marked latest
+        let mut seen_latest = false;
+        for v in &mut disk_versions {
+            if seen_latest {
+                v.is_latest = false;
+            } else if !v.is_delete_marker {
+                v.is_latest = true;
+                seen_latest = true;
+            }
+        }
+        Ok(disk_versions)
     }
 
     async fn write_meta_versions(
@@ -1109,6 +1197,34 @@ mod tests {
             .write_versioned_shard("test", "safe", "../escape", b"bad", &meta)
             .await.unwrap_err();
         assert!(matches!(err, StorageError::InvalidVersionId(_)));
+    }
+
+    #[tokio::test]
+    async fn versioned_write_routes_through_wal() {
+        let dir = TempDir::new().unwrap();
+        let mut disk = LocalVolume::new(dir.path()).unwrap();
+        disk.enable_wal().await.unwrap();
+        disk.make_bucket("test").await.unwrap();
+
+        let vid = "11111111-2222-3333-4444-555555555555";
+        let mut meta = test_meta(0);
+        meta.version_id = vid.to_string();
+        meta.size = 5;
+        disk.write_shard("test", "k", b"v1dat", &meta).await.unwrap();
+
+        // Before materialize completes, WAL path serves the read.
+        let (got, got_meta) = disk.read_versioned_shard("test", "k", vid).await.unwrap();
+        assert_eq!(got, b"v1dat");
+        assert_eq!(got_meta.version_id, vid);
+
+        // Drain the materialize worker.
+        disk.drain_pending_writes().await;
+
+        // Now the shard exists on disk under version_dir and meta.json holds the version.
+        let shard_path = pathing::version_shard_path(dir.path(), "test", "k", vid).unwrap();
+        assert!(shard_path.is_file());
+        let versions = disk.read_meta_versions("test", "k").await.unwrap();
+        assert!(versions.iter().any(|v| v.version_id == vid && v.is_latest));
     }
 
     #[tokio::test]

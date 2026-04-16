@@ -18,6 +18,11 @@ pub const FLAG_NORMAL: u8 = 0;
 pub const FLAG_DELETE: u8 = 1;
 
 /// Serialized needle header (24 bytes, fixed layout).
+///
+/// `version_id_len` was previously part of the trailing padding and is
+/// reinterpreted as a length byte. Pre-v0.1.0 segments that were
+/// written with `_pad = 0` still parse correctly because a zero length
+/// means no version_id payload.
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 struct RawHeader {
@@ -28,14 +33,17 @@ struct RawHeader {
     meta_len: u16,
     data_len: u32,
     checksum: u64,
-    _pad: u16,
+    version_id_len: u8,
+    _pad: u8,
 }
 
 /// A needle ready to be appended to a segment.
+/// On-disk payload layout: `[header][bucket][key][version_id][meta][data]`.
 pub struct Needle {
     pub flags: u8,
     pub bucket: String,
     pub key: String,
+    pub version_id: String,   // empty = unversioned
     pub meta_bytes: Vec<u8>,  // msgpack-serialized ObjectMeta
     pub data: Vec<u8>,        // shard data
 }
@@ -53,14 +61,23 @@ pub struct NeedleLocation {
 }
 
 impl Needle {
-    /// Create a needle for a normal PUT.
-    pub fn new(bucket: &str, key: &str, meta: &ObjectMeta, shard_data: &[u8]) -> Result<Self, StorageError> {
+    /// Create a needle for a normal PUT. `version_id = None` for
+    /// unversioned objects; `Some(vid)` routes through the versioned
+    /// materialize path.
+    pub fn new(
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+        meta: &ObjectMeta,
+        shard_data: &[u8],
+    ) -> Result<Self, StorageError> {
         let meta_bytes = rmp_serde::to_vec(meta)
             .map_err(|e| StorageError::Internal(format!("msgpack serialize: {}", e)))?;
         Ok(Self {
             flags: FLAG_NORMAL,
             bucket: bucket.to_string(),
             key: key.to_string(),
+            version_id: version_id.map(|s| s.to_string()).unwrap_or_default(),
             meta_bytes,
             data: shard_data.to_vec(),
         })
@@ -68,10 +85,16 @@ impl Needle {
 
     /// Create a tombstone needle for DELETE.
     pub fn tombstone(bucket: &str, key: &str) -> Self {
+        Self::tombstone_versioned(bucket, key, None)
+    }
+
+    /// Create a tombstone for a specific version.
+    pub fn tombstone_versioned(bucket: &str, key: &str, version_id: Option<&str>) -> Self {
         Self {
             flags: FLAG_DELETE,
             bucket: bucket.to_string(),
             key: key.to_string(),
+            version_id: version_id.map(|s| s.to_string()).unwrap_or_default(),
             meta_bytes: Vec::new(),
             data: Vec::new(),
         }
@@ -79,7 +102,12 @@ impl Needle {
 
     /// Total serialized size of this needle.
     pub fn serialized_size(&self) -> usize {
-        HEADER_SIZE + self.bucket.len() + self.key.len() + self.meta_bytes.len() + self.data.len()
+        HEADER_SIZE
+            + self.bucket.len()
+            + self.key.len()
+            + self.version_id.len()
+            + self.meta_bytes.len()
+            + self.data.len()
     }
 
     /// Write the needle directly into a destination buffer (e.g. mmap).
@@ -96,6 +124,8 @@ impl Needle {
         off += self.bucket.len();
         dest[off..off + self.key.len()].copy_from_slice(self.key.as_bytes());
         off += self.key.len();
+        dest[off..off + self.version_id.len()].copy_from_slice(self.version_id.as_bytes());
+        off += self.version_id.len();
         dest[off..off + self.meta_bytes.len()].copy_from_slice(&self.meta_bytes);
         off += self.meta_bytes.len();
         dest[off..off + self.data.len()].copy_from_slice(&self.data);
@@ -113,6 +143,7 @@ impl Needle {
             meta_len: self.meta_bytes.len() as u16,
             data_len: self.data.len() as u32,
             checksum,
+            version_id_len: self.version_id.len() as u8,
             _pad: 0,
         };
         // SAFETY: RawHeader is repr(C, packed), no padding, all primitive types
@@ -137,8 +168,10 @@ impl Needle {
     }
 
     /// Deserialize a needle from a byte slice (e.g. mmap region).
-    /// Returns (needle_flags, bucket, key, meta_bytes, data, total_size) or error.
-    pub fn deserialize(buf: &[u8]) -> Result<(u8, String, String, Vec<u8>, Vec<u8>, usize), StorageError> {
+    /// Returns (flags, bucket, key, version_id, meta_bytes, data, total_size) or error.
+    pub fn deserialize(
+        buf: &[u8],
+    ) -> Result<(u8, String, String, String, Vec<u8>, Vec<u8>, usize), StorageError> {
         if buf.len() < HEADER_SIZE {
             return Err(StorageError::Internal("needle too short for header".into()));
         }
@@ -155,6 +188,7 @@ impl Needle {
         let h_meta_len = { header.meta_len };
         let h_data_len = { header.data_len };
         let h_checksum = { header.checksum };
+        let h_version_id_len = { header.version_id_len };
 
         if h_magic != NEEDLE_MAGIC {
             return Err(StorageError::Internal(format!(
@@ -164,9 +198,10 @@ impl Needle {
 
         let bucket_len = h_bucket_len as usize;
         let key_len = h_key_len as usize;
+        let version_id_len = h_version_id_len as usize;
         let meta_len = h_meta_len as usize;
         let data_len = h_data_len as usize;
-        let total = HEADER_SIZE + bucket_len + key_len + meta_len + data_len;
+        let total = HEADER_SIZE + bucket_len + key_len + version_id_len + meta_len + data_len;
 
         if buf.len() < total {
             return Err(StorageError::Internal("needle truncated".into()));
@@ -193,17 +228,28 @@ impl Needle {
             .to_string();
         offset += key_len;
 
+        let version_id = std::str::from_utf8(&buf[offset..offset + version_id_len])
+            .map_err(|e| StorageError::Internal(format!("bad version_id utf8: {}", e)))?
+            .to_string();
+        offset += version_id_len;
+
         let meta_bytes = buf[offset..offset + meta_len].to_vec();
         offset += meta_len;
 
         let data = buf[offset..offset + data_len].to_vec();
 
-        Ok((h_flags, bucket, key, meta_bytes, data, total))
+        Ok((h_flags, bucket, key, version_id, meta_bytes, data, total))
     }
 
     /// Read needle metadata from a byte slice without copying data.
-    /// Returns (flags, bucket, key, meta_offset, meta_len, data_offset, data_len, total_size).
-    pub fn read_header(buf: &[u8]) -> Result<(u8, String, String, usize, usize, usize, usize, usize), StorageError> {
+    /// Returns (flags, bucket, key, version_id, meta_offset, meta_len,
+    /// data_offset, data_len, total_size).
+    pub fn read_header(
+        buf: &[u8],
+    ) -> Result<
+        (u8, String, String, String, usize, usize, usize, usize, usize),
+        StorageError,
+    > {
         if buf.len() < HEADER_SIZE {
             return Err(StorageError::Internal("needle too short for header".into()));
         }
@@ -219,6 +265,7 @@ impl Needle {
         let h_meta_len = { header.meta_len };
         let h_data_len = { header.data_len };
         let h_checksum = { header.checksum };
+        let h_version_id_len = { header.version_id_len };
 
         if h_magic != NEEDLE_MAGIC {
             return Err(StorageError::Internal(format!(
@@ -228,9 +275,10 @@ impl Needle {
 
         let bucket_len = h_bucket_len as usize;
         let key_len = h_key_len as usize;
+        let version_id_len = h_version_id_len as usize;
         let meta_len = h_meta_len as usize;
         let data_len = h_data_len as usize;
-        let total = HEADER_SIZE + bucket_len + key_len + meta_len + data_len;
+        let total = HEADER_SIZE + bucket_len + key_len + version_id_len + meta_len + data_len;
 
         if buf.len() < total {
             return Err(StorageError::Internal("needle truncated".into()));
@@ -251,10 +299,26 @@ impl Needle {
         let key = std::str::from_utf8(&buf[key_offset..key_offset + key_len])
             .map_err(|e| StorageError::Internal(format!("bad key utf8: {}", e)))?
             .to_string();
-        let meta_offset = key_offset + key_len;
+        let version_id_offset = key_offset + key_len;
+        let version_id = std::str::from_utf8(
+            &buf[version_id_offset..version_id_offset + version_id_len],
+        )
+        .map_err(|e| StorageError::Internal(format!("bad version_id utf8: {}", e)))?
+        .to_string();
+        let meta_offset = version_id_offset + version_id_len;
         let data_offset = meta_offset + meta_len;
 
-        Ok((h_flags, bucket, key, meta_offset, meta_len, data_offset, data_len, total))
+        Ok((
+            h_flags,
+            bucket,
+            key,
+            version_id,
+            meta_offset,
+            meta_len,
+            data_offset,
+            data_len,
+            total,
+        ))
     }
 
     /// Deserialize ObjectMeta from msgpack bytes.
@@ -296,16 +360,17 @@ mod tests {
     fn serialize_deserialize_round_trip() {
         let meta = test_meta();
         let data = vec![0x42u8; 1365]; // ~1.3KB shard
-        let needle = Needle::new("mybucket", "config.json", &meta, &data).unwrap();
+        let needle = Needle::new("mybucket", "config.json", None, &meta, &data).unwrap();
 
         let buf = needle.serialize();
         assert!(buf.len() > HEADER_SIZE);
 
-        let (flags, bucket, key, meta_bytes, got_data, total) =
+        let (flags, bucket, key, version_id, meta_bytes, got_data, total) =
             Needle::deserialize(&buf).unwrap();
         assert_eq!(flags, FLAG_NORMAL);
         assert_eq!(bucket, "mybucket");
         assert_eq!(key, "config.json");
+        assert!(version_id.is_empty());
         assert_eq!(got_data, data);
         assert_eq!(total, buf.len());
 
@@ -315,23 +380,54 @@ mod tests {
     }
 
     #[test]
+    fn versioned_round_trip() {
+        let meta = test_meta();
+        let data = vec![0x7fu8; 128];
+        let vid = "11111111-2222-3333-4444-555555555555";
+        let needle = Needle::new("b", "k", Some(vid), &meta, &data).unwrap();
+        let buf = needle.serialize();
+
+        let (flags, bucket, key, version_id, _meta_bytes, got_data, total) =
+            Needle::deserialize(&buf).unwrap();
+        assert_eq!(flags, FLAG_NORMAL);
+        assert_eq!(bucket, "b");
+        assert_eq!(key, "k");
+        assert_eq!(version_id, vid);
+        assert_eq!(got_data, data);
+        assert_eq!(total, buf.len());
+    }
+
+    #[test]
     fn tombstone_round_trip() {
         let needle = Needle::tombstone("mybucket", "deleted.txt");
         let buf = needle.serialize();
 
-        let (flags, bucket, key, meta_bytes, data, _) =
+        let (flags, bucket, key, version_id, meta_bytes, data, _) =
             Needle::deserialize(&buf).unwrap();
         assert_eq!(flags, FLAG_DELETE);
         assert_eq!(bucket, "mybucket");
         assert_eq!(key, "deleted.txt");
+        assert!(version_id.is_empty());
         assert!(meta_bytes.is_empty());
         assert!(data.is_empty());
     }
 
     #[test]
+    fn versioned_tombstone_carries_version_id() {
+        let vid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let needle = Needle::tombstone_versioned("b", "k", Some(vid));
+        let buf = needle.serialize();
+        let (flags, bucket, key, version_id, _, _, _) = Needle::deserialize(&buf).unwrap();
+        assert_eq!(flags, FLAG_DELETE);
+        assert_eq!(bucket, "b");
+        assert_eq!(key, "k");
+        assert_eq!(version_id, vid);
+    }
+
+    #[test]
     fn checksum_detects_corruption() {
         let meta = test_meta();
-        let needle = Needle::new("b", "k", &meta, &[1, 2, 3]).unwrap();
+        let needle = Needle::new("b", "k", None, &meta, &[1, 2, 3]).unwrap();
         let mut buf = needle.serialize();
 
         // corrupt one byte in the data section
@@ -350,7 +446,7 @@ mod tests {
     #[test]
     fn truncated_needle_rejected() {
         let meta = test_meta();
-        let needle = Needle::new("b", "k", &meta, &[1, 2, 3]).unwrap();
+        let needle = Needle::new("b", "k", None, &meta, &[1, 2, 3]).unwrap();
         let buf = needle.serialize();
 
         // truncate
@@ -361,14 +457,15 @@ mod tests {
     fn read_header_returns_offsets() {
         let meta = test_meta();
         let data = vec![0x42u8; 100];
-        let needle = Needle::new("mybucket", "obj", &meta, &data).unwrap();
+        let needle = Needle::new("mybucket", "obj", None, &meta, &data).unwrap();
         let buf = needle.serialize();
 
-        let (flags, bucket, key, meta_offset, meta_len, data_offset, data_len, total) =
+        let (flags, bucket, key, version_id, meta_offset, meta_len, data_offset, data_len, total) =
             Needle::read_header(&buf).unwrap();
         assert_eq!(flags, FLAG_NORMAL);
         assert_eq!(bucket, "mybucket");
         assert_eq!(key, "obj");
+        assert!(version_id.is_empty());
         assert_eq!(data_len, 100);
         assert_eq!(total, buf.len());
 

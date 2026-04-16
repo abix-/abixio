@@ -4,7 +4,7 @@ Completion ratings for every area that matters before AbixIO can be
 called production-ready. Rated 1-10 where 1 = concept only, 5 = works
 but gaps remain, 10 = production-grade.
 
-Last updated: 2026-04-13
+Last updated: 2026-04-16
 
 ## Overall: 4/10
 
@@ -20,14 +20,14 @@ not a product.
 | Area | Rating | Notes |
 |---|---|---|
 | Erasure coding (RS encode/decode) | 8/10 | per-object FTT, streaming encode, zero-alloc decode, bitrot detection |
-| Write path (file tier) | 8/10 | direct mkdir+write, simple, correct |
-| Write path (WAL) | 8/10 | append to mmap, background materialize, 3us at 4KB in release mode. no GC, no permanent index |
-| Write path (pool) | -- | removed, WAL supersedes pool |
-| Write cache (RAM) | 5/10 | DashMap insert works, but no automatic flush, no eviction policy, not exercised by benchmarks |
-| Read path (GET) | 8/10 | mmap zero-copy for 1+0, zero-alloc mmap slices for EC, log index lookup, range support |
+| Write path (file tier) | 8/10 | direct mkdir+write |
+| Write path (WAL) | 8/10 | append to mmap, background materialize, 3us at 4KB in release mode. carries version_id. no permanent index |
+| Write cache (RAM) | 7/10 | DashMap, primary-tagged entries, background flush task, single-peer synchronous replicate-before-ack, startup pull from peers. no eviction policy (cache full -> disk write) |
+| Read cache (RAM) | 7/10 | LRU bounded by total bytes, per-object size ceiling. Invalidated on PUT/DELETE/versioning ops. No frequency tracking yet |
+| Read path (GET) | 8/10 | mmap zero-copy for 1+0, zero-alloc mmap slices for EC, range support |
 | Streaming large objects | 7/10 | unified ShardWriter encode path, no full-body buffering. streaming GET works |
 | Volume placement | 7/10 | deterministic placement, quorum writes, multi-disk spread. no rebalance |
-| Metadata / on-disk format | 7/10 | self-describing volumes, meta.json per object, volume.json identity |
+| Metadata / on-disk format | 7/10 | self-describing volumes, meta.json per object, volume.json identity. format version validated on load (hard-fails unknown versions). needle/segment format version still implicit |
 
 ## S3 API coverage: 5/10
 
@@ -39,8 +39,8 @@ not a product.
 | Object listing | 7/10 | v2, versions, prefix/delimiter. no v1 |
 | Multipart upload | 8/10 | create, upload part, complete, abort, list parts. no CopyObjectPart |
 | Bucket operations | 7/10 | create, delete, head, list, versioning, tagging, policy, lifecycle config |
-| Bucket policy enforcement | 2/10 | config stored, never checked on requests |
-| Lifecycle enforcement | 2/10 | config stored, rules never execute |
+| Bucket policy enforcement | 6/10 | Allow/Deny statements evaluated per request; supports `Principal: "*"`/AWS list + action + resource globs. Conditions, NotAction/NotResource, IAM roles not enforced |
+| Lifecycle enforcement | 6/10 | background engine applies `Expiration.days`, `ExpiredObjectDeleteMarker`, `NoncurrentVersionExpiration`, `AbortIncompleteMultipartUpload`, `Filter.prefix`. `Expiration.date`, tiering transitions, tag/size filters, `DelMarkerExpiration` not enforced |
 | Encryption config | 0/10 | not implemented |
 | Object lock / retention | 0/10 | not implemented |
 | Replication | 0/10 | not implemented |
@@ -57,7 +57,7 @@ not a product.
 | SigV4 chunked transfer | 9/10 | handled by s3s |
 | Content-MD5 validation | 9/10 | handled by s3s |
 | Anonymous / no-auth mode | 8/10 | works |
-| Path traversal hardening | 8/10 | fixed in commit 9e25e79, regression tests in place |
+| Path traversal hardening | 8/10 | bucket/key/version_id validated, regression tests in place |
 | Internode JWT auth | 7/10 | signed with S3 credentials, validates on receive |
 | Encryption at rest | 0/10 | design doc only, no implementation |
 | TLS | 7/10 | works with rustls, cert/key from CLI flags. no auto-cert |
@@ -69,10 +69,11 @@ not a product.
 | Node identity exchange | 7/10 | automatic at startup via --nodes |
 | Self-describing volumes | 8/10 | volume.json on every volume, cluster reconstructable from disks |
 | Internode shard RPC | 7/10 | RemoteVolume over HTTP, JWT auth |
-| Quorum tracking | 6/10 | basic probe-based, fences on quorum loss |
+| Internode cache replication | 7/10 | cache-replicate + cache-sync endpoints, JWT auth, msgpack body. single-peer replica before ack. N-way deferred |
+| Quorum tracking | 6/10 | probe-based, fences on quorum loss |
 | Hard fencing | 7/10 | rejects S3 and mutating admin requests when unsafe |
 | Placement metadata | 7/10 | epoch_id + volume_ids in every shard |
-| Live topology changes | 0/10 | not implemented. nodes fixed at startup |
+| Live topology changes | 0/10 | nodes fixed at startup |
 | Rebalance | 0/10 | not implemented |
 | Consensus (Raft etc.) | 0/10 | not implemented |
 
@@ -83,17 +84,17 @@ not a product.
 | MRF (reactive heal) | 7/10 | bounded dedup queue, drain worker, triggers on partial write failure |
 | Integrity scanner | 6/10 | walks all objects, verifies checksums, per-object EC aware. single worker |
 | Per-shard checksums | 8/10 | blake3, SIMD-accelerated, checked on read |
-| WAL heal awareness | 3/10 | not implemented (todo phase 7) |
-| Failure injection tests | 0/10 | none exist |
+| WAL heal awareness | 8/10 | scanner + heal share VolumePool's WAL-enabled backends via `heal_backends()`, so `read_shard` / `stat_object` / `list_objects` see un-materialized entries. No peer-divergence detection inside WAL itself (EC quorum still covers durability) |
+| Failure injection tests | 7/10 | 12 tests covering shard corruption, missing shards, streaming GET bitrot. no partition / slow-disk injection |
 
-## Testing: 5/10
+## Testing: 6/10
 
 | Area | Rating | Notes |
 |---|---|---|
-| Unit tests (lib) | 6/10 | 111 tests in src/. covers core paths |
-| Integration tests | 6/10 | 162 tests in tests/. S3 ops, admin, distributed placement |
+| Unit tests (lib) | 7/10 | 182 tests in src/. covers core paths |
+| Integration tests | 7/10 | 176 tests in tests/. S3 ops, admin, distributed placement, cache replication, failure injection |
 | Benchmark suite | 8/10 | L1-L7 layered benchmarks, competitive matrix, JSON output, baseline comparison |
-| Failure injection | 0/10 | none |
+| Failure injection | 7/10 | 12 tests in tests/s3_failure_injection.rs (shard corruption, missing shards, streaming GET bitrot). no partition / slow-disk |
 | Load / stress testing | 0/10 | none |
 | CI | 6/10 | GitHub Actions: cargo test + cargo clippy. no benchmark CI |
 
@@ -101,9 +102,9 @@ not a product.
 
 | Area | Rating | Notes |
 |---|---|---|
-| Admin API | 7/10 | status, disks, healing, inspect, bucket EC endpoints |
-| Structured logging | 3/10 | tracing imported, no metrics, no histograms, no error counters |
-| Graceful shutdown | 6/10 | implemented: stop accepting, drain in-flight HTTP, flush write cache. no SIGTERM on Windows (Ctrl+C only) |
+| Admin API | 7/10 | status, disks, healing, inspect, bucket EC, cache flush endpoints |
+| Structured logging | 3/10 | tracing spans + W3C server-timing per response. no metrics, no histograms, no error counters |
+| Graceful shutdown | 7/10 | stops accepting, drains in-flight HTTP (5s), flushes write cache, drains WAL materialize worker. Ctrl+C only on Windows |
 | Health checks | 4/10 | /_admin/status exists. no deep health probes |
 | Monitoring integration | 0/10 | no prometheus, no opentelemetry |
 
@@ -111,10 +112,10 @@ not a product.
 
 | Area | Rating | Notes |
 |---|---|---|
-| Binary releases | 0/10 | 347 commits, zero releases |
+| Binary releases | 0/10 | no releases |
 | Dockerfile | 0/10 | does not exist |
 | Package managers | 0/10 | not published anywhere |
-| Upgrade path | 0/10 | on-disk format has no versioning or migration |
+| Upgrade path | 2/10 | volume.json carries `version` and is validated on load; no migration code, no segment/needle format version check yet |
 | Configuration docs | 3/10 | CLI flags documented in code, no operator guide |
 | CHANGELOG | 0/10 | does not exist |
 
@@ -145,24 +146,16 @@ not a product.
 
 ## What blocks a v0.1.0 release
 
-These are the minimum items before anyone should use this:
-
-1. ~~**Graceful shutdown**~~ -- implemented: HTTP drain, write cache flush
-2. **Binary release** -- Dockerfile + GitHub release with Windows binary
-3. **CHANGELOG** -- retroactive release notes
-4. **On-disk format version** -- so future versions can detect and migrate
-5. **unwrap() audit** -- 533 unwrap() calls in src/. failure paths must not panic
-6. **Log store GC** -- without garbage collection, log segments grow without bound
-7. **Basic observability** -- request latency, error rates, disk health
+1. **Binary release** -- Dockerfile + GitHub release with Windows binary
+2. **CHANGELOG** -- release notes
+3. **Basic observability** -- request latency histograms, error counters, disk health
 
 ## What blocks production use
 
 Everything above, plus:
 
 1. **Encryption at rest** (SSE-S3 or equivalent)
-2. **Lifecycle enforcement** -- rules stored but never enforced
-3. **Bucket policy enforcement** -- policies stored but never checked
-4. **Failure injection testing** -- kill volumes, corrupt shards, partition nodes
-5. **Live topology changes** -- cannot add/remove nodes without restart
-6. **Concurrent client testing** -- all benchmarks are sequential single-client
-7. **Monitoring integration** -- prometheus or opentelemetry
+2. **Partition / slow-disk failure injection** -- shard corruption and missing-shard paths are covered; network partitions and slow disks are not
+3. **Live topology changes** -- cannot add/remove nodes without restart
+4. **Concurrent client testing** -- all benchmarks are sequential single-client
+5. **Monitoring integration** -- prometheus or opentelemetry

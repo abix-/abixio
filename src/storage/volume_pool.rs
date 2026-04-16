@@ -48,11 +48,22 @@ struct PlacementTopology {
 }
 
 pub struct VolumePool {
-    disks: Vec<Box<dyn Backend>>,
+    /// Shared across the data-plane pool and the heal path so both see
+    /// the same WAL state on WAL-enabled LocalVolumes.
+    disks: Arc<Vec<Box<dyn Backend>>>,
     mrf: Option<Arc<MrfQueue>>,
     placement: RwLock<PlacementTopology>,
     /// RAM write cache. None = disabled.
     write_cache: Option<Arc<super::write_cache::WriteCache>>,
+    /// LRU read cache for hot small-object GETs. None = disabled.
+    read_cache: Option<Arc<super::read_cache::ReadCache>>,
+    /// Identity used to tag cached entries as primary-owned. Empty
+    /// string = single-node mode (no peer replication).
+    local_node_id: String,
+    /// Peer cache clients. First entry (if any) is used for
+    /// synchronous replicate-before-ack. Additional peers are reserved
+    /// for future N-way replication.
+    peer_cache_clients: Vec<Arc<super::peer_cache::PeerCacheClient>>,
 }
 
 impl VolumePool {
@@ -78,14 +89,33 @@ impl VolumePool {
                 cluster_id: "local-set".to_string(),
                 disks: placement_disks,
             }),
-            disks,
+            disks: Arc::new(disks),
             mrf: None,
             write_cache: None, // enabled explicitly via enable_write_cache()
+            read_cache: None,
+            local_node_id: String::new(),
+            peer_cache_clients: Vec::new(),
         })
     }
 
+    /// Return the shared Arc of backend disks for use by the heal
+    /// scanner and MRF drain worker. Sharing this Arc is what gives
+    /// the heal path visibility into WAL-pending entries -- the
+    /// LocalVolume instances inside have WAL enabled when the server
+    /// is started with `--write-tier=wal`.
+    pub fn heal_backends(&self) -> Arc<Vec<Box<dyn Backend>>> {
+        Arc::clone(&self.disks)
+    }
+
+    /// Set the node id used to tag new cache entries as primary-owned.
+    /// Cluster startup in `main` calls this once; standalone tests leave
+    /// it empty (single-node mode, no replication).
+    pub fn set_local_node_id(&mut self, node_id: impl Into<String>) {
+        self.local_node_id = node_id.into();
+    }
+
     pub fn disks(&self) -> &[Box<dyn Backend>] {
-        &self.disks
+        &self.disks[..]
     }
 
     /// Enable the RAM write cache with the given size in bytes.
@@ -93,15 +123,93 @@ impl VolumePool {
         self.write_cache = Some(Arc::new(super::write_cache::WriteCache::new(max_bytes)));
     }
 
+    /// Enable the LRU read cache. `max_bytes` = 0 leaves the cache
+    /// disabled. `max_object_bytes` is the per-object size ceiling;
+    /// larger objects skip the cache entirely so they do not starve
+    /// hot small keys.
+    pub fn enable_read_cache(&mut self, max_bytes: u64, max_object_bytes: u64) {
+        if max_bytes == 0 {
+            self.read_cache = None;
+            return;
+        }
+        self.read_cache = Some(Arc::new(super::read_cache::ReadCache::new(
+            max_bytes,
+            max_object_bytes,
+        )));
+    }
+
+    /// Accessor used by the admin API for inspect / metrics endpoints.
+    pub fn read_cache(&self) -> Option<&super::read_cache::ReadCache> {
+        self.read_cache.as_deref()
+    }
+
     /// Access the RAM write cache (if enabled).
     pub fn write_cache(&self) -> Option<&super::write_cache::WriteCache> {
         self.write_cache.as_deref()
     }
 
+    /// Shared Arc to the RAM write cache, used to hand the same handle
+    /// to the storage server so peer-facing endpoints can insert and
+    /// drain replicas.
+    pub fn write_cache_handle(&self) -> Option<Arc<super::write_cache::WriteCache>> {
+        self.write_cache.as_ref().map(Arc::clone)
+    }
+
+    /// Register peer clients for write-cache replication. Called from
+    /// `main` after cluster membership is known. An empty vec disables
+    /// replication (single-node mode).
+    pub fn set_peer_cache_clients(
+        &mut self,
+        clients: Vec<Arc<super::peer_cache::PeerCacheClient>>,
+    ) {
+        self.peer_cache_clients = clients;
+    }
+
+    /// Pull cache entries this node is primary for from each peer and
+    /// re-insert them locally. Called once on startup to recover
+    /// entries that were replicated to peers before a crash.
+    pub async fn recover_cache_from_peers(&self) {
+        let Some(ref cache) = self.write_cache else { return };
+        if self.local_node_id.is_empty() || self.peer_cache_clients.is_empty() {
+            return;
+        }
+        for peer in &self.peer_cache_clients {
+            match peer.sync_pull(&self.local_node_id).await {
+                Ok(entries) => {
+                    let count = entries.len();
+                    for (bucket, key, mut entry) in entries {
+                        entry.cached_at_local = std::time::Instant::now();
+                        cache.insert(&bucket, &key, entry);
+                    }
+                    if count > 0 {
+                        tracing::info!(
+                            peer = peer.endpoint(),
+                            recovered = count,
+                            "recovered write-cache entries from peer"
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(peer = peer.endpoint(), error = %e, "cache sync-pull failed");
+                }
+            }
+        }
+    }
+
     /// Flush all cached entries to disk. Used by tests and shutdown.
     pub async fn flush_write_cache(&self) -> Result<(), StorageError> {
+        self.flush_older_than(std::time::Duration::from_nanos(0)).await
+    }
+
+    /// Destage cache entries older than `age` to their owning disks.
+    /// Only drains entries this node is primary for (empty primary_node_id
+    /// is treated as local-owned for single-node mode). Replicas stay in
+    /// RAM until either they are evicted by primary-side sync or the
+    /// owning node requests them back.
+    /// Called by the background flush task and by the shutdown path.
+    pub async fn flush_older_than(&self, age: std::time::Duration) -> Result<(), StorageError> {
         let Some(ref cache) = self.write_cache else { return Ok(()) };
-        let entries = cache.drain_older_than(std::time::Duration::from_nanos(0));
+        let entries = cache.drain_primary_older_than(&self.local_node_id, age);
         for (bucket, key, entry) in entries {
             for (shard_idx, shard) in entry.shards.iter().enumerate() {
                 if let Some(&disk_idx) = entry.distribution.get(shard_idx) {
@@ -123,7 +231,7 @@ impl VolumePool {
             tracing::warn!(error = %e, "write cache flush failed during shutdown");
         }
         // drain each backend's pending background work
-        for disk in &self.disks {
+        for disk in self.disks() {
             disk.drain_pending_writes().await;
         }
         tracing::info!("volume pool shutdown complete");
@@ -132,7 +240,7 @@ impl VolumePool {
     /// Read bucket FTT from settings and compute (data, parity).
     /// Falls back to default FTT if bucket has no config (legacy buckets).
     pub async fn bucket_ec(&self, bucket: &str) -> (usize, usize) {
-        for d in &self.disks {
+        for d in self.disks() {
             let settings = d.read_bucket_settings(bucket).await;
             if let Some(ftt) = settings.ftt {
                 if let Ok((d, p)) = ftt_to_ec(ftt, self.disks.len()) {
@@ -198,7 +306,7 @@ impl VolumePool {
                 }
             }
         }
-        for disk in &self.disks {
+        for disk in self.disks() {
             if let Ok(meta) = disk.stat_object(bucket, key).await {
                 return Some((meta.erasure.data(), meta.erasure.parity()));
             }
@@ -247,6 +355,13 @@ impl VolumePool {
         }
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
+        }
+        // invalidate read cache up front so a racing GET between the
+        // write and the completion of disk work does not serve stale
+        // bytes. A second invalidate after encode_and_write would
+        // close a tiny window; doing it both sides is cheap.
+        if let Some(ref cache) = self.read_cache {
+            cache.invalidate(bucket, key);
         }
         drop(validate_span);
 
@@ -346,9 +461,38 @@ impl VolumePool {
                             created_at,
                             user_metadata: opts.user_metadata.clone(),
                             tags: opts.tags.clone(),
-                            cached_at: std::time::Instant::now(),
+                            cached_at_unix_nanos: super::write_cache::unix_nanos_now(),
+                            cached_at_local: std::time::Instant::now(),
+                            primary_node_id: self.local_node_id.clone(),
                         };
-                        if cache.insert(bucket, key, cache_entry) {
+                        // If peers exist, await a single-peer replica
+                        // BEFORE acking the client. This is what makes
+                        // the "skip the disk on writes" claim actually
+                        // safe: two RAM copies before ack. On peer
+                        // failure, skip the cache entirely and fall
+                        // through to the disk write path so data still
+                        // reaches stable storage.
+                        let peer_ok = if let Some(peer) = self.peer_cache_clients.first() {
+                            match peer.replicate(bucket, key, &cache_entry).await {
+                                Ok(()) => true,
+                                Err(e) => {
+                                    tracing::warn!(
+                                        peer = peer.endpoint(),
+                                        bucket,
+                                        key,
+                                        error = %e,
+                                        "peer cache replicate failed, falling back to disk"
+                                    );
+                                    false
+                                }
+                            }
+                        } else {
+                            // no peers configured: single-node mode,
+                            // safe to cache locally (no durability
+                            // claim against a node crash).
+                            true
+                        };
+                        if peer_ok && cache.insert(bucket, key, cache_entry) {
                             return Ok(super::metadata::ObjectInfo {
                                 bucket: bucket.to_string(),
                                 key: key.to_string(),
@@ -362,7 +506,7 @@ impl VolumePool {
                                 is_delete_marker: false,
                             });
                         }
-                        // cache full: fall through to disk write
+                        // peer unreachable or cache full: fall through to disk write
                     }
 
                     // disk write fallback (cache was full)
@@ -403,7 +547,7 @@ impl VolumePool {
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
         let planner = self.placement_planner()?;
         encode_and_write(
-            &self.disks,
+            self.disks(),
             &planner,
             data_n,
             parity_n,
@@ -434,8 +578,8 @@ impl Store for VolumePool {
         }
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
         let planner = self.placement_planner()?;
-        encode_and_write_bytes(
-            &self.disks,
+        let result = encode_and_write_bytes(
+            self.disks(),
             &planner,
             data_n,
             parity_n,
@@ -445,7 +589,12 @@ impl Store for VolumePool {
             opts,
             self.mrf.as_ref(),
             None,
-        ).await
+        ).await;
+        // invalidate read cache so future GETs see the new bytes
+        if let Some(ref cache) = self.read_cache {
+            cache.invalidate(bucket, key);
+        }
+        result
     }
 
     async fn get_object(&self, bucket: &str, key: &str) -> Result<(Vec<u8>, ObjectInfo), StorageError> {
@@ -480,11 +629,18 @@ impl Store for VolumePool {
             }
         }
 
+        // check LRU read cache (post-decode bytes)
+        if let Some(ref cache) = self.read_cache {
+            if let Some(entry) = cache.get(bucket, key) {
+                return Ok((entry.data.to_vec(), entry.info));
+            }
+        }
+
         // check if object is multipart by reading meta from any disk
-        for disk in &self.disks {
+        for disk in self.disks() {
             if let Ok(meta) = disk.stat_object(bucket, key).await {
                 if meta.is_multipart() {
-                    let data = read_and_decode_multipart(&self.disks, bucket, key, &meta).await?;
+                    let data = read_and_decode_multipart(self.disks(), bucket, key, &meta).await?;
                     return Ok((data, Self::meta_to_info(bucket, key, &meta)));
                 }
                 break;
@@ -496,8 +652,25 @@ impl Store for VolumePool {
             Some(ec) => ec,
             None => self.bucket_ec(bucket).await,
         };
-        let (data, meta) = read_and_decode(&self.disks, data_n, parity_n, bucket, key).await?;
-        Ok((data, Self::meta_to_info(bucket, key, &meta)))
+        let (data, meta) = read_and_decode(self.disks(), data_n, parity_n, bucket, key).await?;
+        let info = Self::meta_to_info(bucket, key, &meta);
+
+        // Populate the LRU read cache for future GETs of this small
+        // object. The size ceiling is enforced inside `put`.
+        if let Some(ref cache) = self.read_cache {
+            if meta.version_id.is_empty() && !meta.is_delete_marker {
+                cache.put(
+                    bucket,
+                    key,
+                    super::read_cache::CacheEntry {
+                        data: bytes::Bytes::from(data.clone()),
+                        info: info.clone(),
+                    },
+                );
+            }
+        }
+
+        Ok((data, info))
     }
 
     async fn get_object_stream(
@@ -548,11 +721,23 @@ impl Store for VolumePool {
             }
         }
 
+        // check LRU read cache (post-decode bytes, zero-copy Bytes clone)
+        if let Some(ref cache) = self.read_cache {
+            if let Some(entry) = cache.get(bucket, key) {
+                let info = entry.info;
+                let data = entry.data;
+                let stream = futures::stream::once(async move {
+                    Ok::<bytes::Bytes, StorageError>(data)
+                });
+                return Ok((info, Box::pin(stream)));
+            }
+        }
+
         // multipart objects fall back to buffered read (streaming multipart is future work)
-        for disk in &self.disks {
+        for disk in self.disks() {
             if let Ok(meta) = disk.stat_object(bucket, key).await {
                 if meta.is_multipart() {
-                    let data = read_and_decode_multipart(&self.disks, bucket, key, &meta).await?;
+                    let data = read_and_decode_multipart(self.disks(), bucket, key, &meta).await?;
                     let info = Self::meta_to_info(bucket, key, &meta);
                     let stream = futures::stream::once(async move {
                         Ok::<bytes::Bytes, StorageError>(bytes::Bytes::from(data))
@@ -570,7 +755,7 @@ impl Store for VolumePool {
 
         // 1+0 fast path: mmap shard file, serve slices directly (no RS decode)
         if data_n == 1 && parity_n == 0 {
-            for disk in &self.disks {
+            for disk in self.disks() {
                 if let Ok((mmap, meta)) = disk.mmap_shard(bucket, key).await {
                     let info = Self::meta_to_info(bucket, key, &meta);
                     // yield mmap as 4MB zero-copy slices so hyper can start writing
@@ -589,7 +774,7 @@ impl Store for VolumePool {
             return Err(StorageError::ObjectNotFound);
         }
 
-        let (meta, rx) = read_and_decode_stream(&self.disks, data_n, parity_n, bucket, key).await?;
+        let (meta, rx) = read_and_decode_stream(self.disks(), data_n, parity_n, bucket, key).await?;
         let info = Self::meta_to_info(bucket, key, &meta);
         Ok((info, Box::pin(rx)))
     }
@@ -617,7 +802,7 @@ impl Store for VolumePool {
                 });
             }
         }
-        for disk in &self.disks {
+        for disk in self.disks() {
             if let Ok(meta) = disk.stat_object(bucket, key).await {
                 return Ok(Self::meta_to_info(bucket, key, &meta));
             }
@@ -633,6 +818,9 @@ impl Store for VolumePool {
         if let Some(ref cache) = self.write_cache {
             was_cached = cache.remove(bucket, key).is_some();
         }
+        if let Some(ref cache) = self.read_cache {
+            cache.invalidate(bucket, key);
+        }
         // get stored EC params for quorum calculation
         let (data_n, parity_n) = match self.read_ec_from_meta(bucket, key).await {
             Some(ec) => ec,
@@ -641,7 +829,7 @@ impl Store for VolumePool {
 
         let mut successes = 0;
         let mut found = false;
-        for disk in &self.disks {
+        for disk in self.disks() {
             match disk.delete_object(bucket, key).await {
                 Ok(()) => {
                     successes += 1;
@@ -668,13 +856,13 @@ impl Store for VolumePool {
 
     async fn make_bucket(&self, bucket: &str) -> Result<(), StorageError> {
         pathing::validate_bucket_name(bucket)?;
-        for disk in &self.disks {
+        for disk in self.disks() {
             if disk.bucket_exists(bucket).await {
                 return Err(StorageError::BucketExists);
             }
         }
         let mut successes = 0;
-        for disk in &self.disks {
+        for disk in self.disks() {
             if disk.make_bucket(bucket).await.is_ok() {
                 successes += 1;
             }
@@ -698,15 +886,18 @@ impl Store for VolumePool {
                 return Err(StorageError::BucketNotEmpty);
             }
         }
-        for disk in &self.disks {
+        for disk in self.disks() {
             if let Ok(keys) = disk.list_objects(bucket, "").await {
                 if !keys.is_empty() {
                     return Err(StorageError::BucketNotEmpty);
                 }
             }
         }
-        for disk in &self.disks {
+        for disk in self.disks() {
             let _ = disk.delete_bucket(bucket).await;
+        }
+        if let Some(ref cache) = self.read_cache {
+            cache.invalidate_bucket(bucket);
         }
         Ok(())
     }
@@ -714,7 +905,7 @@ impl Store for VolumePool {
     async fn head_bucket(&self, bucket: &str) -> Result<bool, StorageError> {
         pathing::validate_bucket_name(bucket)?;
         let mut count = 0usize;
-        for disk in &self.disks {
+        for disk in self.disks() {
             if disk.bucket_exists(bucket).await {
                 count += 1;
             }
@@ -724,7 +915,7 @@ impl Store for VolumePool {
     }
 
     async fn list_buckets(&self) -> Result<Vec<BucketInfo>, StorageError> {
-        for disk in &self.disks {
+        for disk in self.disks() {
             match disk.list_buckets().await {
                 Ok(names) => {
                     let mut buckets = Vec::with_capacity(names.len());
@@ -748,7 +939,7 @@ impl Store for VolumePool {
         }
 
         let mut keys = Vec::new();
-        for disk in &self.disks {
+        for disk in self.disks() {
             match disk.list_objects(bucket, &opts.prefix).await {
                 Ok(k) => {
                     keys = k;
@@ -816,7 +1007,7 @@ impl Store for VolumePool {
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
-        for disk in &self.disks {
+        for disk in self.disks() {
             match disk.stat_object(bucket, key).await {
                 Ok(meta) => return Ok(meta.tags),
                 Err(_) => continue,
@@ -844,7 +1035,7 @@ impl Store for VolumePool {
 
         let mut successes = 0;
         let mut found = false;
-        for disk in &self.disks {
+        for disk in self.disks() {
             let mut versions = disk.read_meta_versions(bucket, key).await.unwrap_or_default();
             if let Some(latest) = versions.iter_mut().find(|v| !v.is_delete_marker) {
                 found = true;
@@ -886,8 +1077,8 @@ impl Store for VolumePool {
         }
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
         let planner = self.placement_planner()?;
-        encode_and_write_bytes(
-            &self.disks,
+        let result = encode_and_write_bytes(
+            self.disks(),
             &planner,
             data_n,
             parity_n,
@@ -897,7 +1088,13 @@ impl Store for VolumePool {
             opts,
             self.mrf.as_ref(),
             Some(version_id),
-        ).await
+        ).await;
+        // A new version changes the latest bytes callers would see via
+        // GetObject -- drop any cached copy of the unversioned view.
+        if let Some(ref cache) = self.read_cache {
+            cache.invalidate(bucket, key);
+        }
+        result
     }
 
     async fn get_versioning_config(
@@ -908,7 +1105,7 @@ impl Store for VolumePool {
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
-        for disk in &self.disks {
+        for disk in self.disks() {
             let settings = disk.read_bucket_settings(bucket).await;
             if let Some(status) = settings.versioning {
                 return Ok(Some(VersioningConfig { status }));
@@ -927,7 +1124,7 @@ impl Store for VolumePool {
             return Err(StorageError::BucketNotFound);
         }
         let mut successes = 0;
-        for disk in &self.disks {
+        for disk in self.disks() {
             let mut settings = disk.read_bucket_settings(bucket).await;
             settings.versioning = Some(config.status.clone());
             if disk.write_bucket_settings(bucket, &settings).await.is_ok() {
@@ -958,7 +1155,7 @@ impl Store for VolumePool {
             None => self.bucket_ec(bucket).await,
         };
         let (data, meta) =
-            read_and_decode_versioned(&self.disks, data_n, parity_n, bucket, key, version_id).await?;
+            read_and_decode_versioned(self.disks(), data_n, parity_n, bucket, key, version_id).await?;
         Ok((data, Self::meta_to_info(bucket, key, &meta)))
     }
 
@@ -974,8 +1171,12 @@ impl Store for VolumePool {
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
-        for disk in &self.disks {
+        for disk in self.disks() {
             let _ = disk.delete_version_data(bucket, key, version_id).await;
+        }
+        // deleting a version may change which version GetObject sees
+        if let Some(ref cache) = self.read_cache {
+            cache.invalidate(bucket, key);
         }
         Ok(())
     }
@@ -1019,7 +1220,7 @@ impl Store for VolumePool {
         };
 
         // add delete marker to meta versions on each disk
-        for disk in &self.disks {
+        for disk in self.disks() {
             let mut versions = disk.read_meta_versions(bucket, key).await.unwrap_or_default();
             // mark all existing as not latest
             for v in &mut versions {
@@ -1027,6 +1228,10 @@ impl Store for VolumePool {
             }
             versions.insert(0, marker.clone());
             let _ = disk.write_meta_versions(bucket, key, &versions).await;
+        }
+        // latest is now a delete marker -- drop any cached unversioned view
+        if let Some(ref cache) = self.read_cache {
+            cache.invalidate(bucket, key);
         }
 
         Ok(ObjectInfo {
@@ -1054,7 +1259,7 @@ impl Store for VolumePool {
             return Err(StorageError::BucketNotFound);
         }
         let mut keys = Vec::new();
-        for disk in &self.disks {
+        for disk in self.disks() {
             match disk.list_objects(bucket, prefix).await {
                 Ok(k) => {
                     keys = k;
@@ -1065,7 +1270,7 @@ impl Store for VolumePool {
         }
         let mut result = Vec::new();
         for key in &keys {
-            for disk in &self.disks {
+            for disk in self.disks() {
                 let versions = disk.read_meta_versions(bucket, key).await.unwrap_or_default();
                 if !versions.is_empty() {
                     result.push((key.clone(), versions));
@@ -1083,7 +1288,7 @@ impl Store for VolumePool {
         if !self.head_bucket(bucket).await? {
             return Err(StorageError::BucketNotFound);
         }
-        for disk in &self.disks {
+        for disk in self.disks() {
             let settings = disk.read_bucket_settings(bucket).await;
             if settings.ftt.is_some() {
                 return Ok(settings.ftt);
@@ -1099,7 +1304,7 @@ impl Store for VolumePool {
         }
         ftt_to_ec(ftt, self.disks.len())?;
         let mut successes = 0;
-        for disk in &self.disks {
+        for disk in self.disks() {
             let mut settings = disk.read_bucket_settings(bucket).await;
             settings.ftt = Some(ftt);
             if disk.write_bucket_settings(bucket, &settings).await.is_ok() {
@@ -1121,7 +1326,7 @@ impl Store for VolumePool {
             return Err(StorageError::BucketNotFound);
         }
         // read from first available disk
-        for disk in &self.disks {
+        for disk in self.disks() {
             let settings = disk.read_bucket_settings(bucket).await;
             if settings != BucketSettings::default() {
                 return Ok(settings);
@@ -1140,7 +1345,7 @@ impl Store for VolumePool {
             return Err(StorageError::BucketNotFound);
         }
         let mut successes = 0;
-        for disk in &self.disks {
+        for disk in self.disks() {
             if disk.write_bucket_settings(bucket, settings).await.is_ok() {
                 successes += 1;
             }
@@ -1261,6 +1466,63 @@ mod tests {
     }
 
     // -- per-object EC in a larger pool --
+
+    async fn make_wal_backends(paths: &[std::path::PathBuf]) -> Vec<Box<dyn Backend>> {
+        let mut out: Vec<Box<dyn Backend>> = Vec::new();
+        for p in paths {
+            let mut v = LocalVolume::new(p.as_path()).unwrap();
+            v.enable_wal().await.unwrap();
+            out.push(Box::new(v));
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn versioned_wal_round_trip() {
+        // Two WAL-enabled disks, versioning enabled, write two versions
+        // of the same key. Both should be readable out of the WAL
+        // before materialize, and still readable after drain.
+        let (_base, paths) = make_disk_dirs(2);
+        let set = VolumePool::new(make_wal_backends(&paths).await).unwrap();
+        set.make_bucket("test").await.unwrap();
+        set.set_versioning_config(
+            "test",
+            &VersioningConfig { status: "Enabled".to_string() },
+        ).await.unwrap();
+
+        let vid1 = "11111111-1111-1111-1111-111111111111";
+        let vid2 = "22222222-2222-2222-2222-222222222222";
+        let opts = PutOptions {
+            content_type: "text/plain".to_string(),
+            ..Default::default()
+        };
+        set.put_object_versioned("test", "k", b"payload-v1", opts.clone(), vid1)
+            .await.unwrap();
+        set.put_object_versioned("test", "k", b"payload-v2", opts, vid2)
+            .await.unwrap();
+
+        // Both versions readable.
+        let (d1, m1) = set.get_object_version("test", "k", vid1).await.unwrap();
+        assert_eq!(d1, b"payload-v1");
+        assert_eq!(m1.version_id, vid1);
+        let (d2, m2) = set.get_object_version("test", "k", vid2).await.unwrap();
+        assert_eq!(d2, b"payload-v2");
+        assert_eq!(m2.version_id, vid2);
+
+        // Drain the WAL on every disk so versions land on disk.
+        for disk in set.disks() {
+            disk.drain_pending_writes().await;
+        }
+
+        // After materialize, version files live under version_dir and
+        // meta.json holds both version entries.
+        for path in &paths {
+            let s1 = pathing::version_shard_path(path, "test", "k", vid1).unwrap();
+            let s2 = pathing::version_shard_path(path, "test", "k", vid2).unwrap();
+            assert!(s1.is_file(), "v1 shard missing at {:?}", s1);
+            assert!(s2.is_file(), "v2 shard missing at {:?}", s2);
+        }
+    }
 
     #[tokio::test]
     async fn per_object_ftt_override() {

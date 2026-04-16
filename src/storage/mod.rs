@@ -5,6 +5,8 @@ pub mod needle;
 pub mod segment;
 pub mod wal;
 pub mod write_cache;
+pub mod read_cache;
+pub mod peer_cache;
 pub mod remote_volume;
 pub mod storage_server;
 pub mod erasure_decode;

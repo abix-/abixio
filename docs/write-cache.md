@@ -10,9 +10,12 @@ optimization history (see [layer-optimization.md](layer-optimization.md)),
 benchmark results (see [benchmarks.md](benchmarks.md)).
 
 The cache acks from RAM with zero disk I/O on the write hot path.
-Background flush destages to disk asynchronously. The current
-implementation is local-only (single node DashMap). Peer replication
-sections below are design direction, not implemented behavior.
+In multi-node mode the cache replicates each insert to one peer before
+acking so a single node crash cannot lose the entry. A background
+flush task destages entries older than `--write-cache-min-age-ms` to
+disk on the primary; peers hold replicas in RAM but never flush them
+themselves (their `distribution` indexes point into the primary's
+VolumePool, not their own).
 
 ## Why
 
@@ -29,16 +32,6 @@ shipped this model in production for years; the safety analysis below is
 the same one they relied on.
 
 ## Architecture
-
-This section is the design intent. The current implementation is a
-smaller subset:
-
-- local RAM cache insert on the small-object path
-- read hits from RAM cache
-- explicit flush to lower storage tiers through `flush_write_cache`
-
-The current implementation does **not** yet wire the peer replication
-endpoint or a periodic background destage worker from `main.rs`.
 
 ```
 PUT 4KB (2+ node cluster):
@@ -94,23 +87,36 @@ older write-back caching products relied on in enterprise production.
 
 ## Peer replication protocol
 
-New internode endpoint on the existing storage server:
+Two internode endpoints on the existing storage server, sharing the
+JWT auth used by every other `_storage/v1/*` route:
 
 ```
-POST /_cache/v1/replicate
+POST /_storage/v1/cache-replicate?bucket=B&key=K
 Headers:
-  X-Cache-Bucket: mybucket
-  X-Cache-Key: photos/cat.jpg
-  X-Cache-Size: 4096
-  Authorization: Bearer <JWT>     (existing internode auth)
-Body: msgpack-serialized CacheEntry (shards + metadata)
+  Authorization: Bearer <JWT>
+  X-Abixio-Time: <unix-nanos>
+  Content-Type: application/msgpack
+Body: msgpack-serialized CacheEntry (shards + metadata + primary_node_id)
 
-Response: 200 OK                  (data in peer RAM)
+Response: 200 OK            (inserted into peer's WriteCache)
+         503                 (peer has no write cache configured)
+         507 (InsufficientStorage)  (peer cache full)
 ```
 
-Uses persistent HTTP connection between nodes (keep-alive). The peer
-inserts into its own DashMap and responds. No disk write on the peer.
-Pure RAM on both sides.
+```
+GET /_storage/v1/cache-sync?primary_node_id=<node-id>
+Headers:
+  Authorization: Bearer <JWT>
+  X-Abixio-Time: <unix-nanos>
+
+Response: 200 OK
+  Content-Type: application/msgpack
+  Body: Vec<(bucket, key, CacheEntry)>   (drained from peer)
+```
+
+Reqwest keep-alive pools connections per peer. Peer only inserts into
+its own `DashMap` -- no disk write on the peer side. Pure RAM on both
+sides of a normal replicate.
 
 ## When the RAM cache wins
 
@@ -140,13 +146,14 @@ struct WriteCache {
 }
 
 struct CacheEntry {
-    shards: Vec<Vec<u8>>,        // RS-encoded shard data
+    shards: Vec<bytes::Bytes>,   // RS-encoded shard data (ref-counted)
     metas: Vec<ObjectMeta>,      // per-shard metadata
-    distribution: Vec<usize>,    // shard -> disk mapping
+    distribution: Vec<usize>,    // shard -> disk mapping (primary's indices)
     original_size: u64,
     etag: String,
-    cached_at: Instant,
-    replicated: bool,            // peer confirmed?
+    cached_at_unix_nanos: u64,   // wire-portable timestamp
+    cached_at_local: Instant,    // node-local age comparator (not serialized)
+    primary_node_id: String,     // who owns and flushes this entry
 }
 ```
 
@@ -157,29 +164,41 @@ GET and PUT run concurrently without blocking.
 
 ## Background flush
 
-Each node runs an independent flush task:
+Each node runs an independent flush task, spawned from `main.rs`:
 
 ```
-loop every 100ms:
-  for each cached entry older than min_age (10ms):
-    write each shard to the appropriate disk (WAL or file tier)
-    if all shards written: remove from local cache
-    // peer flushes independently on its own schedule
+loop every --write-cache-flush-ms (default 100ms):
+  drain cache entries where:
+    - cached_at is older than --write-cache-min-age-ms (default 10ms)
+    - primary_node_id matches this node
+  for each drained entry:
+    for each shard in shards:
+      write_shard to the disk indexed by distribution[i]
 ```
 
-After flush: object is on disk. Cache entry removed. Peer cache entry
-cleared independently when the peer flushes.
+Only the primary flushes its own entries. Peers keep replicas in RAM
+for crash-fallback and drop them when the primary pulls them back
+during restart sync or when the entry is overwritten by a subsequent
+replicate. Peers never call `write_shard` on replicated entries.
 
 ## Recovery
 
 ### Node restart (after crash)
 
-1. Restarted node comes up with empty RAM cache
-2. Peer node detects the restart
-3. Peer sends unflushed entries that belong to the restarted node
-   via `/_cache/v1/sync` (batch transfer)
-4. Restarted node flushes received entries to disk
-5. Normal operation resumes
+1. Restarted node comes up with empty RAM cache.
+2. On startup, `VolumePool::recover_cache_from_peers` calls each peer's
+   `GET /_storage/v1/cache-sync?primary_node_id=<self>` endpoint.
+3. Each peer returns (and drops) every entry it holds where
+   `primary_node_id` matches the caller. Transport: msgpack body.
+4. Restarted node inserts the recovered entries into its local cache
+   with fresh `cached_at_local` timestamps.
+5. The normal background flush task destages them to local disk at the
+   usual cadence.
+
+If no peers hold replicas (single-node deployment, or all peers were
+also down), the recovery call is a no-op and any unflushed entries
+from before the crash are simply lost. The node must treat its disks
+as the only source of truth in that case.
 
 ### Cache full
 
@@ -193,42 +212,41 @@ No blocking. No backpressure to clients. Graceful degradation.
 ## Configuration
 
 ```
---write-cache-size 256MB    # 0 = disabled. auto-enables with 2+ nodes
---write-cache-flush-ms 100  # background flush interval
+--write-cache <MB>                   # RAM cache size. 0 disables. Default 256.
+--write-cache-flush-ms <ms>          # background flush interval. Default 100.
+--write-cache-min-age-ms <ms>        # minimum entry age before flush. Default 10.
+--write-cache-peer-replicate <bool>  # replicate each insert to one peer
+                                       # before acking. Default true. Ignored
+                                       # when no peers are configured.
 ```
 
-## Implementation plan
+## Implementation status
 
-| Phase | What | Delivers |
-|-------|------|----------|
-| 1 | `write_cache.rs`: DashMap, insert/get/remove, size tracking | core |
-| 2 | Wire PUT: encode -> cache insert -> ack (local only) | local RAM writes |
-| 3 | Wire GET: cache lookup before disk | RAM read hits |
-| 4 | Background flush task | data reaches disk |
-| 5 | Peer replication (HTTP POST to peer) | durability |
-| 6 | `/_cache/v1/replicate` endpoint | peer receives |
-| 7 | PUT: require peer ack before client ack | full peer-replicated mode |
-| 8 | Recovery: peer re-flush on node restart | crash safety |
-
-MVP = phases 1-4 (local RAM, single node, proves speed).
-Full peer-replicated mode = phases 5-8 (peer replication, 2+ nodes,
-crash safe).
+All phases 1-8 are implemented as of 2026-04-16. The cache ships full
+peer-replicated mode: local RAM insert, GET hits, background flush on
+primary, synchronous replicate-to-one-peer before client ack, and
+pull-based restart recovery from peers. Single-peer replication is the
+MVP; N-way replication is a future extension gated on concurrent-client
+benchmark data (kovarex #5).
 
 For how the cache fits into the overall write and read paths, see
 [write-path.md](write-path.md).
 
 ## Accuracy Report
 
-Audited against the codebase on 2026-04-11.
+Audited against the codebase on 2026-04-16.
 
 | Claim | Status | Evidence |
 |---|---|---|
 | `VolumePool` can enable a RAM write cache and insert small buffered objects into it before disk writes | Verified | `src/storage/volume_pool.rs`, `src/storage/write_cache.rs`, `src/main.rs` |
 | Cache hits are visible to the read path before disk persistence | Verified | `src/storage/volume_pool.rs` read paths consult `write_cache()` before disk backends |
-| The current cache implementation is local-only | Verified | `src/storage/write_cache.rs`, `src/main.rs` |
-| `flush_write_cache()` exists and writes cached shards out through backend `write_shard` calls | Verified | `src/storage/volume_pool.rs`, `src/admin/handlers.rs` |
-| A periodic background flush task is wired in the current runtime | Not implemented in current wiring | No cache-destage task is spawned in `src/main.rs`; flush is explicit via `flush_write_cache()` |
-| Peer replication protocol and `/_cache/v1/*` endpoints are implemented | Not implemented in current code | No cache replication server routes exist in `src/storage/storage_server.rs` |
-| The timing tables in this doc are current product-level measurements | Needs nuance | Some timings are useful design references, but much of this doc mixes measured internals with forward-looking design assumptions |
+| Periodic background flush task is wired | Verified | `src/main.rs` spawns the flush task when `--write-cache > 0` and `--write-cache-flush-ms > 0` |
+| Cache entries carry a `primary_node_id` and only the primary flushes them | Verified | `src/storage/write_cache.rs::drain_primary_older_than`, `src/storage/volume_pool.rs::flush_older_than` |
+| Peer replication protocol and `/_storage/v1/cache-*` endpoints are implemented | Verified | `src/storage/storage_server.rs::handle_cache_replicate`, `handle_cache_sync`; `src/storage/peer_cache.rs` |
+| PUT awaits a single-peer replica before acking the client | Verified | `src/storage/volume_pool.rs` small-object path calls `peer.replicate` before `cache.insert` |
+| On startup each node pulls entries it is primary for from peers | Verified | `src/storage/volume_pool.rs::recover_cache_from_peers`, spawned from `src/main.rs` |
+| Single-peer replication is the only mode shipped | Verified | First client in `peer_cache_clients` is used; N-way is explicitly a follow-up |
+| Versioned / multipart objects go through the cache | No | Only the small-object buffered path at `volume_pool.rs:put_object_stream` inserts into cache; streaming large objects and versioned writes skip it |
+| Cache metrics and histograms exist | No | Observability is tracked as kovarex #8 |
 
-Verdict: the in-memory cache data structure and manual flush path are real. The peer-replicated write-back design remains partly aspirational and should be read as design direction unless this report says otherwise.
+Verdict: the cache implements the full peer-replicated write-back design end-to-end for the small-object buffered PUT path. Large/streaming/versioned objects still bypass it by construction.

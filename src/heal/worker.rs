@@ -505,6 +505,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn heal_sees_wal_pending_shard() {
+        // Enable WAL on every disk in the pool + in the heal-facing
+        // Vec. PUT a small object so its shards sit in WAL-pending
+        // (never materialized). Delete the materialized dir on disk 0
+        // (there is none since WAL held it), then confirm heal still
+        // reads it from WAL and reports Healthy.
+        use crate::storage::local_volume::LocalVolume;
+
+        let (_base, paths) = make_disk_dirs(4);
+        let mut backends: Vec<Box<dyn Backend>> = Vec::new();
+        for p in &paths {
+            let mut v = LocalVolume::new(p.as_path()).unwrap();
+            v.enable_wal().await.unwrap();
+            backends.push(Box::new(v));
+        }
+        let set = VolumePool::new(backends).unwrap();
+        set.make_bucket("test").await.unwrap();
+        let opts = crate::storage::metadata::PutOptions {
+            content_type: "text/plain".to_string(),
+            ..Default::default()
+        };
+        set.put_object("test", "small", b"wal-pending", opts).await.unwrap();
+
+        // Share the same WAL-enabled backends with heal (the reason
+        // this used to be 3/10: heal opened fresh LocalVolumes without
+        // WAL and saw nothing).
+        let heal_disks = set.heal_backends();
+        let result = heal_object(&heal_disks, "test", "small").await.unwrap();
+        assert!(
+            matches!(result, HealResult::Healthy),
+            "expected Healthy, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
     async fn heal_single_disk_no_parity() {
         let (_base, paths) = make_disk_dirs(1);
         let set = make_set(&paths);

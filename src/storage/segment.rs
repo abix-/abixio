@@ -116,7 +116,12 @@ impl ActiveSegment {
         // compute field offsets within the segment
         let bucket_len = needle.bucket.len();
         let key_len = needle.key.len();
-        let meta_offset = needle_offset + HEADER_SIZE as u32 + bucket_len as u32 + key_len as u32;
+        let version_id_len = needle.version_id.len();
+        let meta_offset = needle_offset
+            + HEADER_SIZE as u32
+            + bucket_len as u32
+            + key_len as u32
+            + version_id_len as u32;
         let data_offset = meta_offset + needle.meta_bytes.len() as u32;
 
         let location = NeedleLocation {
@@ -221,7 +226,7 @@ impl SealedSegment {
         let mut offset = SUPERBLOCK_SIZE;
         while offset + HEADER_SIZE <= mmap.len() {
             match Needle::read_header(&mmap[offset..]) {
-                Ok((_, _, _, _, _, _, _, total)) => offset += total,
+                Ok((_, _, _, _, _, _, _, _, total)) => offset += total,
                 Err(_) => break, // end of valid data
             }
         }
@@ -249,20 +254,22 @@ impl SealedSegment {
     }
 
     /// Scan all needles in this segment, calling the visitor for each.
-    /// Visitor receives: (flags, bucket, key, meta_offset, meta_len, data_offset, data_len, needle_offset).
+    /// Visitor receives: (flags, bucket, key, version_id, meta_offset,
+    /// meta_len, data_offset, data_len, needle_offset).
     pub fn scan<F>(&self, mut visitor: F) -> Result<(), StorageError>
     where
-        F: FnMut(u8, &str, &str, usize, usize, usize, usize, usize),
+        F: FnMut(u8, &str, &str, &str, usize, usize, usize, usize, usize),
     {
         let mut offset = SUPERBLOCK_SIZE;
         while offset + HEADER_SIZE <= self.size {
             match Needle::read_header(&self.mmap[offset..]) {
-                Ok((flags, bucket, key, meta_off, meta_len, data_off, data_len, total)) => {
+                Ok((flags, bucket, key, version_id, meta_off, meta_len, data_off, data_len, total)) => {
                     // offsets are relative to needle start, convert to segment-absolute
                     visitor(
                         flags,
                         &bucket,
                         &key,
+                        &version_id,
                         offset + meta_off,
                         meta_len,
                         offset + data_off,
@@ -328,14 +335,14 @@ mod tests {
         let dir = tmp.path().join("log");
         let mut seg = ActiveSegment::create(&dir, 1, 1024 * 1024).unwrap();
 
-        let needle = Needle::new("bucket", "key1", &test_meta(), &[1, 2, 3]).unwrap();
+        let needle = Needle::new("bucket", "key1", None, &test_meta(), &[1, 2, 3]).unwrap();
         let loc = seg.append(&needle).unwrap().unwrap();
         assert_eq!(loc.segment_id, 1);
         assert_eq!(loc.offset, SUPERBLOCK_SIZE as u32);
         assert!(loc.data_len > 0);
 
         // append another
-        let needle2 = Needle::new("bucket", "key2", &test_meta(), &[4, 5, 6]).unwrap();
+        let needle2 = Needle::new("bucket", "key2", None, &test_meta(), &[4, 5, 6]).unwrap();
         let loc2 = seg.append(&needle2).unwrap().unwrap();
         assert!(loc2.offset > loc.offset);
     }
@@ -347,7 +354,7 @@ mod tests {
         // tiny segment: superblock + barely any room
         let mut seg = ActiveSegment::create(&dir, 1, SUPERBLOCK_SIZE + 50).unwrap();
 
-        let needle = Needle::new("bucket", "key", &test_meta(), &[1; 100]).unwrap();
+        let needle = Needle::new("bucket", "key", None, &test_meta(), &[1; 100]).unwrap();
         let result = seg.append(&needle).unwrap();
         assert!(result.is_none()); // doesn't fit
     }
@@ -359,7 +366,7 @@ mod tests {
         let mut seg = ActiveSegment::create(&dir, 1, 1024 * 1024).unwrap();
 
         let data = vec![0x42u8; 100];
-        let needle = Needle::new("b", "k", &test_meta(), &data).unwrap();
+        let needle = Needle::new("b", "k", None, &test_meta(), &data).unwrap();
         let loc = seg.append(&needle).unwrap().unwrap();
         seg.fsync().unwrap();
 
@@ -380,8 +387,8 @@ mod tests {
         let dir = tmp.path().join("log");
         let mut seg = ActiveSegment::create(&dir, 42, 1024 * 1024).unwrap();
 
-        let needle1 = Needle::new("b", "k1", &test_meta(), &[1, 2, 3]).unwrap();
-        let needle2 = Needle::new("b", "k2", &test_meta(), &[4, 5, 6]).unwrap();
+        let needle1 = Needle::new("b", "k1", None, &test_meta(), &[1, 2, 3]).unwrap();
+        let needle2 = Needle::new("b", "k2", None, &test_meta(), &[4, 5, 6]).unwrap();
         seg.append(&needle1).unwrap();
         seg.append(&needle2).unwrap();
         seg.fsync().unwrap();
@@ -392,7 +399,7 @@ mod tests {
 
         // scan should find both needles
         let mut count = 0;
-        sealed.scan(|flags, bucket, key, _, _, _, _, _| {
+        sealed.scan(|flags, bucket, key, _vid, _, _, _, _, _| {
             assert_eq!(flags, needle::FLAG_NORMAL);
             assert_eq!(bucket, "b");
             assert!(key == "k1" || key == "k2");
@@ -407,7 +414,7 @@ mod tests {
         let dir = tmp.path().join("log");
         let mut seg = ActiveSegment::create(&dir, 1, 1024 * 1024).unwrap();
 
-        let needle1 = Needle::new("b", "k1", &test_meta(), &[1]).unwrap();
+        let needle1 = Needle::new("b", "k1", None, &test_meta(), &[1]).unwrap();
         let tomb = Needle::tombstone("b", "k1");
         seg.append(&needle1).unwrap();
         seg.append(&tomb).unwrap();
@@ -415,7 +422,7 @@ mod tests {
 
         let sealed = seg.seal().unwrap();
         let mut entries = Vec::new();
-        sealed.scan(|flags, _, key, _, _, _, _, _| {
+        sealed.scan(|flags, _, key, _vid, _, _, _, _, _| {
             entries.push((flags, key.to_string()));
         }).unwrap();
         assert_eq!(entries.len(), 2);
@@ -429,7 +436,7 @@ mod tests {
         let dir = tmp.path().join("log");
         let mut seg = ActiveSegment::create(&dir, 1, 1024 * 1024).unwrap();
 
-        let needle1 = Needle::new("b", "k1", &test_meta(), &[1, 2, 3]).unwrap();
+        let needle1 = Needle::new("b", "k1", None, &test_meta(), &[1, 2, 3]).unwrap();
         seg.append(&needle1).unwrap();
         seg.fsync().unwrap();
 
@@ -445,7 +452,7 @@ mod tests {
 
         let sealed = SealedSegment::open(&path).unwrap();
         let mut count = 0;
-        sealed.scan(|_, _, _, _, _, _, _, _| { count += 1; }).unwrap();
+        sealed.scan(|_, _, _, _vid, _, _, _, _, _| { count += 1; }).unwrap();
         assert_eq!(count, 1); // only the first valid needle
     }
 }

@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use http_body_util::Full;
 use hyper::body::Bytes;
@@ -6,6 +7,7 @@ use hyper::{Request, Response, StatusCode};
 
 use super::local_volume::LocalVolume;
 use super::metadata::{BucketSettings, ObjectMeta};
+use super::write_cache::{CacheEntry, WriteCache};
 use super::{Backend, StorageError};
 use super::pathing;
 use crate::query::parse_query;
@@ -19,6 +21,10 @@ pub struct StorageServer {
     access_key: String,
     secret_key: String,
     no_auth: bool,
+    /// Shared RAM write cache (None = disabled). Used by the
+    /// `/cache-replicate` and `/cache-sync` endpoints so peers can
+    /// insert replicas and pull back entries they own.
+    write_cache: Option<Arc<WriteCache>>,
 }
 
 impl StorageServer {
@@ -28,7 +34,12 @@ impl StorageServer {
         secret_key: String,
         no_auth: bool,
     ) -> Self {
-        Self { volumes, access_key, secret_key, no_auth }
+        Self { volumes, access_key, secret_key, no_auth, write_cache: None }
+    }
+
+    pub fn with_write_cache(mut self, cache: Arc<WriteCache>) -> Self {
+        self.write_cache = Some(cache);
+        self
     }
 
     fn authenticate(&self, req: &Request<hyper::body::Incoming>) -> Result<(), String> {
@@ -82,6 +93,8 @@ impl StorageServer {
             "/delete-version-data" => self.handle_delete_version_data(&req).await,
             "/read-bucket-settings" => self.handle_read_bucket_settings(&req).await,
             "/write-bucket-settings" => self.handle_write_bucket_settings(req).await,
+            "/cache-replicate" => self.handle_cache_replicate(req).await,
+            "/cache-sync" => self.handle_cache_sync(&req).await,
             _ => error_response(StatusCode::NOT_FOUND, "unknown storage endpoint"),
         }
     }
@@ -388,6 +401,50 @@ impl StorageServer {
         let bucket = Self::query_param(req, "bucket").unwrap_or_default();
         if let Err(resp) = Self::validate_bucket(&bucket) { return resp; }
         json_response(&vol.read_bucket_settings(&bucket).await)
+    }
+
+    async fn handle_cache_replicate(&self, req: Request<hyper::body::Incoming>) -> Response<BoxBody> {
+        let Some(ref cache) = self.write_cache else {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "write cache disabled on this node");
+        };
+        let bucket = Self::query_param(&req, "bucket").unwrap_or_default();
+        let key = Self::query_param(&req, "key").unwrap_or_default();
+        if let Err(resp) = Self::validate_bucket_key(&bucket, &key) { return resp; }
+        let body = match read_body(req).await {
+            Ok(b) => b,
+            Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
+        };
+        let mut entry: CacheEntry = match rmp_serde::from_slice(&body) {
+            Ok(e) => e,
+            Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("decode cache entry: {}", e)),
+        };
+        // peer entries arrive without a local Instant; give them a fresh
+        // one so they age correctly on this node (primary still owns them).
+        entry.cached_at_local = std::time::Instant::now();
+        if !cache.insert(&bucket, &key, entry) {
+            return error_response(StatusCode::INSUFFICIENT_STORAGE, "peer cache full");
+        }
+        ok_empty()
+    }
+
+    async fn handle_cache_sync(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
+        let Some(ref cache) = self.write_cache else {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "write cache disabled on this node");
+        };
+        let primary_node_id = Self::query_param(req, "primary_node_id").unwrap_or_default();
+        if primary_node_id.is_empty() {
+            return error_response(StatusCode::BAD_REQUEST, "missing primary_node_id");
+        }
+        let entries = cache.drain_by_primary(&primary_node_id);
+        match rmp_serde::to_vec(&entries) {
+            Ok(bytes) => build_response(
+                Response::builder()
+                    .status(StatusCode::OK)
+                    .header("Content-Type", "application/msgpack"),
+                Bytes::from(bytes),
+            ),
+            Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("encode sync: {}", e)),
+        }
     }
 
     async fn handle_write_bucket_settings(&self, req: Request<hyper::body::Incoming>) -> Response<BoxBody> {

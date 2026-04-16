@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use super::metadata::{ObjectMeta, ObjectMetaFile};
+use super::metadata::{ObjectMeta, ObjectMetaFile, read_meta_file};
 use super::needle::{self, Needle, NeedleLocation};
 use super::pathing;
 use super::segment::{ActiveSegment, SealedSegment};
@@ -39,24 +39,37 @@ pub struct WalEntry {
 /// Contains only identity and offsets -- no data copies, no heap
 /// allocations (Arc<str> is ref-counted from the WAL pending map).
 /// The worker reads data from the segment mmap.
+///
+/// `version_id` empty means unversioned; non-empty routes through the
+/// versioned materialize path (shard under `version_dir`, meta.json
+/// read-modify-write to append the new version).
 pub struct MaterializeRequest {
     pub bucket: Arc<str>,
     pub key: Arc<str>,
+    pub version_id: Arc<str>,
     pub entry: WalEntry,
 }
+
+/// Composite key: (bucket, key, version_id). Empty version_id means
+/// unversioned.
+type PendingKey = (Arc<str>, Arc<str>, Arc<str>);
 
 /// The write-ahead log for one disk volume.
 pub struct Wal {
     log_dir: PathBuf,
     active: ActiveSegment,
     sealed: Vec<SealedSegment>,
-    /// Un-materialized entries. Keyed by (bucket, key).
-    pending: HashMap<(Arc<str>, Arc<str>), WalEntry>,
+    /// Un-materialized entries. Keyed by (bucket, key, version_id).
+    pending: HashMap<PendingKey, WalEntry>,
     /// Per-segment count of un-materialized entries. When a segment
     /// reaches zero, it can be deleted.
     segment_pending_counts: HashMap<u32, u32>,
     next_segment_id: u32,
     segment_capacity: usize,
+}
+
+fn pending_key(bucket: &str, key: &str, version_id: &str) -> PendingKey {
+    (Arc::from(bucket), Arc::from(key), Arc::from(version_id))
 }
 
 impl Wal {
@@ -123,25 +136,30 @@ impl Wal {
 
     /// Scan a sealed segment and add entries that haven't been materialized
     /// to the pending map. An entry is materialized if its shard.dat exists
-    /// at the final destination.
+    /// at the final destination (object-level for unversioned, version-level
+    /// for versioned entries).
     fn recover_segment(&mut self, seg: &SealedSegment, root: &Path) {
         let seg_id = seg.id();
-        seg.scan(|flags, bucket, key, meta_offset, meta_len, data_offset, data_len, _needle_offset| {
+        seg.scan(|flags, bucket, key, version_id, meta_offset, meta_len, data_offset, data_len, _needle_offset| {
             if flags == needle::FLAG_DELETE {
-                // tombstones: remove from pending if present
-                let idx_key = (Arc::<str>::from(bucket), Arc::<str>::from(key));
+                let idx_key = pending_key(bucket, key, version_id);
                 if self.pending.remove(&idx_key).is_some() {
-                    // decrement the segment that held the removed entry
-                    // (we don't track which segment it was, so skip decrement
-                    // -- this is conservative, segment might linger until restart)
+                    // segment pending count is conservatively not decremented
+                    // (we don't track which segment the removed entry lived in).
                 }
                 return;
             }
 
             // check if already materialized
-            let dest_exists = pathing::object_shard_path(root, bucket, key)
-                .map(|p| p.is_file())
-                .unwrap_or(false);
+            let dest_exists = if version_id.is_empty() {
+                pathing::object_shard_path(root, bucket, key)
+                    .map(|p| p.is_file())
+                    .unwrap_or(false)
+            } else {
+                pathing::version_shard_path(root, bucket, key, version_id)
+                    .map(|p| p.is_file())
+                    .unwrap_or(false)
+            };
 
             if dest_exists {
                 // already on disk, skip
@@ -154,7 +172,7 @@ impl Wal {
                 .map(|m| m.created_at as u32)
                 .unwrap_or(0);
 
-            let idx_key = (Arc::<str>::from(bucket), Arc::<str>::from(key));
+            let idx_key = pending_key(bucket, key, version_id);
             self.pending.insert(idx_key, WalEntry {
                 segment_id: seg_id,
                 data_offset: data_offset as u32,
@@ -173,7 +191,7 @@ impl Wal {
         // try appending to active segment
         if let Some(loc) = self.active.append(needle)? {
             let entry = loc_to_entry(self.active.id(), &loc);
-            let idx_key = (Arc::from(needle.bucket.as_str()), Arc::from(needle.key.as_str()));
+            let idx_key = pending_key(&needle.bucket, &needle.key, &needle.version_id);
             self.pending.insert(idx_key, entry);
             *self.segment_pending_counts.entry(self.active.id()).or_insert(0) += 1;
             return Ok(entry);
@@ -184,7 +202,7 @@ impl Wal {
 
         if let Some(loc) = self.active.append(needle)? {
             let entry = loc_to_entry(self.active.id(), &loc);
-            let idx_key = (Arc::from(needle.bucket.as_str()), Arc::from(needle.key.as_str()));
+            let idx_key = pending_key(&needle.bucket, &needle.key, &needle.version_id);
             self.pending.insert(idx_key, entry);
             *self.segment_pending_counts.entry(self.active.id()).or_insert(0) += 1;
             return Ok(entry);
@@ -208,16 +226,35 @@ impl Wal {
         Ok(())
     }
 
-    /// Look up an un-materialized entry by bucket + key.
+    /// Look up an un-materialized entry by bucket + key (unversioned).
     pub fn get(&self, bucket: &str, key: &str) -> Option<&WalEntry> {
-        let idx_key = (Arc::<str>::from(bucket), Arc::<str>::from(key));
+        self.get_versioned(bucket, key, "")
+    }
+
+    /// Look up an un-materialized entry by bucket + key + version_id.
+    pub fn get_versioned(&self, bucket: &str, key: &str, version_id: &str) -> Option<&WalEntry> {
+        let idx_key = pending_key(bucket, key, version_id);
         self.pending.get(&idx_key)
     }
 
-    /// Check if a key exists in the WAL pending map.
+    /// Check if an unversioned key exists in the WAL pending map.
     pub fn contains(&self, bucket: &str, key: &str) -> bool {
-        let idx_key = (Arc::<str>::from(bucket), Arc::<str>::from(key));
+        self.contains_versioned(bucket, key, "")
+    }
+
+    /// Check if a versioned key exists in the WAL pending map.
+    pub fn contains_versioned(&self, bucket: &str, key: &str, version_id: &str) -> bool {
+        let idx_key = pending_key(bucket, key, version_id);
         self.pending.contains_key(&idx_key)
+    }
+
+    /// Return all version_ids held in the WAL for (bucket, key).
+    pub fn versions_for(&self, bucket: &str, key: &str) -> Vec<String> {
+        self.pending
+            .keys()
+            .filter(|(b, k, _)| b.as_ref() == bucket && k.as_ref() == key)
+            .map(|(_, _, v)| v.to_string())
+            .collect()
     }
 
     /// Read shard data for a pending entry. Checks active segment first
@@ -254,11 +291,16 @@ impl Wal {
         None
     }
 
-    /// Mark an entry as materialized (called by the worker after writing
-    /// final files). Removes from pending map. If the segment is fully
-    /// drained, deletes the segment file.
+    /// Mark an unversioned entry as materialized.
     pub fn mark_materialized(&mut self, bucket: &str, key: &str) {
-        let idx_key = (Arc::<str>::from(bucket), Arc::<str>::from(key));
+        self.mark_materialized_versioned(bucket, key, "");
+    }
+
+    /// Mark a versioned entry as materialized (called by the worker
+    /// after writing final files). Removes from pending map. If the
+    /// segment is fully drained, deletes the segment file.
+    pub fn mark_materialized_versioned(&mut self, bucket: &str, key: &str, version_id: &str) {
+        let idx_key = pending_key(bucket, key, version_id);
         if let Some(entry) = self.pending.remove(&idx_key) {
             if let Some(count) = self.segment_pending_counts.get_mut(&entry.segment_id) {
                 *count = count.saturating_sub(1);
@@ -286,13 +328,18 @@ impl Wal {
         }
     }
 
-    /// List all keys in the pending map for a given bucket (for LIST operations).
+    /// List all unique keys in the pending map for a given bucket
+    /// (for LIST operations). Deduplicates across versions so a key
+    /// with multiple WAL-pending versions appears once.
     pub fn list_keys(&self, bucket: &str, prefix: &str) -> Vec<String> {
-        self.pending
-            .keys()
-            .filter(|(b, k)| b.as_ref() == bucket && k.starts_with(prefix))
-            .map(|(_, k)| k.to_string())
-            .collect()
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for (b, k, _vid) in self.pending.keys() {
+            if b.as_ref() == bucket && k.starts_with(prefix) && seen.insert(k.to_string()) {
+                out.push(k.to_string());
+            }
+        }
+        out
     }
 
     /// Number of un-materialized entries.
@@ -305,9 +352,10 @@ impl Wal {
     pub fn drain_recovery_requests(&self) -> Vec<MaterializeRequest> {
         self.pending
             .iter()
-            .map(|((bucket, key), entry)| MaterializeRequest {
+            .map(|((bucket, key, version_id), entry)| MaterializeRequest {
                 bucket: Arc::clone(bucket),
                 key: Arc::clone(key),
+                version_id: Arc::clone(version_id),
                 entry: *entry,
             })
             .collect()
@@ -379,46 +427,78 @@ impl MaterializeDispatch {
 /// WAL segment mmap, write shard.dat + meta.json to final location.
 /// All heavy work (mmap read, JSON serialize, disk write) happens
 /// here on the worker, not on the PUT hot path.
+///
+/// Branches on `req.version_id`:
+/// - empty: write `shard.dat` + a fresh single-version `meta.json` under `object_dir`.
+/// - non-empty: write `shard.dat` under `version_dir`, then read-modify-
+///   write `meta.json` to prepend this new version and mark prior
+///   versions `is_latest = false`.
 async fn process_materialize(
     root: &Path,
     wal: &std::sync::Mutex<Wal>,
     req: &MaterializeRequest,
 ) -> Result<(), StorageError> {
     // read data and meta from WAL segment (zero-copy mmap slice -> Vec copy)
-    let (data, meta_json) = {
+    let (data, mut version) = {
         let w = wal.lock().map_err(|e| {
             StorageError::Internal(format!("wal lock in worker: {}", e))
         })?;
         let data = w.read_data(&req.entry)
             .ok_or_else(|| StorageError::Internal("WAL segment data missing".into()))?;
         let meta = w.read_meta(&req.entry)?;
-        let mut version = meta;
-        version.is_latest = true;
+        (data, meta)
+    };
+    version.is_latest = true;
+    if !req.version_id.is_empty() {
+        version.version_id = req.version_id.to_string();
+    }
+
+    if req.version_id.is_empty() {
         let mf = ObjectMetaFile {
             bucket: req.bucket.to_string(),
             key: req.key.to_string(),
             versions: vec![version],
         };
-        // simd-json: 30% faster than serde_json (perf win #6)
         let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
             StorageError::Internal(format!("simd_json: {}", e))
         })?;
-        (data, meta_json)
-    };
 
-    // single path computation (perf win #8)
-    let dest_dir = pathing::object_dir(root, &req.bucket, &req.key)?;
-    let data_dest = dest_dir.join("shard.dat");
-    let meta_dest = dest_dir.join("meta.json");
+        let dest_dir = pathing::object_dir(root, &req.bucket, &req.key)?;
+        let data_dest = dest_dir.join("shard.dat");
+        let meta_dest = dest_dir.join("meta.json");
+        tokio::fs::create_dir_all(&dest_dir).await?;
+        tokio::try_join!(
+            tokio::fs::write(&data_dest, &data),
+            tokio::fs::write(&meta_dest, &meta_json),
+        )?;
+        return Ok(());
+    }
 
-    tokio::fs::create_dir_all(&dest_dir).await?;
+    // versioned: write shard under version_dir, then merge meta.json
+    let ver_dir = pathing::version_dir(root, &req.bucket, &req.key, &req.version_id)?;
+    tokio::fs::create_dir_all(&ver_dir).await?;
+    let shard_dest = pathing::version_shard_path(root, &req.bucket, &req.key, &req.version_id)?;
+    tokio::fs::write(&shard_dest, &data).await?;
 
-    // concurrent data+meta writes (perf win #7)
-    tokio::try_join!(
-        tokio::fs::write(&data_dest, &data),
-        tokio::fs::write(&meta_dest, &meta_json),
-    )?;
-
+    let meta_path = pathing::object_meta_path(root, &req.bucket, &req.key)?;
+    let mut mf = read_meta_file(&meta_path).await
+        .unwrap_or_else(|_| ObjectMetaFile {
+            bucket: req.bucket.to_string(),
+            key: req.key.to_string(),
+            versions: Vec::new(),
+        });
+    if mf.bucket.is_empty() { mf.bucket = req.bucket.to_string(); }
+    if mf.key.is_empty() { mf.key = req.key.to_string(); }
+    // remove any prior entry with the same version_id (overwrite path)
+    mf.versions.retain(|v| v.version_id != req.version_id.as_ref());
+    for v in &mut mf.versions {
+        v.is_latest = false;
+    }
+    mf.versions.insert(0, version);
+    let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
+        StorageError::Internal(format!("simd_json: {}", e))
+    })?;
+    tokio::fs::write(&meta_path, &meta_json).await?;
     Ok(())
 }
 
@@ -445,7 +525,7 @@ pub async fn run_materialize_worker(
                         continue;
                     }
                     if let Ok(mut w) = wal.lock() {
-                        w.mark_materialized(&req.bucket, &req.key);
+                        w.mark_materialized_versioned(&req.bucket, &req.key, &req.version_id);
                     }
                     count += 1;
                 }
@@ -464,7 +544,7 @@ pub async fn run_materialize_worker(
                     continue;
                 }
                 if let Ok(mut w) = wal.lock() {
-                    w.mark_materialized(&req.bucket, &req.key);
+                    w.mark_materialized_versioned(&req.bucket, &req.key, &req.version_id);
                 }
             }
         }
@@ -538,7 +618,7 @@ mod tests {
         let root = tmp.path();
         let mut wal = Wal::open(&wal_dir, 1024 * 1024, root).unwrap();
 
-        let needle = Needle::new("bucket", "key.txt", &test_meta(), b"hello world").unwrap();
+        let needle = Needle::new("bucket", "key.txt", None, &test_meta(), b"hello world").unwrap();
         let entry = wal.append(&needle).unwrap();
 
         assert!(wal.contains("bucket", "key.txt"));
@@ -558,10 +638,10 @@ mod tests {
         let wal_dir = tmp.path().join("wal");
         let mut wal = Wal::open(&wal_dir, 1024 * 1024, tmp.path()).unwrap();
 
-        let n1 = Needle::new("b", "k", &test_meta(), b"v1").unwrap();
+        let n1 = Needle::new("b", "k", None, &test_meta(), b"v1").unwrap();
         wal.append(&n1).unwrap();
 
-        let n2 = Needle::new("b", "k", &test_meta(), b"v2").unwrap();
+        let n2 = Needle::new("b", "k", None, &test_meta(), b"v2").unwrap();
         wal.append(&n2).unwrap();
 
         let entry = wal.get("b", "k").unwrap();
@@ -575,7 +655,7 @@ mod tests {
         let wal_dir = tmp.path().join("wal");
         let mut wal = Wal::open(&wal_dir, 1024 * 1024, tmp.path()).unwrap();
 
-        let needle = Needle::new("b", "k", &test_meta(), b"data").unwrap();
+        let needle = Needle::new("b", "k", None, &test_meta(), b"data").unwrap();
         wal.append(&needle).unwrap();
         assert!(wal.contains("b", "k"));
 
@@ -593,7 +673,7 @@ mod tests {
 
         let data = vec![0x42u8; 100];
         for i in 0..10 {
-            let needle = Needle::new("b", &format!("k{}", i), &test_meta(), &data).unwrap();
+            let needle = Needle::new("b", &format!("k{}", i), None, &test_meta(), &data).unwrap();
             wal.append(&needle).unwrap();
         }
 
@@ -618,7 +698,7 @@ mod tests {
         // write an object to the WAL
         {
             let mut wal = Wal::open(&wal_dir, 1024 * 1024, root).unwrap();
-            let needle = Needle::new("bucket", "key", &test_meta(), b"data").unwrap();
+            let needle = Needle::new("bucket", "key", None, &test_meta(), b"data").unwrap();
             wal.append(&needle).unwrap();
             // simulate materialization: write shard.dat to final location
             let dest_dir = pathing::object_dir(root, "bucket", "key").unwrap();
@@ -642,7 +722,7 @@ mod tests {
         {
             let mut wal = Wal::open(&wal_dir, 1024 * 1024, root).unwrap();
             for i in 0..3 {
-                let needle = Needle::new("b", &format!("k{}", i), &test_meta(), b"data").unwrap();
+                let needle = Needle::new("b", &format!("k{}", i), None, &test_meta(), b"data").unwrap();
                 wal.append(&needle).unwrap();
             }
             // make bucket dir so pathing works but don't write shard files
@@ -659,14 +739,124 @@ mod tests {
     }
 
     #[test]
+    fn append_and_read_versioned() {
+        let tmp = TempDir::new().unwrap();
+        let wal_dir = tmp.path().join("wal");
+        let mut wal = Wal::open(&wal_dir, 1024 * 1024, tmp.path()).unwrap();
+
+        let vid = "11111111-2222-3333-4444-555555555555";
+        let needle = Needle::new("b", "k", Some(vid), &test_meta(), b"v1").unwrap();
+        wal.append(&needle).unwrap();
+
+        assert!(wal.contains_versioned("b", "k", vid));
+        assert!(!wal.contains_versioned("b", "k", "other"));
+        assert!(!wal.contains("b", "k"));
+
+        let entry = wal.get_versioned("b", "k", vid).unwrap();
+        let data = wal.read_data(entry).unwrap();
+        assert_eq!(data, b"v1");
+    }
+
+    #[test]
+    fn two_versions_same_key_coexist() {
+        let tmp = TempDir::new().unwrap();
+        let wal_dir = tmp.path().join("wal");
+        let mut wal = Wal::open(&wal_dir, 1024 * 1024, tmp.path()).unwrap();
+
+        let v1 = "11111111-1111-1111-1111-111111111111";
+        let v2 = "22222222-2222-2222-2222-222222222222";
+        wal.append(&Needle::new("b", "k", Some(v1), &test_meta(), b"data-v1").unwrap()).unwrap();
+        wal.append(&Needle::new("b", "k", Some(v2), &test_meta(), b"data-v2").unwrap()).unwrap();
+
+        assert_eq!(wal.pending_count(), 2);
+        let mut versions = wal.versions_for("b", "k");
+        versions.sort();
+        assert_eq!(versions, vec![v1.to_string(), v2.to_string()]);
+
+        let d1 = wal.read_data(wal.get_versioned("b", "k", v1).unwrap()).unwrap();
+        let d2 = wal.read_data(wal.get_versioned("b", "k", v2).unwrap()).unwrap();
+        assert_eq!(d1, b"data-v1");
+        assert_eq!(d2, b"data-v2");
+    }
+
+    #[test]
+    fn recovery_re_adds_versioned_entry() {
+        let tmp = TempDir::new().unwrap();
+        let wal_dir = tmp.path().join("wal");
+        let root = tmp.path();
+        let vid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+        {
+            let mut wal = Wal::open(&wal_dir, 1024 * 1024, root).unwrap();
+            wal.append(&Needle::new("b", "k", Some(vid), &test_meta(), b"versioned-data").unwrap()).unwrap();
+        }
+
+        let wal = Wal::open(&wal_dir, 1024 * 1024, root).unwrap();
+        assert!(wal.contains_versioned("b", "k", vid));
+        let entry = wal.get_versioned("b", "k", vid).unwrap();
+        let data = wal.read_data(entry).unwrap();
+        assert_eq!(data, b"versioned-data");
+    }
+
+    #[tokio::test]
+    async fn materialize_worker_writes_versioned_layout() {
+        let tmp = TempDir::new().unwrap();
+        let wal_dir = tmp.path().join("wal");
+        let root = tmp.path();
+        let wal = Arc::new(std::sync::Mutex::new(
+            Wal::open(&wal_dir, 1024 * 1024, root).unwrap()
+        ));
+
+        let vid = "77777777-7777-7777-7777-777777777777";
+        let meta = test_meta();
+        let entry = {
+            let needle = Needle::new("b", "k", Some(vid), &meta, b"payload").unwrap();
+            wal.lock().unwrap().append(&needle).unwrap()
+        };
+
+        let (tx, rx) = tokio::sync::mpsc::channel(10);
+        let (_shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(run_materialize_worker(
+            root.to_path_buf(), Arc::clone(&wal), rx, shutdown_rx,
+        ));
+
+        std::fs::create_dir_all(root.join("b")).unwrap();
+
+        tx.send(MaterializeRequest {
+            bucket: Arc::from("b"),
+            key: Arc::from("k"),
+            version_id: Arc::from(vid),
+            entry,
+        }).await.unwrap();
+
+        drop(tx);
+        handle.await.unwrap();
+
+        let shard_path = pathing::version_shard_path(root, "b", "k", vid).unwrap();
+        let data = std::fs::read(&shard_path).unwrap();
+        assert_eq!(data, b"payload");
+
+        let meta_path = pathing::object_meta_path(root, "b", "k").unwrap();
+        let mf: ObjectMetaFile = {
+            let bytes = std::fs::read(&meta_path).unwrap();
+            serde_json::from_slice(&bytes).unwrap()
+        };
+        assert_eq!(mf.versions.len(), 1);
+        assert_eq!(mf.versions[0].version_id, vid);
+        assert!(mf.versions[0].is_latest);
+
+        assert!(!wal.lock().unwrap().contains_versioned("b", "k", vid));
+    }
+
+    #[test]
     fn list_keys_with_prefix() {
         let tmp = TempDir::new().unwrap();
         let wal_dir = tmp.path().join("wal");
         let mut wal = Wal::open(&wal_dir, 1024 * 1024, tmp.path()).unwrap();
 
-        let n1 = Needle::new("b", "photos/a.jpg", &test_meta(), b"a").unwrap();
-        let n2 = Needle::new("b", "photos/b.jpg", &test_meta(), b"b").unwrap();
-        let n3 = Needle::new("b", "docs/readme.md", &test_meta(), b"c").unwrap();
+        let n1 = Needle::new("b", "photos/a.jpg", None, &test_meta(), b"a").unwrap();
+        let n2 = Needle::new("b", "photos/b.jpg", None, &test_meta(), b"b").unwrap();
+        let n3 = Needle::new("b", "docs/readme.md", None, &test_meta(), b"c").unwrap();
         wal.append(&n1).unwrap();
         wal.append(&n2).unwrap();
         wal.append(&n3).unwrap();
@@ -688,7 +878,7 @@ mod tests {
         // append an entry
         let meta = test_meta();
         let entry = {
-            let needle = Needle::new("b", "k", &meta, b"hello").unwrap();
+            let needle = Needle::new("b", "k", None, &meta, b"hello").unwrap();
             wal.lock().unwrap().append(&needle).unwrap()
         };
 
@@ -708,6 +898,7 @@ mod tests {
         tx.send(MaterializeRequest {
             bucket: Arc::from("b"),
             key: Arc::from("k"),
+            version_id: Arc::from(""),
             entry,
         }).await.unwrap();
 

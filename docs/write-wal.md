@@ -162,6 +162,32 @@ write amplification of WAL (write to segment + write to final files)
 is only worth it when filesystem metadata overhead is a significant
 fraction of total write time. At large sizes, raw I/O dominates.
 
+## Versioned writes
+
+Versioned PUTs go through the WAL too. The needle header carries a
+`version_id_len` byte, and the segment payload layout is
+`[header][bucket][key][version_id][meta][data]`. The WAL pending map
+is keyed by `(bucket, key, version_id)`, so multiple versions of the
+same key coexist. Reads check the WAL pending map by version before
+falling back to `meta.json` on disk, and `read_meta_versions` merges
+WAL-pending versions (marked fresher) with the on-disk version list.
+
+Materialize for versioned entries writes `shard.dat` under
+`bucket/key/<version_id>/` and read-modify-writes the top-level
+`meta.json` to prepend the new version and flip older ones to
+`is_latest = false`. Pre-v0.1.0 segments that lack the
+`version_id_len` byte still parse (the stolen pad byte was always
+zero), so recovery is transparent.
+
+## Heal awareness
+
+Scanner and heal worker share `VolumePool`'s WAL-enabled backends via
+`VolumePool::heal_backends()`. They call `list_objects`,
+`stat_object`, and `read_shard` through the same `LocalVolume`
+instances that the data plane uses, so un-materialized entries are
+visible to integrity checks without opening a second WAL on the same
+log directory.
+
 ## Three-tier architecture
 
 The WAL is part of a three-tier storage architecture:

@@ -9,9 +9,10 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use dashmap::DashMap;
+use serde::{Deserialize, Serialize};
 
 use super::metadata::ObjectMeta;
 
@@ -20,6 +21,12 @@ type CacheKey = (Arc<str>, Arc<str>);
 
 /// A cached object ready to be flushed to disk.
 /// Shards stored as Bytes (ref-counted) for zero-copy GET responses.
+///
+/// `primary_node_id` identifies the node that owns this entry. Only the
+/// primary flushes to disk -- peers hold replicas in RAM for crash
+/// fallback but never flush, because their `distribution` indexes point
+/// into the primary's `VolumePool`, not their own.
+#[derive(Clone, Serialize, Deserialize)]
 pub struct CacheEntry {
     /// RS-encoded shard data (one per disk). Bytes for zero-copy cloning.
     pub shards: Vec<bytes::Bytes>,
@@ -34,8 +41,26 @@ pub struct CacheEntry {
     pub created_at: u64,
     pub user_metadata: HashMap<String, String>,
     pub tags: HashMap<String, String>,
-    /// When this entry was inserted into cache.
-    pub cached_at: Instant,
+    /// Unix-nanos timestamp when this entry was inserted. Wire-portable
+    /// because `Instant` is not serializable; age comparisons on the
+    /// primary still use `Instant` via `cached_at_local`.
+    pub cached_at_unix_nanos: u64,
+    /// Node-local Instant used for age comparisons. Skipped on the wire
+    /// (peers recompute on receive).
+    #[serde(skip, default = "Instant::now")]
+    pub cached_at_local: Instant,
+    /// Node id that owns and will flush this entry. Peers use this to
+    /// decide not to flush.
+    #[serde(default)]
+    pub primary_node_id: String,
+}
+
+/// Current unix-nanos helper used when stamping new cache entries.
+pub fn unix_nanos_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
 }
 
 impl CacheEntry {
@@ -43,7 +68,12 @@ impl CacheEntry {
     fn mem_size(&self) -> u64 {
         let shard_bytes: usize = self.shards.iter().map(|s| s.len()).sum();
         // shards + metadata overhead (~200 bytes per meta) + strings
-        (shard_bytes + self.metas.len() * 200 + self.etag.len() + self.content_type.len() + 128) as u64
+        (shard_bytes
+            + self.metas.len() * 200
+            + self.etag.len()
+            + self.content_type.len()
+            + self.primary_node_id.len()
+            + 128) as u64
     }
 }
 
@@ -120,14 +150,29 @@ impl WriteCache {
     }
 
     /// Drain entries older than the given duration. Returns (bucket, key, entry) tuples.
+    /// Only drains entries whose `primary_node_id` is empty (single-node mode)
+    /// or matches `local_node_id`. Replicas (non-matching primary) are kept
+    /// because their `distribution` indexes point into the primary's
+    /// VolumePool, not ours.
     pub fn drain_older_than(&self, age: Duration) -> Vec<(String, String, CacheEntry)> {
+        self.drain_primary_older_than("", age)
+    }
+
+    /// Like `drain_older_than` but filters by owner. Entries with an empty
+    /// primary_node_id are treated as primary-owned by the caller (legacy /
+    /// single-node mode).
+    pub fn drain_primary_older_than(
+        &self,
+        local_node_id: &str,
+        age: Duration,
+    ) -> Vec<(String, String, CacheEntry)> {
         let now = Instant::now();
         let mut drained = Vec::new();
 
-        // collect keys to remove (can't remove while iterating DashMap)
         let old_keys: Vec<CacheKey> = self.entries
             .iter()
-            .filter(|e| now.duration_since(e.cached_at) >= age)
+            .filter(|e| now.duration_since(e.cached_at_local) >= age)
+            .filter(|e| e.primary_node_id.is_empty() || e.primary_node_id == local_node_id)
             .map(|e| e.key().clone())
             .collect();
 
@@ -138,6 +183,25 @@ impl WriteCache {
             }
         }
 
+        drained
+    }
+
+    /// Drain all entries whose primary_node_id matches the given id,
+    /// regardless of age. Used by phase-8 restart recovery: peer sends
+    /// back entries where the caller is primary.
+    pub fn drain_by_primary(&self, primary_node_id: &str) -> Vec<(String, String, CacheEntry)> {
+        let mut drained = Vec::new();
+        let keys: Vec<CacheKey> = self.entries
+            .iter()
+            .filter(|e| e.primary_node_id == primary_node_id)
+            .map(|e| e.key().clone())
+            .collect();
+        for key in keys {
+            if let Some((k, entry)) = self.entries.remove(&key) {
+                self.size_bytes.fetch_sub(entry.mem_size(), Ordering::Relaxed);
+                drained.push((k.0.to_string(), k.1.to_string(), entry));
+            }
+        }
         drained
     }
 
@@ -196,7 +260,9 @@ mod tests {
             created_at: 1700000000,
             user_metadata: HashMap::new(),
             tags: HashMap::new(),
-            cached_at: Instant::now(),
+            cached_at_unix_nanos: unix_nanos_now(),
+            cached_at_local: Instant::now(),
+            primary_node_id: String::new(),
         }
     }
 
@@ -258,6 +324,55 @@ mod tests {
         assert_eq!(drained.len(), 2);
         assert_eq!(cache.entry_count(), 0);
         assert_eq!(cache.size_bytes(), 0);
+    }
+
+    #[test]
+    fn drain_respects_primary_node_id() {
+        let cache = WriteCache::new(1024 * 1024);
+        let mut a = test_entry();
+        a.primary_node_id = "node-a".to_string();
+        let mut b = test_entry();
+        b.primary_node_id = "node-b".to_string();
+        cache.insert("b", "owned", a);
+        cache.insert("b", "replica", b);
+
+        let drained = cache.drain_primary_older_than("node-a", Duration::from_nanos(0));
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].1, "owned");
+        // replica still in cache
+        assert!(cache.contains("b", "replica"));
+        assert!(!cache.contains("b", "owned"));
+    }
+
+    #[test]
+    fn drain_by_primary_pulls_replicas_only() {
+        let cache = WriteCache::new(1024 * 1024);
+        let mut a = test_entry();
+        a.primary_node_id = "node-a".to_string();
+        let mut b = test_entry();
+        b.primary_node_id = "node-b".to_string();
+        cache.insert("b", "k1", a);
+        cache.insert("b", "k2", b);
+
+        let pulled = cache.drain_by_primary("node-a");
+        assert_eq!(pulled.len(), 1);
+        assert_eq!(pulled[0].1, "k1");
+        assert!(!cache.contains("b", "k1"));
+        assert!(cache.contains("b", "k2"));
+    }
+
+    #[test]
+    fn cache_entry_serde_roundtrip() {
+        let mut entry = test_entry();
+        entry.primary_node_id = "node-x".to_string();
+        let bytes = rmp_serde::to_vec(&entry).expect("serialize");
+        let decoded: CacheEntry = rmp_serde::from_slice(&bytes).expect("deserialize");
+        assert_eq!(decoded.original_size, entry.original_size);
+        assert_eq!(decoded.etag, entry.etag);
+        assert_eq!(decoded.primary_node_id, "node-x");
+        assert_eq!(decoded.shards.len(), entry.shards.len());
+        assert_eq!(decoded.shards[0], entry.shards[0]);
+        assert_eq!(decoded.cached_at_unix_nanos, entry.cached_at_unix_nanos);
     }
 
     #[test]

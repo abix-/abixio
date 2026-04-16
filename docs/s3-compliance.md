@@ -26,12 +26,14 @@ Status: Done = implemented and tested, No = not implemented, N/A = out of scope.
 | GetBucketPolicy | `GET /{bucket}?policy` | Done | 8/10 | Returns JSON. 404 if none set. |
 | PutBucketPolicy | `PUT /{bucket}?policy` | Done | 8/10 | Validates JSON + Version. Max 20KiB. |
 | DeleteBucketPolicy | `DELETE /{bucket}?policy` | Done | 8/10 | Idempotent. |
+| Bucket policy enforcement | per-request via `AbixioAccess` | Done | 6/10 | Allow/Deny statements, `Principal: "*"` or `AWS` list, action + resource globs. Conditions, NotAction/NotResource/NotPrincipal, IAM roles, policy variables: 0/10. |
 | GetBucketEncryption | `GET /{bucket}?encryption` | No | 0/10 | |
 | PutBucketEncryption | `PUT /{bucket}?encryption` | No | 0/10 | |
 | DeleteBucketEncryption | `DELETE /{bucket}?encryption` | No | 0/10 | |
-| GetBucketLifecycle | `GET /{bucket}?lifecycle` | Done | 8/10 | Returns stored XML. 404 if none. |
-| PutBucketLifecycle | `PUT /{bucket}?lifecycle` | Done | 7/10 | Stores XML. Basic validation. No enforcement. |
+| GetBucketLifecycle | `GET /{bucket}?lifecycle` | Done | 8/10 | Returns stored config. 404 if none. |
+| PutBucketLifecycle | `PUT /{bucket}?lifecycle` | Done | 7/10 | Stores rules. Basic validation. |
 | DeleteBucketLifecycle | `DELETE /{bucket}?lifecycle` | Done | 8/10 | Idempotent. |
+| Lifecycle enforcement | background `LifecycleEngine` | Done | 6/10 | `Expiration.days`, `ExpiredObjectDeleteMarker`, `NoncurrentVersionExpiration` (with `newer_noncurrent_versions`), `AbortIncompleteMultipartUpload.days_after_initiation`, `Filter.prefix`. `Expiration.date`, `Transition`, `Filter.and`/`tag`/object-size, `DelMarkerExpiration`: 0/10. |
 | GetBucketCors | `GET /{bucket}?cors` | Stub | 3/10 | Returns 404 NoSuchCORSConfiguration (matches MinIO). 2.0 item. |
 | PutBucketCors | `PUT /{bucket}?cors` | Stub | 3/10 | Returns 501 NotImplemented (matches MinIO). 2.0 item. |
 | DeleteBucketCors | `DELETE /{bucket}?cors` | Stub | 3/10 | Returns 501 NotImplemented (matches MinIO). 2.0 item. |

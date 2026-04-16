@@ -7,6 +7,14 @@ use serde::{Deserialize, Serialize};
 const SYS_DIR: &str = ".abixio.sys";
 const VOLUME_FILE: &str = "volume.json";
 
+/// Version stamped into every freshly formatted `volume.json`.
+/// Bump when the on-disk layout changes in a way that needs migration.
+pub const CURRENT_VOLUME_FORMAT_VERSION: u32 = 1;
+
+/// Lowest version this binary can read without a migration pass.
+/// Bump when older formats are retired and migration code is removed.
+pub const MIN_SUPPORTED_VOLUME_FORMAT_VERSION: u32 = 1;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VolumeFormat {
     pub version: u32,
@@ -21,6 +29,24 @@ pub struct VolumeFormat {
     #[serde(alias = "erasure_set")]
     #[serde(alias = "pool")]
     pub cluster: Option<ClusterMembers>,
+}
+
+/// Validate that a loaded `VolumeFormat.version` is something this
+/// binary can handle. Returns a descriptive error if not.
+pub fn check_format_version(version: u32) -> Result<(), String> {
+    if version > CURRENT_VOLUME_FORMAT_VERSION {
+        return Err(format!(
+            "volume.json format version {} is newer than this binary supports ({}). Upgrade the binary.",
+            version, CURRENT_VOLUME_FORMAT_VERSION
+        ));
+    }
+    if version < MIN_SUPPORTED_VOLUME_FORMAT_VERSION {
+        return Err(format!(
+            "volume.json format version {} is older than the minimum supported ({}). No migration available in this build.",
+            version, MIN_SUPPORTED_VOLUME_FORMAT_VERSION
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -39,11 +65,23 @@ fn volume_path(disk_root: &Path) -> PathBuf {
     disk_root.join(SYS_DIR).join(VOLUME_FILE)
 }
 
-pub fn read_volume_format(disk_root: &Path) -> Option<VolumeFormat> {
+/// Read and validate a volume.json.
+/// - `Ok(None)`: file does not exist (disk unformatted).
+/// - `Ok(Some(fmt))`: file exists, parsed, version check passed.
+/// - `Err(msg)`: file exists but is corrupt or the format version is
+///   outside the range this binary supports.
+pub fn read_volume_format(disk_root: &Path) -> Result<Option<VolumeFormat>, String> {
     let path = volume_path(disk_root);
-    fs::read(&path)
-        .ok()
-        .and_then(|data| serde_json::from_slice(&data).ok())
+    let data = match fs::read(&path) {
+        Ok(d) => d,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("read {}: {}", path.display(), e)),
+    };
+    let fmt: VolumeFormat = serde_json::from_slice(&data)
+        .map_err(|e| format!("parse {}: {}", path.display(), e))?;
+    check_format_version(fmt.version)
+        .map_err(|e| format!("{}: {}", path.display(), e))?;
+    Ok(Some(fmt))
 }
 
 pub fn write_volume_format(disk_root: &Path, format: &VolumeFormat) -> std::io::Result<()> {
@@ -63,7 +101,7 @@ fn unix_now() -> u64 {
 
 pub fn generate_volume_format(node_id: &str, volume_index: u32) -> VolumeFormat {
     VolumeFormat {
-        version: 1,
+        version: CURRENT_VOLUME_FORMAT_VERSION,
         cluster_id: None,
         node_id: node_id.to_string(),
         volume_id: uuid::Uuid::new_v4().to_string(),
@@ -74,13 +112,14 @@ pub fn generate_volume_format(node_id: &str, volume_index: u32) -> VolumeFormat 
 }
 
 /// Read volume.json from all disk paths. Returns None if no disks have it.
-/// Returns Err if some disks have it and others don't (mixed state), or if
-/// node_id/cluster_id disagree across disks.
+/// Returns Err if some disks have it and others don't (mixed state), if
+/// node_id/cluster_id disagree across disks, or if any disk has a
+/// volume.json this binary cannot read (unknown format version, corrupt).
 pub fn load_volumes(disk_paths: &[PathBuf]) -> Result<Option<Vec<VolumeFormat>>, String> {
     let formats: Vec<Option<VolumeFormat>> = disk_paths
         .iter()
         .map(|p| read_volume_format(p))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     let present: Vec<&VolumeFormat> = formats.iter().filter_map(|f| f.as_ref()).collect();
 
     if present.is_empty() {
@@ -159,7 +198,7 @@ mod tests {
         let paths = vec![dir.path().to_path_buf()];
         let formats = format_volumes(&paths).unwrap();
         assert_eq!(formats.len(), 1);
-        assert_eq!(formats[0].version, 1);
+        assert_eq!(formats[0].version, CURRENT_VOLUME_FORMAT_VERSION);
         assert!(formats[0].cluster_id.is_none());
 
         let loaded = load_volumes(&paths).unwrap().unwrap();
@@ -188,6 +227,57 @@ mod tests {
         let loaded = load_volumes(&paths).unwrap().unwrap();
         assert_eq!(loaded[0].cluster_id.as_deref(), Some("deploy-1"));
         assert!(loaded[0].cluster.is_some());
+    }
+
+    #[test]
+    fn newer_version_rejected() {
+        let dir = TempDir::new().unwrap();
+        let paths = vec![dir.path().to_path_buf()];
+        let mut fmt = generate_volume_format("node-x", 0);
+        fmt.version = CURRENT_VOLUME_FORMAT_VERSION + 1;
+        write_volume_format(&paths[0], &fmt).unwrap();
+
+        let err = read_volume_format(&paths[0]).unwrap_err();
+        assert!(err.contains("newer than this binary supports"), "got: {}", err);
+
+        let err2 = load_volumes(&paths).unwrap_err();
+        assert!(err2.contains("newer than this binary supports"), "got: {}", err2);
+    }
+
+    #[test]
+    fn corrupt_volume_json_rejected() {
+        let dir = TempDir::new().unwrap();
+        let sys = dir.path().join(SYS_DIR);
+        fs::create_dir_all(&sys).unwrap();
+        fs::write(sys.join(VOLUME_FILE), b"{ not valid json").unwrap();
+
+        let err = read_volume_format(dir.path()).unwrap_err();
+        assert!(err.contains("parse"), "got: {}", err);
+    }
+
+    #[test]
+    fn missing_volume_json_is_ok_none() {
+        let dir = TempDir::new().unwrap();
+        assert!(read_volume_format(dir.path()).unwrap().is_none());
+    }
+
+    #[test]
+    fn current_version_accepted() {
+        assert!(check_format_version(CURRENT_VOLUME_FORMAT_VERSION).is_ok());
+    }
+
+    #[test]
+    fn version_zero_rejected() {
+        let err = check_format_version(0).unwrap_err();
+        assert!(err.contains("older than the minimum"));
+    }
+
+    #[test]
+    fn fresh_format_stamps_current_version() {
+        let dir = TempDir::new().unwrap();
+        let paths = vec![dir.path().to_path_buf()];
+        let formats = format_volumes(&paths).unwrap();
+        assert_eq!(formats[0].version, CURRENT_VOLUME_FORMAT_VERSION);
     }
 
     #[test]

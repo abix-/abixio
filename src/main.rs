@@ -15,6 +15,7 @@ use abixio::heal::worker::{mrf_drain_worker, scanner_loop};
 use abixio::s3_route::AbixioDispatch;
 use abixio::storage::Backend;
 use abixio::storage::local_volume::LocalVolume;
+use abixio::storage::peer_cache::PeerCacheClient;
 use abixio::storage::remote_volume::RemoteVolume;
 use abixio::storage::storage_server::StorageServer;
 use abixio::storage::volume_pool::VolumePool;
@@ -143,9 +144,43 @@ async fn main() {
         }
     };
 
+    set.set_local_node_id(identity.node_id.clone());
     if cfg.write_cache > 0 {
         set.enable_write_cache(cfg.write_cache * 1024 * 1024);
     }
+    if cfg.read_cache > 0 {
+        set.enable_read_cache(cfg.read_cache * 1024 * 1024, cfg.read_cache_max_object);
+    }
+
+    // build peer cache clients (one per peer that isn't self).
+    // Empty when running standalone or when --write-cache-peer-replicate
+    // is false. `identity.nodes` is the normalized peer list, with
+    // `identity.advertise` being this node's own address.
+    let mut peer_clients: Vec<Arc<PeerCacheClient>> = Vec::new();
+    if cfg.write_cache > 0 && cfg.write_cache_peer_replicate {
+        let self_advertise = identity.advertise.trim_end_matches('/').to_string();
+        for peer in &identity.nodes {
+            let endpoint = peer.trim_end_matches('/').to_string();
+            if endpoint.is_empty() || endpoint == self_advertise {
+                continue;
+            }
+            match PeerCacheClient::new(
+                endpoint.clone(),
+                access_key.clone(),
+                secret_key.clone(),
+                cfg.no_auth,
+            ) {
+                Ok(c) => peer_clients.push(Arc::new(c)),
+                Err(e) => {
+                    tracing::warn!(peer = %endpoint, error = %e, "skip peer cache client");
+                }
+            }
+        }
+    }
+    if !peer_clients.is_empty() {
+        tracing::info!(peers = peer_clients.len(), "write cache peer replication enabled");
+    }
+    set.set_peer_cache_clients(peer_clients);
 
     // set up healing infrastructure
     let mrf = Arc::new(MrfQueue::new(1000));
@@ -156,14 +191,38 @@ async fn main() {
     set.set_mrf(Arc::clone(&mrf));
     let set = Arc::new(set);
 
-    // build disk list for heal workers (separate from VolumePool's disks)
-    let mut heal_backends: Vec<Box<dyn Backend>> = volume_paths
-        .iter()
-        .filter_map(|p| LocalVolume::new(p.as_path()).ok())
-        .map(|d| Box::new(d) as Box<dyn Backend>)
-        .collect();
-    abixio::storage::volume_pool::assign_volume_ids(&mut heal_backends);
-    let heal_disks: Arc<Vec<Box<dyn Backend>>> = Arc::new(heal_backends);
+    // spawn background write-cache flush task (phase 4). Every flush_ms,
+    // destage entries older than min_age_ms to disk. Skipped if cache is
+    // disabled (--write-cache=0).
+    if cfg.write_cache > 0 && cfg.write_cache_flush_ms > 0 {
+        let flush_set = Arc::clone(&set);
+        let flush_interval = tokio::time::Duration::from_millis(cfg.write_cache_flush_ms);
+        let min_age = tokio::time::Duration::from_millis(cfg.write_cache_min_age_ms);
+        let mut flush_shutdown_rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(flush_interval);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        if let Err(e) = flush_set.flush_older_than(min_age).await {
+                            tracing::warn!(error = %e, "background write-cache flush failed");
+                        }
+                    }
+                    changed = flush_shutdown_rx.changed() => {
+                        if changed.is_err() || *flush_shutdown_rx.borrow() {
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Share VolumePool's WAL-enabled disks with the heal path so the
+    // scanner and heal worker see WAL-pending entries. Opening a second
+    // LocalVolume on the same log_dir would fight over segment IDs.
+    let heal_disks = set.heal_backends();
 
     // spawn MRF drain worker (single receiver = single worker)
     if let Some(rx) = mrf.take_receiver() {
@@ -183,6 +242,16 @@ async fn main() {
         cfg.scan_interval_duration(),
         shutdown_rx.clone(),
     ));
+
+    // spawn lifecycle enforcement loop
+    if cfg.lifecycle_enable {
+        let engine = abixio::lifecycle::LifecycleEngine::new(Arc::clone(&set));
+        tokio::spawn(abixio::lifecycle::lifecycle_loop(
+            engine,
+            cfg.lifecycle_interval_duration(),
+            shutdown_rx.clone(),
+        ));
+    }
 
     let heal_stats = Arc::new(HealStats::new());
     let cluster = Arc::new(
@@ -222,12 +291,24 @@ async fn main() {
                 .map(|v| (p.display().to_string(), v))
         })
         .collect();
-    let storage_server = Arc::new(StorageServer::new(
+    let mut storage_server = StorageServer::new(
         local_volumes_map,
         access_key.clone(),
         secret_key.clone(),
         cfg.no_auth,
-    ));
+    );
+    if let Some(cache_handle) = set.write_cache_handle() {
+        storage_server = storage_server.with_write_cache(cache_handle);
+    }
+    let storage_server = Arc::new(storage_server);
+
+    // Restart recovery: pull any entries peers are holding for us.
+    // Fire-and-forget; recovery is best-effort and should not block
+    // server startup.
+    let recover_set = Arc::clone(&set);
+    tokio::spawn(async move {
+        recover_set.recover_cache_from_peers().await;
+    });
 
     // build s3s service
     let s3 = abixio::s3_service::AbixioS3::new(Arc::clone(&set), Arc::clone(&cluster));
@@ -235,7 +316,11 @@ async fn main() {
     if !cfg.no_auth {
         builder.set_auth(abixio::s3_auth::AbixioAuth::new(&access_key, &secret_key));
     }
-    builder.set_access(abixio::s3_access::AbixioAccess::new(Arc::clone(&cluster)));
+    builder.set_access(abixio::s3_access::AbixioAccess::new(
+        Arc::clone(&cluster),
+        Arc::clone(&set),
+        access_key.clone(),
+    ));
     builder.set_validation(abixio::s3_service::RelaxedNameValidation);
     let s3_service = builder.build();
 

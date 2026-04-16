@@ -467,7 +467,7 @@ async fn start_server(
     let mut builder = s3s::service::S3ServiceBuilder::new(s3);
     builder.set_auth(AlwaysAllowAuth);
     builder.set_validation(abixio::s3_service::RelaxedNameValidation);
-    builder.set_access(abixio::s3_access::AbixioAccess::new(Arc::clone(&cluster)));
+    builder.set_access(abixio::s3_access::AbixioAccess::new(Arc::clone(&cluster), Arc::clone(&store), String::new()));
     let s3_service = builder.build();
     let dispatch = Arc::new(AbixioDispatch::new(s3_service, Some(admin), None));
 
