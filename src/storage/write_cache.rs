@@ -82,6 +82,7 @@ pub struct WriteCache {
     entries: DashMap<CacheKey, CacheEntry>,
     size_bytes: AtomicU64,
     max_bytes: u64,
+    hits: AtomicU64,
 }
 
 impl WriteCache {
@@ -91,7 +92,18 @@ impl WriteCache {
             entries: DashMap::new(),
             size_bytes: AtomicU64::new(0),
             max_bytes,
+            hits: AtomicU64::new(0),
         }
+    }
+
+    pub fn hits(&self) -> u64 {
+        self.hits.load(Ordering::Relaxed)
+    }
+
+    /// Bump the hit counter. The pool calls this after a successful
+    /// cache read on any of the GET / HEAD / stream paths.
+    pub fn record_hit(&self) {
+        self.hits.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Insert a cached object. Returns true if inserted, false if cache full.
@@ -122,7 +134,11 @@ impl WriteCache {
     /// Get a reference to a cached entry.
     pub fn get(&self, bucket: &str, key: &str) -> Option<dashmap::mapref::one::Ref<CacheKey, CacheEntry>> {
         let cache_key: CacheKey = (Arc::from(bucket), Arc::from(key));
-        self.entries.get(&cache_key)
+        let got = self.entries.get(&cache_key);
+        if got.is_some() {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        }
+        got
     }
 
     /// Remove a cached entry.

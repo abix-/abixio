@@ -98,15 +98,15 @@ not a product.
 | Load / stress testing | 0/10 | none |
 | CI | 6/10 | GitHub Actions: cargo test + cargo clippy. no benchmark CI |
 
-## Operations and observability: 3/10
+## Operations and observability: 6/10
 
 | Area | Rating | Notes |
 |---|---|---|
-| Admin API | 7/10 | status, disks, healing, inspect, bucket EC, cache flush endpoints |
-| Structured logging | 3/10 | tracing spans + W3C server-timing per response. no metrics, no histograms, no error counters |
+| Admin API | 7/10 | status, disks, healing, inspect, bucket EC, cache flush, `/_admin/metrics` endpoints |
+| Structured logging | 7/10 | tracing spans + W3C server-timing per response. Prometheus metrics exported (`/_admin/metrics`) covering request latency histograms, error rates, cache hit rates, disk capacity, WAL, lifecycle, heal, cluster. No OTel, no JSON log formatter, no audit log |
 | Graceful shutdown | 7/10 | stops accepting, drains in-flight HTTP (5s), flushes write cache, drains WAL materialize worker. Ctrl+C only on Windows |
 | Health checks | 4/10 | /_admin/status exists. no deep health probes |
-| Monitoring integration | 0/10 | no prometheus, no opentelemetry |
+| Monitoring integration | 7/10 | Prometheus text format at `/_admin/metrics`. No bundled dashboards or OTel exporter |
 
 ## Packaging and deployment: 1/10
 
@@ -148,7 +148,6 @@ not a product.
 
 1. **Binary release** -- Dockerfile + GitHub release with Windows binary
 2. **CHANGELOG** -- release notes
-3. **Basic observability** -- request latency histograms, error counters, disk health
 
 ## What blocks production use
 

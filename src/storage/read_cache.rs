@@ -9,6 +9,7 @@
 //! guards the map: the hot path is a clone of a ref-counted `Bytes`
 //! plus `ObjectInfo`, so lock hold time is microseconds.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use bytes::Bytes;
@@ -41,6 +42,8 @@ pub struct ReadCache {
     inner: Mutex<Inner>,
     max_bytes: u64,
     max_object_bytes: u64,
+    hits: AtomicU64,
+    misses: AtomicU64,
 }
 
 struct Inner {
@@ -59,7 +62,24 @@ impl ReadCache {
             }),
             max_bytes,
             max_object_bytes,
+            hits: AtomicU64::new(0),
+            misses: AtomicU64::new(0),
         }
+    }
+
+    /// Record a miss. Callers hit `get`; the parent pool bumps this
+    /// on the fall-through path after the disk read succeeds, so
+    /// hits + misses tracks completed reads rather than lookups.
+    pub fn record_miss(&self) {
+        self.misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn hits(&self) -> u64 {
+        self.hits.load(Ordering::Relaxed)
+    }
+
+    pub fn misses(&self) -> u64 {
+        self.misses.load(Ordering::Relaxed)
     }
 
     pub fn max_bytes(&self) -> u64 {
@@ -70,10 +90,16 @@ impl ReadCache {
         self.max_object_bytes
     }
 
-    /// Look up an entry. Touches the LRU position.
+    /// Look up an entry. Touches the LRU position. Bumps the hit
+    /// counter when a live entry is returned; a None return is not
+    /// counted here (caller records the miss after the disk read).
     pub fn get(&self, bucket: &str, key: &str) -> Option<CacheEntry> {
         let mut g = self.inner.lock().ok()?;
-        g.map.get(&(bucket.to_string(), key.to_string())).cloned()
+        let out = g.map.get(&(bucket.to_string(), key.to_string())).cloned();
+        if out.is_some() {
+            self.hits.fetch_add(1, Ordering::Relaxed);
+        }
+        out
     }
 
     /// Insert an entry. Skips objects larger than `max_object_bytes`.

@@ -3,6 +3,7 @@ pub mod cluster;
 pub mod config;
 pub mod heal;
 pub mod lifecycle;
+pub mod metrics;
 pub mod multipart;
 pub mod policy;
 pub(crate) mod query;

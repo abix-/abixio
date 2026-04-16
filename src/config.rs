@@ -88,6 +88,11 @@ pub struct Config {
     /// hot small keys.
     #[arg(long, default_value_t = 65536)]
     pub read_cache_max_object: u64,
+
+    /// Expose Prometheus metrics at `/_admin/metrics`. Set to false
+    /// to disable the endpoint and stop recording counters.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub metrics_enable: bool,
 }
 
 impl Config {
@@ -285,6 +290,7 @@ mod tests {
             lifecycle_interval: "1h".to_string(),
             read_cache: 256,
             read_cache_max_object: 65536,
+            metrics_enable: true,
         }
     }
 

@@ -189,6 +189,18 @@ async fn main() {
 
     // wire MRF into volume pool for auto-enqueue on partial writes
     set.set_mrf(Arc::clone(&mrf));
+
+    // build metrics registry before Arc-wrapping the pool so we can
+    // attach it via set_metrics; all background tasks see the same
+    // Arc<Metrics> instance.
+    let metrics = if cfg.metrics_enable {
+        Some(abixio::metrics::Metrics::new())
+    } else {
+        None
+    };
+    if let Some(ref m) = metrics {
+        set.set_metrics(Arc::clone(m));
+    }
     let set = Arc::new(set);
 
     // spawn background write-cache flush task (phase 4). Every flush_ms,
@@ -249,6 +261,7 @@ async fn main() {
         tokio::spawn(abixio::lifecycle::lifecycle_loop(
             engine,
             cfg.lifecycle_interval_duration(),
+            metrics.as_ref().map(Arc::clone),
             shutdown_rx.clone(),
         ));
     }
@@ -273,14 +286,18 @@ async fn main() {
     cluster.clone().spawn_peer_monitor(shutdown_rx.clone());
 
     let admin_config = AdminConfig::from_identity(&identity, &cfg);
-    let admin = Arc::new(AdminHandler::new(
+    let mut admin_handler = AdminHandler::new(
         Arc::clone(&set),
         Arc::clone(&heal_disks),
         Arc::clone(&mrf),
         Arc::clone(&heal_stats),
         admin_config,
         Arc::clone(&cluster),
-    ));
+    );
+    if let Some(ref m) = metrics {
+        admin_handler = admin_handler.with_metrics(Arc::clone(m));
+    }
+    let admin = Arc::new(admin_handler);
 
     // build storage server for internode RPC
     let local_volumes_map: std::collections::HashMap<String, LocalVolume> = volume_paths
@@ -325,11 +342,15 @@ async fn main() {
     let s3_service = builder.build();
 
     // wrap with dispatch layer for admin + storage RPC
-    let dispatch = Arc::new(abixio::s3_route::AbixioDispatch::new(
+    let mut dispatch = abixio::s3_route::AbixioDispatch::new(
         s3_service,
         Some(admin),
         Some(storage_server),
-    ));
+    );
+    if let Some(ref m) = metrics {
+        dispatch = dispatch.with_metrics(Arc::clone(m));
+    }
+    let dispatch = Arc::new(dispatch);
 
     let addr = parse_listen_addr(&cfg.listen);
 

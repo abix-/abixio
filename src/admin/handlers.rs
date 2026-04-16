@@ -53,6 +53,7 @@ pub struct AdminHandler {
     stats: Arc<HealStats>,
     config: AdminConfig,
     cluster: Arc<ClusterManager>,
+    metrics: Option<Arc<crate::metrics::Metrics>>,
 }
 
 /// Subset of server config needed by admin endpoints.
@@ -105,7 +106,13 @@ impl AdminHandler {
             stats,
             config,
             cluster,
+            metrics: None,
         }
+    }
+
+    pub fn with_metrics(mut self, metrics: Arc<crate::metrics::Metrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     pub async fn dispatch(&self, path: &str, method: &hyper::Method, query: &str) -> Response<BoxBody> {
@@ -119,6 +126,7 @@ impl AdminHandler {
                 let _ = self.store.flush_write_cache().await;
                 json_response(&serde_json::json!({"flushed": true}))
             },
+            ("metrics", &hyper::Method::GET) => self.metrics_handler().await,
             ("cluster/status", &hyper::Method::GET) => self.cluster_status(),
             ("cluster/nodes", &hyper::Method::GET) => self.cluster_nodes(),
             ("cluster/epochs", &hyper::Method::GET) => self.cluster_epochs(),
@@ -133,6 +141,49 @@ impl AdminHandler {
             }
             _ => error_json(StatusCode::NOT_FOUND, "unknown admin endpoint"),
         }
+    }
+
+    async fn metrics_handler(&self) -> Response<BoxBody> {
+        let Some(ref metrics) = self.metrics else {
+            return error_json(StatusCode::SERVICE_UNAVAILABLE, "metrics disabled");
+        };
+        // refresh scrape-time gauges that are not already maintained
+        // by the hot paths: disk capacity, cache sizes, WAL pending,
+        // cluster state, MRF queue depth.
+        self.store.refresh_scrape_gauges().await;
+        let summary = self.cluster.summary();
+        for label in ["Ready", "SyncingEpoch", "Fenced", "Joining"] {
+            let current = match summary.state {
+                crate::cluster::ServiceState::Ready => "Ready",
+                crate::cluster::ServiceState::SyncingEpoch => "SyncingEpoch",
+                crate::cluster::ServiceState::Fenced => "Fenced",
+                crate::cluster::ServiceState::Joining => "Joining",
+            };
+            metrics.cluster_state
+                .with_label_values(&[label])
+                .set(if current == label { 1 } else { 0 });
+        }
+        metrics.cluster_reachable_voters.set(summary.reachable_voters as i64);
+        metrics.cluster_quorum.set(summary.quorum as i64);
+        metrics.cluster_epoch_id.set(summary.epoch_id as i64);
+        metrics.mrf_queue_depth.set(self.mrf.pending_count() as i64);
+        // HealStats tracks cumulative counts since process start;
+        // reset-and-set keeps the Prometheus counter monotonic over
+        // the lifetime of the process while tolerating restart.
+        use std::sync::atomic::Ordering;
+        metrics.scanner_objects_checked.reset();
+        metrics.scanner_objects_checked.inc_by(self.stats.objects_scanned.load(Ordering::Relaxed));
+        metrics.scanner_last_pass_seconds.set(self.stats.last_scan_duration_secs() as i64);
+        metrics.heal_repaired.reset();
+        metrics.heal_repaired.inc_by(self.stats.objects_healed.load(Ordering::Relaxed));
+
+        let body = metrics.render();
+        build_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8"),
+            Bytes::from(body),
+        )
     }
 
     fn status(&self) -> Response<BoxBody> {

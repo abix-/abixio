@@ -347,10 +347,12 @@ impl LifecycleEngine {
 }
 
 /// Background loop: run the engine on a fixed interval, stopping when
-/// `shutdown_rx` fires.
+/// `shutdown_rx` fires. Each pass publishes its counters to the
+/// metrics registry when one is attached.
 pub async fn lifecycle_loop(
     engine: LifecycleEngine,
     interval: Duration,
+    metrics: Option<Arc<crate::metrics::Metrics>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
 ) {
     let mut ticker = tokio::time::interval(interval);
@@ -360,7 +362,15 @@ pub async fn lifecycle_loop(
     loop {
         tokio::select! {
             _ = ticker.tick() => {
-                let _ = engine.run_once().await;
+                let t0 = std::time::Instant::now();
+                let stats = engine.run_once().await;
+                if let Some(ref m) = metrics {
+                    m.lifecycle_deleted.inc_by(stats.deleted as u64);
+                    m.lifecycle_deleted_versions.inc_by(stats.deleted_versions as u64);
+                    m.lifecycle_delete_markers_reaped.inc_by(stats.delete_markers_reaped as u64);
+                    m.lifecycle_multipart_aborted.inc_by(stats.multipart_aborted as u64);
+                    m.lifecycle_last_pass_seconds.set(t0.elapsed().as_secs() as i64);
+                }
             }
             changed = shutdown_rx.changed() => {
                 if changed.is_err() || *shutdown_rx.borrow() {

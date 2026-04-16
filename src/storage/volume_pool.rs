@@ -64,6 +64,9 @@ pub struct VolumePool {
     /// synchronous replicate-before-ack. Additional peers are reserved
     /// for future N-way replication.
     peer_cache_clients: Vec<Arc<super::peer_cache::PeerCacheClient>>,
+    /// Optional metrics registry for observability. Populated via
+    /// `set_metrics`; None means "observability disabled".
+    metrics: Option<Arc<crate::metrics::Metrics>>,
 }
 
 impl VolumePool {
@@ -95,7 +98,54 @@ impl VolumePool {
             read_cache: None,
             local_node_id: String::new(),
             peer_cache_clients: Vec::new(),
+            metrics: None,
         })
+    }
+
+    pub fn set_metrics(&mut self, metrics: Arc<crate::metrics::Metrics>) {
+        self.metrics = Some(metrics);
+    }
+
+    pub fn metrics(&self) -> Option<&Arc<crate::metrics::Metrics>> {
+        self.metrics.as_ref()
+    }
+
+    /// Refresh scrape-time gauges (disk capacity, cache sizes, WAL
+    /// pending counts). Called from the metrics endpoint handler
+    /// before the encoder gathers families so the values reflect
+    /// the latest state.
+    pub async fn refresh_scrape_gauges(&self) {
+        let Some(ref m) = self.metrics else { return };
+        // disk capacity
+        for disk in self.disks() {
+            let info = disk.info();
+            let label = info.label.strip_prefix("local:").unwrap_or(&info.label);
+            if let Some(t) = info.total_bytes {
+                m.disk_total_bytes.with_label_values(&[label]).set(t as i64);
+            }
+            if let Some(u) = info.used_bytes {
+                m.disk_used_bytes.with_label_values(&[label]).set(u as i64);
+            }
+            if let Some(f) = info.free_bytes {
+                m.disk_free_bytes.with_label_values(&[label]).set(f as i64);
+            }
+        }
+
+        // cache sizes
+        if let Some(ref c) = self.write_cache {
+            m.write_cache_bytes.set(c.size_bytes() as i64);
+            m.write_cache_entries.set(c.entry_count() as i64);
+            m.write_cache_hits.reset();
+            m.write_cache_hits.inc_by(c.hits());
+        }
+        if let Some(ref c) = self.read_cache {
+            m.read_cache_bytes.set(c.size_bytes() as i64);
+            m.read_cache_entries.set(c.entry_count() as i64);
+            m.read_cache_hits.reset();
+            m.read_cache_hits.inc_by(c.hits());
+            m.read_cache_misses.reset();
+            m.read_cache_misses.inc_by(c.misses());
+        }
     }
 
     /// Return the shared Arc of backend disks for use by the heal
@@ -634,6 +684,7 @@ impl Store for VolumePool {
             if let Some(entry) = cache.get(bucket, key) {
                 return Ok((entry.data.to_vec(), entry.info));
             }
+            cache.record_miss();
         }
 
         // check if object is multipart by reading meta from any disk
@@ -731,6 +782,7 @@ impl Store for VolumePool {
                 });
                 return Ok((info, Box::pin(stream)));
             }
+            cache.record_miss();
         }
 
         // multipart objects fall back to buffered read (streaming multipart is future work)
@@ -758,6 +810,24 @@ impl Store for VolumePool {
             for disk in self.disks() {
                 if let Ok((mmap, meta)) = disk.mmap_shard(bucket, key).await {
                     let info = Self::meta_to_info(bucket, key, &meta);
+                    // Populate LRU read cache for future GETs, but only
+                    // when the object fits under the cache's object
+                    // ceiling. For bigger objects the mmap path is
+                    // already zero-copy.
+                    if let Some(ref cache) = self.read_cache {
+                        if meta.version_id.is_empty() && !meta.is_delete_marker
+                            && (mmap.len() as u64) <= cache.max_object_bytes()
+                        {
+                            cache.put(
+                                bucket,
+                                key,
+                                super::read_cache::CacheEntry {
+                                    data: bytes::Bytes::copy_from_slice(&mmap[..]),
+                                    info: info.clone(),
+                                },
+                            );
+                        }
+                    }
                     // yield mmap as 4MB zero-copy slices so hyper can start writing
                     // to TCP immediately instead of processing one 1GB body frame.
                     let owned = bytes::Bytes::from_owner(mmap);
