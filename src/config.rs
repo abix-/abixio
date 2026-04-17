@@ -93,6 +93,29 @@ pub struct Config {
     /// to disable the endpoint and stop recording counters.
     #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
     pub metrics_enable: bool,
+
+    /// Start a Raft control-plane instance on this node. Off by
+    /// default while Raft integration is rolling out -- the
+    /// existing probe-based clustering keeps working when off.
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    pub raft_enable: bool,
+
+    /// Initialize this node as a single-node Raft cluster on first
+    /// boot. Run on exactly one node when standing up a new
+    /// cluster; subsequent nodes join via `/_admin/raft/join`.
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
+    pub raft_bootstrap: bool,
+
+    /// Raft node id (u64). Distinct per node. 0 (default) means
+    /// derive deterministically from the cluster identity's
+    /// `node_id` string via a stable hash.
+    #[arg(long, default_value_t = 0)]
+    pub raft_id: u64,
+
+    /// Directory for Raft log + snapshots + vote. Default is the
+    /// first volume's `.abixio.sys/raft` subdirectory.
+    #[arg(long, default_value = "")]
+    pub raft_dir: String,
 }
 
 impl Config {
@@ -291,6 +314,10 @@ mod tests {
             read_cache: 256,
             read_cache_max_object: 65536,
             metrics_enable: true,
+            raft_enable: false,
+            raft_bootstrap: false,
+            raft_id: 0,
+            raft_dir: String::new(),
         }
     }
 

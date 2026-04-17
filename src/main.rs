@@ -285,6 +285,62 @@ async fn main() {
     );
     cluster.clone().spawn_peer_monitor(shutdown_rx.clone());
 
+    // Optional Raft control plane. Off by default; turn on with
+    // `--raft-enable`. Existing probe-based clustering keeps working
+    // in parallel.
+    let raft_handle: Option<Arc<abixio::raft::AbixioRaft>> = if cfg.raft_enable {
+        let raft_id = if cfg.raft_id > 0 {
+            cfg.raft_id
+        } else {
+            derive_raft_id(&identity.node_id)
+        };
+        let raft_dir = if !cfg.raft_dir.is_empty() {
+            std::path::PathBuf::from(&cfg.raft_dir)
+        } else {
+            volume_paths[0].join(".abixio.sys").join("raft")
+        };
+        tracing::info!(
+            raft_id = raft_id,
+            raft_dir = %raft_dir.display(),
+            "opening raft instance"
+        );
+        match abixio::raft::AbixioRaft::open(
+            raft_id,
+            &raft_dir,
+            access_key.clone(),
+            secret_key.clone(),
+            cfg.no_auth,
+        )
+        .await
+        {
+            Ok(r) => {
+                let handle = Arc::new(r);
+                if cfg.raft_bootstrap {
+                    let mut members = std::collections::BTreeMap::new();
+                    members.insert(
+                        raft_id,
+                        abixio::raft::AbixioNode {
+                            advertise_s3: identity.advertise.clone(),
+                            advertise_cluster: identity.advertise.clone(),
+                            voter_kind: abixio::raft::VoterKind::Voter,
+                        },
+                    );
+                    match handle.raft.initialize(members).await {
+                        Ok(()) => tracing::info!("raft bootstrapped as single-node primary"),
+                        Err(e) => tracing::warn!(error = %e, "raft bootstrap skipped or failed"),
+                    }
+                }
+                Some(handle)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "raft open failed; continuing without raft");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let admin_config = AdminConfig::from_identity(&identity, &cfg);
     let mut admin_handler = AdminHandler::new(
         Arc::clone(&set),
@@ -296,6 +352,9 @@ async fn main() {
     );
     if let Some(ref m) = metrics {
         admin_handler = admin_handler.with_metrics(Arc::clone(m));
+    }
+    if let Some(ref r) = raft_handle {
+        admin_handler = admin_handler.with_raft(Arc::clone(r));
     }
     let admin = Arc::new(admin_handler);
 
@@ -316,6 +375,9 @@ async fn main() {
     );
     if let Some(cache_handle) = set.write_cache_handle() {
         storage_server = storage_server.with_write_cache(cache_handle);
+    }
+    if let Some(ref r) = raft_handle {
+        storage_server = storage_server.with_raft(Arc::clone(r));
     }
     let storage_server = Arc::new(storage_server);
 
@@ -496,6 +558,18 @@ fn load_tls_config(
             .with_no_client_auth()
             .with_single_cert(certs, key)?,
     ))
+}
+
+/// Derive a stable u64 Raft node id from the cluster identity
+/// string. Uses the first 8 bytes of blake3 so the same node_id
+/// always yields the same raft id across restarts.
+fn derive_raft_id(node_id: &str) -> u64 {
+    let hash = blake3::hash(node_id.as_bytes());
+    let bytes = hash.as_bytes();
+    u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3],
+        bytes[4], bytes[5], bytes[6], bytes[7],
+    ])
 }
 
 fn parse_listen_addr(s: &str) -> SocketAddr {

@@ -62,7 +62,7 @@ not a product.
 | Encryption at rest | 0/10 | design doc only, no implementation |
 | TLS | 7/10 | works with rustls, cert/key from CLI flags. no auto-cert |
 
-## Clustering: 5/10
+## Clustering: 6/10
 
 | Area | Rating | Notes |
 |---|---|---|
@@ -75,7 +75,7 @@ not a product.
 | Placement metadata | 7/10 | epoch_id + volume_ids in every shard |
 | Live topology changes | 0/10 | nodes fixed at startup |
 | Rebalance | 0/10 | not implemented |
-| Consensus (Raft etc.) | 0/10 | not implemented |
+| Consensus (Raft etc.) | 5/10 | openraft control plane integrated: typed FSM (membership, placement, bucket settings), on-disk log + snapshot + vote, HTTP transport over `_storage/v1/raft/*`, admin endpoints (`bootstrap`/`join`/`leave`/`peers`/`primary`/`snapshot`). Single-node bootstrap + submit + read tested. Multi-node join/leave implemented but not yet exercised by integration tests. BucketSettings + placement still read from their current sources |
 
 ## Healing and integrity: 6/10
 
