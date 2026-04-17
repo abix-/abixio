@@ -13,8 +13,12 @@
 //! is wired into the hot path; see `src/cluster` for the
 //! probe-based clustering that is in use today.
 
+pub mod adapter;
 pub mod fsm;
 pub mod storage;
+pub mod types;
 
+pub use adapter::{AbixioFsmAdapter, AbixioLogAdapter};
 pub use fsm::{AbixioStateMachine, Op, State, VoterKind};
 pub use storage::{LogEntry, LogStore, SnapshotMeta, SnapshotStore, Vote, VoteStore};
+pub use types::{AbixioNode, AppResponse, NodeId, TypeConfig};
