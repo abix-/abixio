@@ -4,6 +4,8 @@
 
 pub mod fsm;
 pub mod log;
+pub mod network;
 
 pub use fsm::AbixioFsmAdapter;
 pub use log::AbixioLogAdapter;
+pub use network::{AbixioNetworkClient, AbixioNetworkFactory};

@@ -15,10 +15,12 @@
 
 pub mod adapter;
 pub mod fsm;
+pub mod runtime;
 pub mod storage;
 pub mod types;
 
-pub use adapter::{AbixioFsmAdapter, AbixioLogAdapter};
+pub use adapter::{AbixioFsmAdapter, AbixioLogAdapter, AbixioNetworkFactory};
 pub use fsm::{AbixioStateMachine, Op, State, VoterKind};
+pub use runtime::{AbixioRaft, AbixioRaftInstance};
 pub use storage::{LogEntry, LogStore, SnapshotMeta, SnapshotStore, Vote, VoteStore};
 pub use types::{AbixioNode, AppResponse, NodeId, TypeConfig};
