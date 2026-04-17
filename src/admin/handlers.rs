@@ -54,6 +54,7 @@ pub struct AdminHandler {
     config: AdminConfig,
     cluster: Arc<ClusterManager>,
     metrics: Option<Arc<crate::metrics::Metrics>>,
+    raft: Option<Arc<crate::raft::AbixioRaft>>,
 }
 
 /// Subset of server config needed by admin endpoints.
@@ -107,11 +108,17 @@ impl AdminHandler {
             config,
             cluster,
             metrics: None,
+            raft: None,
         }
     }
 
     pub fn with_metrics(mut self, metrics: Arc<crate::metrics::Metrics>) -> Self {
         self.metrics = Some(metrics);
+        self
+    }
+
+    pub fn with_raft(mut self, raft: Arc<crate::raft::AbixioRaft>) -> Self {
+        self.raft = Some(raft);
         self
     }
 
@@ -127,6 +134,12 @@ impl AdminHandler {
                 json_response(&serde_json::json!({"flushed": true}))
             },
             ("metrics", &hyper::Method::GET) => self.metrics_handler().await,
+            ("raft/peers", &hyper::Method::GET) => self.raft_peers().await,
+            ("raft/primary", &hyper::Method::GET) => self.raft_primary().await,
+            ("raft/snapshot", &hyper::Method::POST) => self.raft_snapshot().await,
+            ("raft/bootstrap", &hyper::Method::POST) => self.raft_bootstrap().await,
+            ("raft/join", &hyper::Method::POST) => self.raft_join(query).await,
+            ("raft/leave", &hyper::Method::POST) => self.raft_leave().await,
             ("cluster/status", &hyper::Method::GET) => self.cluster_status(),
             ("cluster/nodes", &hyper::Method::GET) => self.cluster_nodes(),
             ("cluster/epochs", &hyper::Method::GET) => self.cluster_epochs(),
@@ -184,6 +197,161 @@ impl AdminHandler {
                 .header("Content-Type", "text/plain; version=0.0.4; charset=utf-8"),
             Bytes::from(body),
         )
+    }
+
+    async fn raft_peers(&self) -> Response<BoxBody> {
+        let Some(ref raft) = self.raft else {
+            return error_json(StatusCode::SERVICE_UNAVAILABLE, "raft not enabled");
+        };
+        let members = raft.fsm.members();
+        let primary_id = raft.raft.metrics().borrow().current_leader;
+        let state = raft.raft.metrics().borrow().state;
+        let peers: Vec<_> = members
+            .into_iter()
+            .map(|m| serde_json::json!({
+                "node_id": m.node_id,
+                "advertise_s3": m.advertise_s3,
+                "advertise_cluster": m.advertise_cluster,
+                "voter_kind": m.voter_kind,
+                "added_at_unix_secs": m.added_at_unix_secs,
+            }))
+            .collect();
+        json_response(&serde_json::json!({
+            "primary_raft_id": primary_id,
+            "this_node_raft_id": raft.node_id,
+            "this_node_state": format!("{:?}", state),
+            "peers": peers,
+        }))
+    }
+
+    async fn raft_primary(&self) -> Response<BoxBody> {
+        let Some(ref raft) = self.raft else {
+            return error_json(StatusCode::SERVICE_UNAVAILABLE, "raft not enabled");
+        };
+        let metrics = raft.raft.metrics().borrow().clone();
+        json_response(&serde_json::json!({
+            "primary_raft_id": metrics.current_leader,
+            "this_node_raft_id": raft.node_id,
+            "this_node_state": format!("{:?}", metrics.state),
+            "current_term": metrics.current_term,
+            "last_log_index": metrics.last_log_index,
+            "last_applied": metrics.last_applied,
+        }))
+    }
+
+    async fn raft_bootstrap(&self) -> Response<BoxBody> {
+        let Some(ref raft) = self.raft else {
+            return error_json(StatusCode::SERVICE_UNAVAILABLE, "raft not enabled");
+        };
+        // Single-node bootstrap: this node is the only voter. Other
+        // nodes join via `/raft/join` after bootstrap succeeds.
+        let mut members = std::collections::BTreeMap::new();
+        members.insert(
+            raft.node_id,
+            crate::raft::AbixioNode {
+                advertise_s3: self.config.advertise_s3.clone(),
+                advertise_cluster: self.config.advertise_cluster.clone(),
+                voter_kind: crate::raft::VoterKind::Voter,
+            },
+        );
+        match raft.raft.initialize(members).await {
+            Ok(()) => json_response(&serde_json::json!({
+                "bootstrapped": true,
+                "raft_id": raft.node_id,
+            })),
+            Err(e) => {
+                // openraft returns NotAllowed when already initialized.
+                let msg = format!("{}", e);
+                let status = if msg.contains("not allowed") || msg.contains("already") {
+                    StatusCode::CONFLICT
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                error_json(status, &msg)
+            }
+        }
+    }
+
+    async fn raft_join(&self, query: &str) -> Response<BoxBody> {
+        let Some(ref raft) = self.raft else {
+            return error_json(StatusCode::SERVICE_UNAVAILABLE, "raft not enabled");
+        };
+        let params = parse_query(query);
+        let joiner_raft_id: u64 = match params.get("raft_id").and_then(|s| s.parse().ok()) {
+            Some(v) => v,
+            None => return error_json(StatusCode::BAD_REQUEST, "missing or invalid raft_id"),
+        };
+        let Some(advertise_s3) = params.get("advertise_s3").cloned() else {
+            return error_json(StatusCode::BAD_REQUEST, "missing advertise_s3");
+        };
+        let advertise_cluster = params
+            .get("advertise_cluster")
+            .cloned()
+            .unwrap_or_else(|| advertise_s3.clone());
+        let node = crate::raft::AbixioNode {
+            advertise_s3,
+            advertise_cluster,
+            voter_kind: crate::raft::VoterKind::Voter,
+        };
+
+        // Must run on primary. Step 1: add as learner so the log can
+        // replicate. Step 2: change membership to include as voter.
+        if let Err(e) = raft.raft.add_learner(joiner_raft_id, node.clone(), true).await {
+            return error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("add_learner: {}", e),
+            );
+        }
+        // Build the new voter set: current voters + joiner.
+        let mut voters: std::collections::BTreeSet<u64> = raft
+            .raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .voter_ids()
+            .collect();
+        voters.insert(joiner_raft_id);
+        match raft.raft.change_membership(voters, false).await {
+            Ok(_) => json_response(&serde_json::json!({"joined": true, "raft_id": joiner_raft_id})),
+            Err(e) => error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("change_membership: {}", e),
+            ),
+        }
+    }
+
+    async fn raft_leave(&self) -> Response<BoxBody> {
+        let Some(ref raft) = self.raft else {
+            return error_json(StatusCode::SERVICE_UNAVAILABLE, "raft not enabled");
+        };
+        let current: std::collections::BTreeSet<u64> = raft
+            .raft
+            .metrics()
+            .borrow()
+            .membership_config
+            .voter_ids()
+            .filter(|id| *id != raft.node_id)
+            .collect();
+        match raft.raft.change_membership(current, false).await {
+            Ok(_) => json_response(&serde_json::json!({"left": true, "raft_id": raft.node_id})),
+            Err(e) => error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("change_membership: {}", e),
+            ),
+        }
+    }
+
+    async fn raft_snapshot(&self) -> Response<BoxBody> {
+        let Some(ref raft) = self.raft else {
+            return error_json(StatusCode::SERVICE_UNAVAILABLE, "raft not enabled");
+        };
+        match raft.raft.trigger().snapshot().await {
+            Ok(()) => json_response(&serde_json::json!({"triggered": true})),
+            Err(e) => error_json(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &format!("snapshot trigger failed: {}", e),
+            ),
+        }
     }
 
     fn status(&self) -> Response<BoxBody> {

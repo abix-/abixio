@@ -25,6 +25,10 @@ pub struct StorageServer {
     /// `/cache-replicate` and `/cache-sync` endpoints so peers can
     /// insert replicas and pull back entries they own.
     write_cache: Option<Arc<WriteCache>>,
+    /// Raft handle (None = this node did not join Raft). Used by
+    /// the `/raft/*` routes to forward RPCs into the openraft
+    /// runtime on the peer side.
+    raft: Option<Arc<crate::raft::AbixioRaft>>,
 }
 
 impl StorageServer {
@@ -34,11 +38,23 @@ impl StorageServer {
         secret_key: String,
         no_auth: bool,
     ) -> Self {
-        Self { volumes, access_key, secret_key, no_auth, write_cache: None }
+        Self {
+            volumes,
+            access_key,
+            secret_key,
+            no_auth,
+            write_cache: None,
+            raft: None,
+        }
     }
 
     pub fn with_write_cache(mut self, cache: Arc<WriteCache>) -> Self {
         self.write_cache = Some(cache);
+        self
+    }
+
+    pub fn with_raft(mut self, raft: Arc<crate::raft::AbixioRaft>) -> Self {
+        self.raft = Some(raft);
         self
     }
 
@@ -95,6 +111,9 @@ impl StorageServer {
             "/write-bucket-settings" => self.handle_write_bucket_settings(req).await,
             "/cache-replicate" => self.handle_cache_replicate(req).await,
             "/cache-sync" => self.handle_cache_sync(&req).await,
+            "/raft/append-entries" => self.handle_raft_append_entries(req).await,
+            "/raft/vote" => self.handle_raft_vote(req).await,
+            "/raft/install-snapshot" => self.handle_raft_install_snapshot(req).await,
             _ => error_response(StatusCode::NOT_FOUND, "unknown storage endpoint"),
         }
     }
@@ -427,6 +446,63 @@ impl StorageServer {
         ok_empty()
     }
 
+    async fn handle_raft_append_entries(&self, req: Request<hyper::body::Incoming>) -> Response<BoxBody> {
+        let Some(ref raft) = self.raft else {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "raft not enabled");
+        };
+        let body = match read_body(req).await {
+            Ok(b) => b,
+            Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
+        };
+        let rpc: openraft::raft::AppendEntriesRequest<crate::raft::TypeConfig> =
+            match bincode::deserialize(&body) {
+                Ok(v) => v,
+                Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("decode: {}", e)),
+            };
+        match raft.raft.append_entries(rpc).await {
+            Ok(resp) => bincode_response(&resp),
+            Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("raft: {}", e)),
+        }
+    }
+
+    async fn handle_raft_vote(&self, req: Request<hyper::body::Incoming>) -> Response<BoxBody> {
+        let Some(ref raft) = self.raft else {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "raft not enabled");
+        };
+        let body = match read_body(req).await {
+            Ok(b) => b,
+            Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
+        };
+        let rpc: openraft::raft::VoteRequest<crate::raft::NodeId> =
+            match bincode::deserialize(&body) {
+                Ok(v) => v,
+                Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("decode: {}", e)),
+            };
+        match raft.raft.vote(rpc).await {
+            Ok(resp) => bincode_response(&resp),
+            Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("raft: {}", e)),
+        }
+    }
+
+    async fn handle_raft_install_snapshot(&self, req: Request<hyper::body::Incoming>) -> Response<BoxBody> {
+        let Some(ref raft) = self.raft else {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "raft not enabled");
+        };
+        let body = match read_body(req).await {
+            Ok(b) => b,
+            Err(e) => return error_response(StatusCode::BAD_REQUEST, &e),
+        };
+        let rpc: openraft::raft::InstallSnapshotRequest<crate::raft::TypeConfig> =
+            match bincode::deserialize(&body) {
+                Ok(v) => v,
+                Err(e) => return error_response(StatusCode::BAD_REQUEST, &format!("decode: {}", e)),
+            };
+        match raft.raft.install_snapshot(rpc).await {
+            Ok(resp) => bincode_response(&resp),
+            Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("raft: {}", e)),
+        }
+    }
+
     async fn handle_cache_sync(&self, req: &Request<hyper::body::Incoming>) -> Response<BoxBody> {
         let Some(ref cache) = self.write_cache else {
             return error_response(StatusCode::SERVICE_UNAVAILABLE, "write cache disabled on this node");
@@ -498,6 +574,18 @@ fn error_response(status: StatusCode, msg: &str) -> Response<BoxBody> {
 
 fn ok_empty() -> Response<BoxBody> {
     build_response(Response::builder().status(StatusCode::OK), Bytes::new())
+}
+
+fn bincode_response<T: serde::Serialize>(value: &T) -> Response<BoxBody> {
+    match bincode::serialize(value) {
+        Ok(bytes) => build_response(
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/bincode"),
+            Bytes::from(bytes),
+        ),
+        Err(e) => error_response(StatusCode::INTERNAL_SERVER_ERROR, &format!("encode: {}", e)),
+    }
 }
 
 fn storage_error_response(e: StorageError) -> Response<BoxBody> {
