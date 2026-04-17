@@ -14,5 +14,7 @@
 //! probe-based clustering that is in use today.
 
 pub mod fsm;
+pub mod storage;
 
 pub use fsm::{AbixioStateMachine, Op, State, VoterKind};
+pub use storage::{LogEntry, LogStore, SnapshotMeta, SnapshotStore, Vote, VoteStore};
