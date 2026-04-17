@@ -70,6 +70,7 @@ Current reality as of 2026-04-13:
 | [Architecture](architecture.md) | Design principles, cluster direction, project structure |
 | [Write Path](write-path.md) | Canonical PUT path from client request to final resting place |
 | [Cluster](cluster.md) | Node exchange, quorum model, fencing behavior |
+| [Raft control plane](raft.md) | openraft design for consensus-backed membership, placement, bucket settings |
 | [Storage Layout](storage-layout.md) | On-disk identity, metadata layout, reconstruction model |
 | [Per-Object EC](per-object-ec.md) | Per-object FTT and bucket defaults |
 | [Admin API](admin-api.md) | Status, disks, healing, inspect, and EC controls |

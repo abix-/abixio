@@ -62,7 +62,7 @@ Same `--nodes` on every node. Identity resolves automatically. You now have 5 vo
 
 ### Docs
 
-[Architecture](docs/architecture.md) | [Storage layout](docs/storage-layout.md) | [Per-object EC](docs/per-object-ec.md) | [Cluster](docs/cluster.md) | [Admin API](docs/admin-api.md) | [Healing](docs/healing.md) | [S3 compliance](docs/s3-compliance.md) | [Comparison](docs/comparison.md) | [Benchmarks](docs/benchmarks.md) | [Layer optimization](docs/layer-optimization.md) | [WAL write path](docs/write-wal.md)
+[Architecture](docs/architecture.md) | [Storage layout](docs/storage-layout.md) | [Per-object EC](docs/per-object-ec.md) | [Cluster](docs/cluster.md) | [Raft](docs/raft.md) | [Admin API](docs/admin-api.md) | [Healing](docs/healing.md) | [S3 compliance](docs/s3-compliance.md) | [Comparison](docs/comparison.md) | [Benchmarks](docs/benchmarks.md) | [Layer optimization](docs/layer-optimization.md) | [WAL write path](docs/write-wal.md)
 
 ### Related
 

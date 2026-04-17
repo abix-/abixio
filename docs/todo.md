@@ -73,5 +73,5 @@
 
 ## low
 
-- [ ] consensus-backed control plane (raft or equivalent) for cluster fencing edge cases under network partitions
+- [ ] consensus-backed control plane. Design landed in [docs/raft.md](raft.md): openraft owns cluster membership, placement epoch, bucket settings. User-facing terminology is primary/secondary/observer. Implementation pending, broken into: (1) openraft skeleton + FSM, (2) log + snapshot + vote store, (3) transport + network client, (4) bootstrap/join/leave admin routes, (5) wire BucketSettings through FSM, (6) singleton gates on lifecycle + scanner, (7) 3-node integration + fence + partition tests
 - [ ] inspect size off by 1 (17 vs 16)

@@ -243,7 +243,13 @@ AbixIO still needs:
 
 1. Topology planning for heterogeneous nodes
 2. Reconfiguration and rebalance workflows
-3. A real consensus-backed control-plane log (Raft or equivalent)
+3. A real consensus-backed control-plane log
+
+Item 3 is designed and documented in [raft.md](raft.md). Short
+version: `openraft` will own cluster membership, placement epoch,
+and bucket settings; object shards and per-object metadata stay on
+disk via erasure coding. User-facing terminology is
+**primary / secondary / observer** — never "leader" or "master".
 
 The current cluster layer should be treated as the minimal safe operating model
 and the scaffold those features would build on.
