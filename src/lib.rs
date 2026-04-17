@@ -6,6 +6,7 @@ pub mod lifecycle;
 pub mod metrics;
 pub mod multipart;
 pub mod policy;
+pub mod raft;
 pub(crate) mod query;
 pub mod s3_access;
 pub mod s3_auth;
