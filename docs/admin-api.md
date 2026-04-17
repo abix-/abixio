@@ -23,6 +23,16 @@ body with an `error` field.
 | `/_admin/cluster/nodes` | GET | Current node view |
 | `/_admin/cluster/epochs` | GET | Epoch snapshots tracked by the local node |
 | `/_admin/cluster/topology` | GET | Current topology view |
+| `/_admin/metrics` | GET | Prometheus metrics ([docs/metrics.md](metrics.md)) |
+| `/_admin/raft/peers` | GET | Raft members known to the local FSM, plus primary + local state |
+| `/_admin/raft/primary` | GET | Current primary raft_id, term, last log index, last applied |
+| `/_admin/raft/bootstrap` | POST | Initialize a single-node Raft cluster (409 if already bootstrapped) |
+| `/_admin/raft/join?raft_id=N&advertise_s3=URL[&advertise_cluster=URL]` | POST | Primary adds a new voter |
+| `/_admin/raft/leave` | POST | Primary drops this node from the voter set |
+| `/_admin/raft/snapshot` | POST | Manual snapshot trigger |
+
+All `/_admin/raft/*` endpoints return `503` when `--raft-enable=false`
+(the default). See [raft.md](raft.md) for the design.
 
 ## GET /_admin/status
 

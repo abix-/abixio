@@ -73,5 +73,17 @@
 
 ## low
 
-- [ ] consensus-backed control plane. Design landed in [docs/raft.md](raft.md): openraft owns cluster membership, placement epoch, bucket settings. User-facing terminology is primary/secondary/observer. Implementation pending, broken into: (1) openraft skeleton + FSM, (2) log + snapshot + vote store, (3) transport + network client, (4) bootstrap/join/leave admin routes, (5) wire BucketSettings through FSM, (6) singleton gates on lifecycle + scanner, (7) 3-node integration + fence + partition tests
+- [ ] consensus-backed control plane. Design in [docs/raft.md](raft.md). Progress:
+  - [x] (1) openraft FSM skeleton (`Op`, `State`, `AbixioStateMachine`) with apply/snapshot/install + serde round-trip tests
+  - [x] (2) on-disk log store + snapshot store + vote persistence with atomic writes and index rebuild
+  - [x] (3) openraft storage-v2 adapters (`RaftLogStorage`, `RaftStateMachine`, `RaftSnapshotBuilder`) + TypeConfig
+  - [x] (4a) transport: `RaftNetwork` + `RaftNetworkFactory` over reqwest + internode JWT; `AbixioRaft` runtime handle; single-node bootstrap/submit/read integration test
+  - [x] (4b) storage server `/_storage/v1/raft/{append-entries,vote,install-snapshot}` routes
+  - [x] (4c) admin `/_admin/raft/{peers,primary,bootstrap,join,leave,snapshot}` endpoints
+  - [x] (4d) main.rs wiring behind `--raft-enable` + `--raft-bootstrap` + `--raft-id` + `--raft-dir`
+  - [ ] (5) multi-node HTTP integration test (two abixio processes, primary + secondary, election + failover)
+  - [ ] (6) route `Store::{get,set}_bucket_settings` through the FSM with per-disk meta.json fallback
+  - [ ] (7) route `VolumePool::placement` through the FSM
+  - [ ] (8) singleton gates on `lifecycle_loop` + `scanner_loop`
+  - [ ] (9) fence behaviour reads from Raft state instead of probe loop
 - [ ] inspect size off by 1 (17 vs 16)

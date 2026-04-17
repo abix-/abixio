@@ -56,7 +56,12 @@ The current implementation provides:
 
 The current implementation does **not** provide:
 
-- Raft or another real distributed consensus log
+- ~~Raft or another real distributed consensus log~~ — the openraft
+  control plane is integrated behind `--raft-enable` (off by
+  default). Single-node bootstrap works end-to-end; multi-node
+  runtime is implemented but not yet exercised by an integration
+  test, and no data-plane code reads from the Raft FSM yet. See
+  [raft.md](raft.md).
 - live committed topology epochs negotiated across the cluster
 - heterogeneous set-class planning
 - rebalance or topology migration
@@ -295,7 +300,7 @@ Audited against the codebase on 2026-04-11.
 | Cluster admin endpoints `/status`, `/nodes`, `/epochs`, `/topology` exist | Verified | `src/admin/handlers.rs:122-172` |
 | Internode storage RPC uses JWT plus `x-abixio-time` | Verified | `src/storage/remote_volume.rs:40-55`, `106`, `src/storage/storage_server.rs:42-45` |
 | `--volumes` and `--nodes` support `{N...M}` | Verified | `src/config.rs:13-19`, `39-45` |
-| Current implementation does not provide consensus-backed topology reconfiguration | Verified | No Raft/consensus implementation is present; cluster manager is probe-based in `src/cluster/mod.rs` |
+| Current implementation does not provide consensus-backed topology reconfiguration in the default build | Partially outdated | openraft is integrated behind `--raft-enable` (see `src/raft/` and [raft.md](raft.md)); the probe loop in `src/cluster/mod.rs` is still the source of truth when Raft is off or when it is on (FSM not yet consulted by the data plane) |
 | `/_admin/object` reports placement identity per shard | Not verified in this pass | This claim may be true via admin inspect paths, but I did not directly audit that endpoint implementation here |
 
 Verdict: this document is largely accurate against the current cluster code and tests. It reads like a good summary of the current probe-and-fence model, with the main remaining audit gap being the exact `/_admin/object` placement-reporting claim.

@@ -386,8 +386,116 @@ Raft:
   will own
 - [status.md](status.md) — tracking score changes as landings ship
 
+## What is actually shipped today
+
+Landed over several commits between `c87ffe0` and `fa98f06`:
+
+**Data model** — `src/raft/fsm/ops.rs`, `src/raft/fsm/mod.rs`,
+`src/raft/fsm/query.rs`
+- `Op` enum (AddNode / RemoveNode / SetPlacementEpoch /
+  SetBucketSettings / DeleteBucketSettings)
+- In-memory `State` with members + placement + bucket settings
+- `AbixioStateMachine` with `apply(index, op)`, `snapshot()`,
+  `install_snapshot()`, monotonic applied-index cursor
+- 10 unit tests covering apply, snapshot install, bincode + msgpack
+  round-trips, epoch-regression rejection
+
+**Persistence** — `src/raft/storage/{log,meta,snapshot}.rs`
+- `LogStore`: append-only file at `<dir>/log.dat`, in-memory
+  (index -> offset + term) map rebuilt on open, `append` /
+  `read` / `read_range` / `truncate_after` / `purge_before`,
+  fsync on commit, atomic rewrite during purge
+- `VoteStore`: `<dir>/vote.json` with atomic temp+rename save
+- `SnapshotStore`: `<dir>/snap-<idx>.msgpack` with bincode header
+  + msgpack body, prune-to-last-two
+- 15 unit tests covering round-trip, reopen-rebuild, truncate,
+  purge, overwrite, empty-dir load, prune behavior
+
+**openraft type config + adapters** — `src/raft/types.rs`,
+`src/raft/adapter/{log,fsm,network}.rs`
+- `TypeConfig` declared via `openraft::declare_raft_types!` with
+  `NodeId = u64`, `Node = AbixioNode`, `D = Op`, `R = AppResponse`
+- `AbixioLogAdapter` implements `RaftLogReader` + `RaftLogStorage`
+  (storage-v2); translates openraft `LogId` / `Vote` into our
+  typed records; calls `LogFlushed` inline after fsync
+- `AbixioFsmAdapter` implements `RaftStateMachine` +
+  `RaftSnapshotBuilder`; bundles FSM state + last_applied +
+  last_membership into a single msgpack snapshot body
+- `AbixioNetworkFactory` + `AbixioNetworkClient` implement
+  `RaftNetworkFactory` + `RaftNetwork` using reqwest + the
+  existing internode JWT; routes are
+  `POST /_storage/v1/raft/{append-entries,vote,install-snapshot}`
+
+**Runtime handle** — `src/raft/runtime.rs`
+- `AbixioRaft::open(node_id, dir, creds)` builds the full stack
+  and returns a handle holding the `Raft<TypeConfig>` + the
+  state-machine `Arc`
+- `is_primary()` reads server state from `Raft::metrics()`
+- `submit(op)` forwards to `Raft::client_write` and returns
+  `AppResponse { applied_index }`
+- Single-node integration test (`raft::runtime::tests`):
+  bootstrap → wait for primary → submit `AddNode` op → assert
+  FSM member visible, passes in the lib test suite
+
+**Receive-side routes** — `src/storage/storage_server.rs`,
+`src/admin/handlers.rs`
+- Storage: `POST /_storage/v1/raft/{append-entries,vote,install-snapshot}`
+  bincode in, bincode out, JWT-authenticated via existing
+  `internode_auth`, return `503` when no Raft handle is attached
+- Admin: `GET /_admin/raft/{peers,primary}`,
+  `POST /_admin/raft/{bootstrap,join,leave,snapshot}`
+  with primary-side `add_learner` + `change_membership` wired in
+  for join, symmetric shrink for leave, manual snapshot trigger
+
+**Main wiring** — `src/main.rs`, `src/config.rs`
+- Flags: `--raft-enable` (off by default), `--raft-bootstrap`,
+  `--raft-id` (0 = derive via blake3), `--raft-dir` (blank = first
+  volume's `.abixio.sys/raft`)
+- When enabled, `AbixioRaft::open` runs before admin/storage
+  handlers are wrapped in `Arc`, so both receive
+  `Arc<AbixioRaft>` via `.with_raft()`
+- Optional `initialize()` call when `--raft-bootstrap=true` makes
+  the first node a single-voter cluster; others join later
+
+## What is NOT wired yet
+
+- `VolumePool::{get,set}_bucket_settings` still reads/writes
+  per-disk meta.json; no path through the FSM
+- Placement table still lives in `VolumePool::placement`; not
+  committed through Raft
+- `lifecycle_loop` + `scanner_loop` still run on every node;
+  `is_primary()` gate not applied
+- `ClusterSummary` still pulls membership from the probe loop;
+  the Raft member view is exposed only at `/_admin/raft/peers`
+- No integration test drives the transport end-to-end (two
+  abixio processes + HTTP). Single-node runtime test is the only
+  live coverage of the openraft stack so far
+
 ## Accuracy Report
 
-This document describes a design. No code has landed yet. Once the
-first implementation lands, add the usual accuracy report here with
-file:line evidence for each claim.
+Audited against the codebase on 2026-04-17.
+
+| Claim | Status | Evidence |
+|---|---|---|
+| Typed `Op` enum with five variants | Verified | `src/raft/fsm/ops.rs:40-67` |
+| In-memory FSM with applied-index cursor + snapshot/install | Verified | `src/raft/fsm/mod.rs:18-95` |
+| LogStore persists append-only records with index rebuild on open | Verified | `src/raft/storage/log.rs:45-100` |
+| VoteStore round-trips term + voted_for atomically | Verified | `src/raft/storage/meta.rs:25-60` |
+| SnapshotStore serializes bincode header + msgpack state with prune-to-2 | Verified | `src/raft/storage/snapshot.rs:52-150` |
+| openraft `RaftLogStorage` + `RaftLogReader` implemented | Verified | `src/raft/adapter/log.rs:45-195` |
+| openraft `RaftStateMachine` + `RaftSnapshotBuilder` implemented | Verified | `src/raft/adapter/fsm.rs:36-170` |
+| openraft `RaftNetwork` + `RaftNetworkFactory` implemented | Verified | `src/raft/adapter/network.rs:29-165` |
+| `AbixioRaft::open` builds the full stack with 150/300/600ms timings | Verified | `src/raft/runtime.rs:26-60` |
+| Storage server handles `POST /_storage/v1/raft/{append-entries,vote,install-snapshot}` | Verified | `src/storage/storage_server.rs` Raft match arms and handler methods |
+| Admin handles `/_admin/raft/{peers,primary,bootstrap,join,leave,snapshot}` | Verified | `src/admin/handlers.rs` Raft match arms and handler methods |
+| `--raft-enable` + `--raft-bootstrap` + `--raft-id` + `--raft-dir` flags | Verified | `src/config.rs` raft flag block |
+| Single-node bootstrap + submit + FSM read works end-to-end | Verified | `src/raft/runtime.rs` test `single_node_bootstrap_submit_and_read` |
+| `VolumePool::{get,set}_bucket_settings` routes through the FSM | Not yet | `src/storage/volume_pool.rs` continues to delegate to each backend's per-disk settings |
+| Multi-node HTTP integration test | Not yet | No `tests/raft_cluster.rs` ships today |
+| Lifecycle/scanner gated on `is_primary()` | Not yet | `src/lifecycle/mod.rs::lifecycle_loop` + `src/heal/worker.rs::scanner_loop` run unconditionally on every node |
+
+Verdict: the control-plane skeleton is real and tested on a single
+node. Multi-node runtime behaviour is implemented in code but not
+exercised end-to-end, and the FSM is not yet the source of truth
+for any data-plane decision. That is the work the next landings
+close.
