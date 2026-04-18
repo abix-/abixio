@@ -38,12 +38,21 @@ Measured 2026-04-18, see `docs/benchmarks.md`.
 
 ### Write path (PUT, object > wal_threshold)
 
-Straight to file tier. No WAL involvement. The write amplification of
-appending to a segment then writing to final files is not worth it when
-raw I/O dominates at large sizes.
+`WalShardWriter` starts in buffering mode and holds up to 1 MB
+before promoting. If the request fits the WAL (body stays <=
+`wal_threshold` at finalize) it takes the needle-append fast path.
+If it would exceed the WAL threshold but stays under the 1 MB
+promote threshold, finalize writes the buffered bytes + meta.json
+to the file tier in a single pair of writes. Objects larger than
+1 MB promote mid-stream: `WalShardWriter` opens the final
+`shard.dat`, flushes what it buffered, and forwards subsequent
+chunks directly to the file. Network receive then overlaps with
+disk write instead of buffering the whole object in RAM.
 
-Default threshold: 64KB (same as the old LOG_THRESHOLD). Configurable
-via `--wal-threshold`.
+Default WAL eligibility threshold: 64KB (same as the old
+LOG_THRESHOLD), configurable via `--wal-threshold`. The
+streaming-promote threshold is fixed at 1 MB
+(`WAL_STREAMING_PROMOTE_BYTES` in `src/storage/local_volume.rs`).
 
 ### Read path (GET)
 

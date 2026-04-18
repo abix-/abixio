@@ -242,12 +242,19 @@ impl LocalVolume {
 
 /// Streaming shard writer for the pre-opened temp file pool. Writes
 /// chunks to the slot's data file, then on finalize writes meta and
-/// queues the rename request. Same optimization as the buffered pool
-/// path in write_shard(), but accessible from the streaming encode path.
-/// Streaming shard writer for the WAL. Buffers chunks internally,
-/// then on finalize: serialize needle, append to WAL, send materialize
-/// request. If accumulated data exceeds the threshold, falls back to
-/// the file tier.
+/// Dual-mode streaming shard writer for WAL-enabled volumes.
+///
+/// Starts in Buffering mode: chunks accumulate in `self.buf` up to
+/// `threshold` bytes. On finalize with buffer under threshold, the
+/// data is appended as a needle to the WAL mmap segment (fast ack,
+/// background materialize).
+///
+/// If a write_chunk would push the buffer over `threshold`, the
+/// writer promotes to Streaming mode: it opens the final shard.dat
+/// file, flushes the buffered bytes, and forwards all subsequent
+/// chunks directly to the file (matching LocalShardWriter). This
+/// lets large PUTs overlap network receive with disk write instead
+/// of buffering the entire object in RAM before writing.
 pub struct WalShardWriter {
     wal: Arc<std::sync::Mutex<Wal>>,
     wal_tx: Arc<MaterializeDispatch>,
@@ -255,9 +262,22 @@ pub struct WalShardWriter {
     bucket: Arc<str>,
     key: Arc<str>,
     version_id: Arc<str>,
-    buf: Vec<u8>,
     threshold: usize,
+    mode: WalMode,
 }
+
+enum WalMode {
+    Buffering(Vec<u8>),
+    Streaming {
+        file: tokio::fs::File,
+    },
+}
+
+/// Promote to streaming once the buffer would exceed this size. Set
+/// well above `wal_threshold` so that objects just over the WAL
+/// threshold do not incur a file open + flush mid-stream. Large
+/// objects still promote early enough to overlap disk with network.
+const WAL_STREAMING_PROMOTE_BYTES: usize = 1024 * 1024;
 
 impl WalShardWriter {
     pub fn new(
@@ -276,93 +296,227 @@ impl WalShardWriter {
             bucket: Arc::from(bucket),
             key: Arc::from(key),
             version_id: Arc::from(version_id.unwrap_or("")),
-            buf: Vec::with_capacity(threshold),
             threshold,
+            mode: WalMode::Buffering(Vec::with_capacity(threshold)),
         }
+    }
+
+    /// Open the final shard.dat for the given identity. Factored out
+    /// of &self so we can call it while holding a mutable borrow of
+    /// self.mode inside write_chunk.
+    async fn open_shard_file(
+        root: &Path,
+        bucket: &str,
+        key: &str,
+        version_id: &str,
+    ) -> Result<tokio::fs::File, StorageError> {
+        let shard_path = if !version_id.is_empty() {
+            let ver_dir = pathing::version_dir(root, bucket, key, version_id)?;
+            tokio::fs::create_dir_all(&ver_dir).await?;
+            pathing::version_shard_path(root, bucket, key, version_id)?
+        } else {
+            let obj_dir = pathing::object_dir(root, bucket, key)?;
+            tokio::fs::create_dir_all(&obj_dir).await?;
+            obj_dir.join("shard.dat")
+        };
+        Ok(tokio::fs::File::create(&shard_path).await?)
     }
 }
 
 #[async_trait::async_trait]
 impl ShardWriter for WalShardWriter {
     async fn write_chunk(&mut self, data: &[u8]) -> Result<(), StorageError> {
-        self.buf.extend_from_slice(data);
-        Ok(())
+        // Check whether we need to promote out of Buffering BEFORE
+        // holding a mutable borrow of self.mode; this lets us call
+        // open_shard_file (which needs immutable borrows of path
+        // fields) during the promotion.
+        let promote = match &self.mode {
+            WalMode::Buffering(buf) => {
+                buf.len() + data.len() > WAL_STREAMING_PROMOTE_BYTES
+            }
+            WalMode::Streaming { .. } => false,
+        };
+        if promote {
+            let mut file = Self::open_shard_file(
+                &self.root, &self.bucket, &self.key, &self.version_id,
+            )
+            .await?;
+            if let WalMode::Buffering(buf) = &self.mode {
+                if !buf.is_empty() {
+                    file.write_all(buf).await?;
+                }
+            }
+            file.write_all(data).await?;
+            self.mode = WalMode::Streaming { file };
+            return Ok(());
+        }
+        match &mut self.mode {
+            WalMode::Buffering(buf) => {
+                buf.extend_from_slice(data);
+                Ok(())
+            }
+            WalMode::Streaming { file } => {
+                file.write_all(data).await?;
+                Ok(())
+            }
+        }
     }
 
     async fn finalize(self: Box<Self>, meta: &ObjectMeta) -> Result<(), StorageError> {
         let is_versioned = !self.version_id.is_empty();
-        // if data exceeded WAL threshold, fall back to file tier
-        if self.buf.len() > self.threshold {
-            if is_versioned {
-                let ver_dir = pathing::version_dir(&self.root, &self.bucket, &self.key, &self.version_id)?;
-                tokio::fs::create_dir_all(&ver_dir).await?;
-                let shard_path = pathing::version_shard_path(&self.root, &self.bucket, &self.key, &self.version_id)?;
-                let meta_path = pathing::object_meta_path(&self.root, &self.bucket, &self.key)?;
+        let this = *self;
+        match this.mode {
+            WalMode::Streaming { mut file } => {
+                // Large object wrote directly to shard.dat during
+                // the stream. Flush, then write meta.json to match
+                // the file-tier layout LocalShardWriter produces.
+                file.flush().await?;
+                drop(file);
 
-                // read-modify-write meta.json: prepend the new version
-                let mut mf = read_meta_file(&meta_path).await.unwrap_or_else(|_| ObjectMetaFile {
-                    bucket: self.bucket.to_string(),
-                    key: self.key.to_string(),
-                    versions: Vec::new(),
-                });
-                if mf.bucket.is_empty() { mf.bucket = self.bucket.to_string(); }
-                if mf.key.is_empty() { mf.key = self.key.to_string(); }
-                mf.versions.retain(|v| v.version_id != self.version_id.as_ref());
-                for v in &mut mf.versions { v.is_latest = false; }
+                if is_versioned {
+                    let meta_path = pathing::object_meta_path(
+                        &this.root, &this.bucket, &this.key,
+                    )?;
+                    let mut mf = read_meta_file(&meta_path).await.unwrap_or_else(|_| {
+                        ObjectMetaFile {
+                            bucket: this.bucket.to_string(),
+                            key: this.key.to_string(),
+                            versions: Vec::new(),
+                        }
+                    });
+                    if mf.bucket.is_empty() {
+                        mf.bucket = this.bucket.to_string();
+                    }
+                    if mf.key.is_empty() {
+                        mf.key = this.key.to_string();
+                    }
+                    mf.versions
+                        .retain(|v| v.version_id != this.version_id.as_ref());
+                    for v in &mut mf.versions {
+                        v.is_latest = false;
+                    }
+                    let mut version = meta.clone();
+                    version.is_latest = true;
+                    version.version_id = this.version_id.to_string();
+                    mf.versions.insert(0, version);
+                    write_meta_file(&meta_path, &mf)
+                        .await
+                        .map_err(StorageError::Io)?;
+                } else {
+                    let meta_path = pathing::object_meta_path(
+                        &this.root, &this.bucket, &this.key,
+                    )?;
+                    let mut version = meta.clone();
+                    version.is_latest = true;
+                    let mf = ObjectMetaFile {
+                        bucket: this.bucket.to_string(),
+                        key: this.key.to_string(),
+                        versions: vec![version],
+                    };
+                    write_meta_file(&meta_path, &mf)
+                        .await
+                        .map_err(StorageError::Io)?;
+                }
+                Ok(())
+            }
+            WalMode::Buffering(buf) => {
+                if buf.len() <= this.threshold {
+                    // Small object: append needle to WAL mmap, fire-and-forget
+                    // the materialize request. Data is durable in the WAL
+                    // segment and findable via pending map.
+                    let vid_opt = if is_versioned {
+                        Some(this.version_id.as_ref())
+                    } else {
+                        None
+                    };
+                    let needle = super::needle::Needle::new(
+                        &this.bucket, &this.key, vid_opt, meta, &buf,
+                    )?;
+
+                    let entry = {
+                        let mut w = this.wal.lock().map_err(|e| {
+                            StorageError::Internal(format!("wal lock: {}", e))
+                        })?;
+                        w.append(&needle)?
+                    };
+
+                    let req = MaterializeRequest {
+                        bucket: this.bucket.clone(),
+                        key: this.key.clone(),
+                        version_id: this.version_id.clone(),
+                        entry,
+                    };
+                    let _ = this.wal_tx.try_send(req);
+                    return Ok(());
+                }
+
+                // Medium object: too big for the WAL needle path but
+                // never crossed the streaming promote threshold. Write
+                // the buffered bytes and meta.json together (same layout
+                // as LocalShardWriter).
+                if is_versioned {
+                    let ver_dir = pathing::version_dir(
+                        &this.root, &this.bucket, &this.key, &this.version_id,
+                    )?;
+                    tokio::fs::create_dir_all(&ver_dir).await?;
+                    let shard_path = pathing::version_shard_path(
+                        &this.root, &this.bucket, &this.key, &this.version_id,
+                    )?;
+                    let meta_path = pathing::object_meta_path(
+                        &this.root, &this.bucket, &this.key,
+                    )?;
+                    let mut mf = read_meta_file(&meta_path).await.unwrap_or_else(|_| {
+                        ObjectMetaFile {
+                            bucket: this.bucket.to_string(),
+                            key: this.key.to_string(),
+                            versions: Vec::new(),
+                        }
+                    });
+                    if mf.bucket.is_empty() {
+                        mf.bucket = this.bucket.to_string();
+                    }
+                    if mf.key.is_empty() {
+                        mf.key = this.key.to_string();
+                    }
+                    mf.versions
+                        .retain(|v| v.version_id != this.version_id.as_ref());
+                    for v in &mut mf.versions {
+                        v.is_latest = false;
+                    }
+                    let mut version = meta.clone();
+                    version.is_latest = true;
+                    version.version_id = this.version_id.to_string();
+                    mf.versions.insert(0, version);
+                    tokio::fs::write(&shard_path, &buf).await?;
+                    write_meta_file(&meta_path, &mf)
+                        .await
+                        .map_err(StorageError::Io)?;
+                    return Ok(());
+                }
+
+                let obj_dir = pathing::object_dir(
+                    &this.root, &this.bucket, &this.key,
+                )?;
+                tokio::fs::create_dir_all(&obj_dir).await?;
+                let shard_path = obj_dir.join("shard.dat");
+                let meta_path = obj_dir.join("meta.json");
                 let mut version = meta.clone();
                 version.is_latest = true;
-                version.version_id = self.version_id.to_string();
-                mf.versions.insert(0, version);
-
-                tokio::fs::write(&shard_path, &self.buf).await?;
-                write_meta_file(&meta_path, &mf).await.map_err(StorageError::Io)?;
-                return Ok(());
+                let mf = ObjectMetaFile {
+                    bucket: this.bucket.to_string(),
+                    key: this.key.to_string(),
+                    versions: vec![version],
+                };
+                let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
+                    StorageError::Internal(format!("simd_json meta serialize: {}", e))
+                })?;
+                tokio::try_join!(
+                    tokio::fs::write(&shard_path, &buf),
+                    tokio::fs::write(&meta_path, &meta_json),
+                )?;
+                Ok(())
             }
-            let obj_dir = pathing::object_dir(&self.root, &self.bucket, &self.key)?;
-            tokio::fs::create_dir_all(&obj_dir).await?;
-            let shard_path = obj_dir.join("shard.dat");
-            let meta_path = obj_dir.join("meta.json");
-            let mut version = meta.clone();
-            version.is_latest = true;
-            let mf = ObjectMetaFile {
-                bucket: self.bucket.to_string(),
-                key: self.key.to_string(),
-                versions: vec![version],
-            };
-            let meta_json = simd_json::serde::to_vec(&mf).map_err(|e| {
-                StorageError::Internal(format!("simd_json meta serialize: {}", e))
-            })?;
-            tokio::try_join!(
-                tokio::fs::write(&shard_path, &self.buf),
-                tokio::fs::write(&meta_path, &meta_json),
-            )?;
-            return Ok(());
         }
-
-        // small object: append to WAL, send lightweight request (no data copy)
-        let vid_opt = if is_versioned { Some(self.version_id.as_ref()) } else { None };
-        let needle = super::needle::Needle::new(&self.bucket, &self.key, vid_opt, meta, &self.buf)?;
-
-        let entry = {
-            let mut w = self.wal.lock().map_err(|e| {
-                StorageError::Internal(format!("wal lock: {}", e))
-            })?;
-            w.append(&needle)?
-        };
-
-        // fire-and-forget: data is durable in the WAL segment and
-        // findable via pending map. materialize is best-effort -- if
-        // the channel is full or closed, recovery will pick it up on
-        // restart. try_send avoids the .await entirely.
-        let req = MaterializeRequest {
-            bucket: self.bucket.clone(),
-            key: self.key.clone(),
-            version_id: self.version_id.clone(),
-            entry,
-        };
-        let _ = self.wal_tx.try_send(req);
-
-        Ok(())
     }
 }
 

@@ -353,8 +353,11 @@ Source: `abixio-ui bench --layers L3 --write-paths wal`,
 The WAL appends a checksummed needle directly into a writable mmap
 segment (zero syscalls, zero allocation). At 4KB it is 5.4x faster
 than the file tier. At 64KB it is competitive with all tiers. At
-10MB+ the WalShardWriter buffers then falls back to the file tier,
-which adds overhead vs the direct file path.
+10MB+ the `WalShardWriter` operates in streaming mode: it buffers
+incoming chunks up to 1 MB, then opens the final `shard.dat` and
+forwards subsequent chunks directly to it (matching
+`LocalShardWriter`), so network receive overlaps with disk write
+instead of buffering the whole object in RAM.
 
 Head-to-head release-mode unit test (`write_shard` only, same process,
 same disk): WAL 3us, file 878us at 4KB. WAL 30us at 64KB. The L3 bench

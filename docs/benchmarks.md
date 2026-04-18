@@ -82,58 +82,65 @@ L7 signed PUT (SDK SHA-256s the body before send):
 
 ## Competitive (canonical stack vs RustFS vs MinIO)
 
-Measured 2026-04-18 on the canonical stack (AbixIO = wal+wc+rc).
+Measured 2026-04-18 on the canonical stack (AbixIO = wal+wc+rc) with
+the streaming WAL-shard writer (promote-to-file at 1 MB buffered).
 SDK client, HTTPS + SigV4. Results in
-`bench-results/competitive-2026-04-18-canonical.json`.
+`bench-results/competitive-2026-04-18-streaming-v2.json`.
 
 ### Small-object PUT/GET (MB/s)
 
 | Op | AbixIO | RustFS | MinIO | AbixIO vs best competitor |
 |---|---|---|---|---|
-| 4KB PUT unsigned | **2.7** | 1.4 | 1.8 | **1.50x MinIO** |
-| 4KB PUT signed | **2.7** | 1.5 | 1.9 | **1.42x MinIO** |
-| 4KB GET cold | **3.8** | 2.3 | 3.6 | 1.06x MinIO |
-| 4KB GET hot | **4.2** | 2.4 | 3.9 | 1.08x MinIO |
-| 64KB PUT unsigned | **28.1** | 20.8 | 27.7 | 1.01x MinIO |
-| 64KB PUT signed | **25.0** | 15.4 | 22.5 | 1.11x MinIO |
-| 64KB GET cold | **50.1** | 28.2 | 44.4 | **1.13x MinIO** |
-| 64KB GET hot | **51.6** | 31.8 | 42.6 | **1.21x MinIO** |
+| 4KB PUT unsigned | **2.4** | 1.4 | 1.9 | **1.26x MinIO** |
+| 4KB PUT signed | **2.0** | 1.5 | 1.9 | 1.05x MinIO |
+| 4KB GET cold | 3.6 | 2.4 | 3.4 | 1.06x MinIO |
+| 4KB GET hot | 3.8 | 2.6 | **3.8** | tie MinIO |
+| 64KB PUT unsigned | **27.5** | 19.8 | 27.4 | 1.00x MinIO |
+| 64KB PUT signed | 20.8 | 14.3 | **23.4** | 0.89x MinIO |
+| 64KB GET cold | 44.2 | 26.2 | **44.2** | tie MinIO |
+| 64KB GET hot | **47.9** | 26.7 | 45.8 | 1.05x MinIO |
 
-On the canonical stack AbixIO wins every small-object row. The 4KB
-PUT lead is the biggest jump (1.5x MinIO) thanks to the write cache
-taking the ack path to RAM. 64KB GET wins both cold and hot because
-the read cache with warm-on-write bypasses disk entirely.
+AbixIO wins or ties every small-object PUT/GET except 64KB signed
+(the MD5 bottleneck on signed writes is a known SDK floor). Warm-on-write
+read cache keeps 4KB/64KB GET within a cache-hit, so MinIO's mmap
+scan advantage shrinks.
 
 ### Large-object PUT/GET (MB/s)
 
 | Op | AbixIO | RustFS | MinIO |
 |---|---|---|---|
-| 10MB PUT unsigned | 291.5 | **435.3** | 266.0 |
-| 10MB PUT signed | **94.7** | 75.5 | 113.8 |
-| 10MB GET | **223.5** | 198.0 | 213.3 |
-| 1GB PUT unsigned | 317.2 | **591.6** | 457.0 |
-| 1GB PUT signed | 94.7 | 80.4 | **130.6** |
-| 1GB GET | 234.4 | **282.5** | 237.5 |
+| 10MB PUT unsigned | 282.0 | **418.7** | 270.6 |
+| 10MB PUT signed | 104.5 | 75.8 | **115.0** |
+| 10MB GET | **250.6** | 203.8 | 210.3 |
+| 1GB PUT unsigned | 356.2 | **608.6** | 462.7 |
+| 1GB PUT signed | 104.5 | 78.4 | **133.9** |
+| 1GB GET | 250.2 | **255.6** | 240.6 |
 
-At 10MB+ the canonical stack bypasses wc/rc/WAL and writes go
-through the file tier. RustFS still wins unsigned PUT -- AbixIO
-pays the per-object EC pipeline cost even on 1 disk / ftt=0
-(known gap, see
-[write-path.md::Design gap: unnecessary EC on single disk]).
-GETs are competitive.
+Large unsigned PUT: AbixIO closed the gap vs RustFS from 1.87x to
+1.71x at 1GB after the streaming WAL fix (prior: 317 MB/s; now
+356). The remaining gap is the per-object EC pipeline cost (RS
+encode + per-shard blake3 + separate shard.dat + meta.json), which
+AbixIO pays even on 1 disk / ftt=0. Known gap -- see
+[write-path.md::Design gap: unnecessary EC on single disk].
+
+Large signed PUT: AbixIO beats RustFS at 10MB and 1GB (the signed
+floor is MD5 at ~100 MB/s across all three; implementation overhead
+determines the rest).
+
+Large GET: AbixIO wins 10MB, ties 1GB.
 
 ### Metadata (p50 latency)
 
 | Op | AbixIO | RustFS | MinIO |
 |---|---|---|---|
-| HEAD | **554us** | 696us | 561us |
-| LIST (100 obj) | 20.7ms | 30.1ms | **6.9ms** |
-| DELETE | **1.0ms** | 2.1ms | 1.4ms |
+| HEAD | 600us | 677us | **510us** |
+| LIST (100 obj) | 21.2ms | 29.8ms | **6.8ms** |
+| DELETE | **1.0ms** | 2.2ms | 1.3ms |
 
-AbixIO wins HEAD (barely) and DELETE. MinIO's 3x lead on LIST is
-the remaining metadata gap -- its single-file metadata layout is
-a cheap scan for bucket listings where AbixIO walks a directory
-tree.
+AbixIO wins DELETE and sits between RustFS and MinIO on HEAD.
+MinIO's 3x lead on LIST is the remaining metadata gap -- its
+single-file metadata layout is a cheap scan for bucket listings
+where AbixIO walks a directory tree.
 
 ---
 
@@ -228,10 +235,12 @@ Audited against the codebase on 2026-04-18.
 - Ablation matrix (8 configs) measured 2026-04-18 at 4KB/64KB
   (`bench-results/rc-axis-2026-04-18.json`).
 - Competitive (RustFS/MinIO) measured 2026-04-18 on the canonical
-  stack (`bench-results/competitive-2026-04-18-canonical.json`).
-  The older 8-config run is archived at
-  `bench-results/competitive-2026-04-18.json` for ablation
-  reference.
+  stack with the streaming WAL-shard writer
+  (`bench-results/competitive-2026-04-18-streaming-v2.json`). The
+  pre-streaming canonical run is archived at
+  `bench-results/competitive-2026-04-18-canonical.json` and the
+  older 8-config run at `bench-results/competitive-2026-04-18.json`
+  for ablation reference.
 - All benchmarks live in `abixio-ui/src/bench/`. Run via
   `abixio-ui bench`. Defaults now match the production server
   stack (wal + wc + rc). Pass `--write-paths file,wal --write-cache
