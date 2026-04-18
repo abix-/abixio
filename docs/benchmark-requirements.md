@@ -82,47 +82,44 @@ Check exclusions: `powershell -Command "(Get-MpPreference).ExclusionPath"`
 
 ## Design principle
 
-One configurable harness, not dozens of separate tests.
-Every axis is selectable: run all benchmarks or narrow to exactly
-what you need.
+One configurable harness. Defaults match the production server
+stack (wal+wc+rc, the canonical AbixIO configuration). Ablations
+and cross-tier comparisons are opt-in via explicit CLI flags.
 
 ## Configuration
 
-All axes controlled by CLI flags. Default: run everything.
-Comma-separated values to select multiple. Single value to narrow.
+All axes controlled by CLI flags. Single-value defaults produce the
+canonical stack; comma-separated or `both` produce ablation rows.
 
 | Flag | Values | Default |
 |---|---|---|
 | `--sizes` | `4KB,64KB,10MB,100MB,1GB` | all |
 | `--layers` | `L1,L2,L3,L4,L5,L6,L7` | all |
-| `--write-paths` | `file,wal` | all |
-| `--write-cache` | `on,off,both` | both |
-| `--read-cache` | `on,off,both` | both |
+| `--write-paths` | `file,wal` | `wal` (canonical) |
+| `--write-cache` | `on,off,both` | `on` (canonical) |
+| `--read-cache` | `on,off,both` | `on` (canonical) |
 | `--servers` | `abixio,rustfs,minio` | all |
 | `--clients` | `sdk,aws-cli,rclone` | all |
 | `--ops` | `PUT,GET,HEAD,LIST,DELETE` | all |
-| `--iters` | number | auto-scaled by size |
+| `--iters` | number | auto-scaled by size (cap 1000) |
 | `--disks` | `1,4` (comma-separated) | 1 |
 | `--tls` | `on,off,both` | on |
-| `--tmp-dir` | path | system temp dir |
+| `--tmp-dir` | path | `C:\code\bench-tmp` |
 
 Examples:
 
 ```bash
-# full suite
+# canonical stack against every server and client
 abixio-ui bench
 
-# just 4KB PUT through the WAL write path, no write cache
-abixio-ui bench --sizes 4KB --ops PUT --write-paths wal --write-cache off
+# full ablation matrix (8 configs)
+abixio-ui bench --write-paths file,wal --write-cache both --read-cache both
 
-# just the competitive comparison at 10MB
-abixio-ui bench --sizes 10MB --layers L7
+# canonical stack at 4KB + 64KB only, abixio vs competitors
+abixio-ui bench --sizes 4KB,64KB --layers L7
 
 # just the disk baseline
 abixio-ui bench --layers L5
-
-# write cache on vs off for all tiers at 4KB
-abixio-ui bench --sizes 4KB --write-cache both
 ```
 
 ## Sizes
