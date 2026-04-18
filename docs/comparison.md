@@ -128,8 +128,9 @@ into a writable mmap segment (zero syscalls, zero allocation). A
 background worker materializes each entry to its final file-per-object
 location (shard.dat + meta.json). The WAL is ephemeral -- entries are
 deleted after materialization. No GC, no compaction, no permanent
-in-memory index. 4KB PUT: 3us in release-mode head-to-head, 148us
-through the full VolumePool pipeline. See [write-wal.md](write-wal.md).
+in-memory index. 4KB PUT: 3us in release-mode head-to-head, 136us
+through the full VolumePool pipeline (L3 benchmark, 2026-04-18).
+See [write-wal.md](write-wal.md).
 
 MinIO and RustFS mitigate small-object overhead by inlining data into
 their metadata files. AbixIO goes further by eliminating the per-object

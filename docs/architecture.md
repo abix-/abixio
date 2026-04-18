@@ -64,14 +64,16 @@ cluster-control direction.
     entries in a segment are materialized, the segment file is deleted.
     The WAL is ephemeral -- it is a landing zone, not permanent storage.
     No GC, no compaction, no permanent in-memory index, bounded startup
-    cost. 4KB PUT: 148us (5.4x faster than file tier). Head-to-head
-    release-mode unit test: WAL 3us vs file 878us. No fsync. Page cache
-    serves both read and write paths. See [write-wal.md](write-wal.md).
+    cost. 4KB PUT: 136us (5.4x faster than file tier, measured
+    2026-04-18). Head-to-head release-mode unit test: WAL 3us vs
+    file 878us. No fsync. Page cache serves both read and write
+    paths. See [write-wal.md](write-wal.md).
 
 14. **Three-tier storage architecture.** WAL handles fast writes (append
-    to mmap, ack, materialize in background). A planned read cache will
-    handle fast reads for hot small objects (LRU/frequency eviction,
-    bounded RAM). The file tier is the permanent storage (shard.dat +
+    to mmap, ack, materialize in background). The read cache handles
+    fast reads for hot small objects (LRU eviction, bounded RAM,
+    invalidated on PUT/DELETE/versioning ops). The file tier is the
+    permanent storage (shard.dat +
     meta.json, inspectable, no GC). Each tier is independent: WAL owns
     writes, read cache will own reads, file tier owns durability.
 

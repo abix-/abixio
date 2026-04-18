@@ -19,7 +19,7 @@ node-level resilience, not product support.
 !!! warning "Early development"
     AbixIO is not production-ready yet.
 
-Current reality as of 2026-04-13:
+Current reality as of 2026-04-18:
 
 - first commit: 2026-04-04
 - no releases, packaging, or production deployments

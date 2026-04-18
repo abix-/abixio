@@ -4,7 +4,7 @@ Completion ratings for every area that matters before AbixIO can be
 called production-ready. Rated 1-10 where 1 = concept only, 5 = works
 but gaps remain, 10 = production-grade.
 
-Last updated: 2026-04-16
+Last updated: 2026-04-18
 
 ## Overall: 4/10
 
@@ -134,12 +134,15 @@ not a product.
 
 ## Performance: 8/10
 
+Numbers measured 2026-04-18, SDK client, 1 disk, release build. See
+[benchmarks.md](benchmarks.md) for the full matrix.
+
 | Area | Rating | Notes |
 |---|---|---|
-| Small object PUT (4KB) | 9/10 | L3: WAL 134us (7313 obj/s), file 693us (1344 obj/s). WAL 5.2x faster. L7 pending |
-| Medium PUT (10MB) | 8/10 | L3: file 23.6ms (422 MB/s), WAL 25.9ms (380 MB/s). file wins 1.1x |
-| Large PUT (1GB) | 8/10 | L3: file 2.26s (452 MB/s), WAL 3.20s (320 MB/s). file wins 1.4x |
-| GET (mmap) | 8/10 | zero-copy 1+0, zero-alloc EC, 1220 MB/s at 1GB |
+| Small object PUT (4KB) | 9/10 | L3: WAL 136us (7236 obj/s), file 729us (1264 obj/s). WAL 5.4x faster. L7 SDK end-to-end 2.6-3.0 MB/s (TLS + SigV4 + SDK overhead dominates at 4KB) |
+| Medium PUT (10MB) | 8/10 | L3: file 23.9ms (416 MB/s), WAL 26.9ms (368 MB/s). file wins 1.1x. L7 SDK: file 286 MB/s, WAL 317 MB/s unsigned; ~109 / ~93 MB/s signed |
+| Large PUT (1GB) | 8/10 | L3: file 2.36s (434 MB/s), WAL 3.24s (290 MB/s). file wins 1.5x. L7 SDK: 273-307 MB/s unsigned, ~92-107 MB/s signed |
+| GET (mmap) | 8/10 | zero-copy 1+0, zero-alloc EC. L3: ~1.2 GB/s at 10MB+, L6: ~1.06 GB/s at 10MB+, L7 SDK: 245-287 MB/s (TLS ceiling) |
 | Concurrent / parallel clients | 0/10 | not benchmarked, not tested |
 
 ---

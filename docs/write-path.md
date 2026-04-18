@@ -111,26 +111,26 @@ Source: `abixio-ui bench --layers L1`, `bench-results/l1-http-ingress.json`
 
 | Size | p50 | p95 | p99 | throughput |
 |---|---|---|---|---|
-| 4KB | `100us` | `155us` | `182us` | `34.7 MB/s` |
-| 64KB | `179us` | `242us` | `303us` | `328.2 MB/s` |
-| 10MB | `43.6ms` | `47.4ms` | `48.4ms` | `267.6 MB/s` |
-| 100MB | `386.6ms` | `397.4ms` | `397.4ms` | `310.8 MB/s` |
-| 1GB | `1.62s` | `3.98s` | `3.98s` | `456.7 MB/s` |
+| 4KB | `87us` | `129us` | `152us` | `41.0 MB/s` |
+| 64KB | `117us` | `160us` | `187us` | `506.8 MB/s` |
+| 10MB | `20.9ms` | `29.0ms` | `33.1ms` | `514.5 MB/s` |
+| 100MB | `119.9ms` | `265.0ms` | `273.4ms` | `710.6 MB/s` |
+| 1GB | `1.35s` | `1.41s` | `1.41s` | `753.2 MB/s` |
 
 #### GET (hyper returns sized body, reqwest consumes it)
 
 | Size | p50 | p95 | p99 | throughput |
 |---|---|---|---|---|
-| 4KB | `90us` | `145us` | `170us` | `38.0 MB/s` |
-| 64KB | `166us` | `197us` | `230us` | `382.7 MB/s` |
-| 10MB | `30.6ms` | `46.5ms` | `47.6ms` | `352.4 MB/s` |
-| 100MB | `171.2ms` | `396.9ms` | `396.9ms` | `476.8 MB/s` |
-| 1GB | `1.61s` | `1.73s` | `1.73s` | `663.1 MB/s` |
+| 4KB | `82us` | `122us` | `150us` | `44.8 MB/s` |
+| 64KB | `105us` | `132us` | `168us` | `574.9 MB/s` |
+| 10MB | `11.8ms` | `27.1ms` | `29.7ms` | `636.4 MB/s` |
+| 100MB | `117.6ms` | `266.0ms` | `276.4ms` | `720.9 MB/s` |
+| 1GB | `1.29s` | `2.07s` | `2.07s` | `725.6 MB/s` |
 
 `hyper` accepts the request, parses HTTP/1.1, and exposes the body as
 a stream. At small sizes (4KB, 64KB), latency is dominated by TCP
 round-trip and HTTP framing, not data transfer. At large sizes (100MB,
-1GB), throughput reaches 400-630 MB/s, which is the hyper/Windows
+1GB), throughput reaches 700-750 MB/s, which is the hyper/Windows
 loopback ceiling.
 
 GET is faster than PUT at every size because the hyper server builds
@@ -151,22 +151,22 @@ Source: `abixio-ui bench --layers L2`, `bench-results/l2-s3proto-isolated.json`
 
 | Size | p50 | p95 | p99 | throughput |
 |---|---|---|---|---|
-| 4KB | `60us` | `105us` | `166us` | `56.8 MB/s` |
-| 64KB | `197us` | `299us` | `334us` | `293.2 MB/s` |
-| 10MB | `7.8ms` | `8.5ms` | `8.7ms` | `1275.5 MB/s` |
-| 100MB | `65.7ms` | `70.5ms` | `70.5ms` | `1499.4 MB/s` |
-| 1GB | `664.7ms` | `680.4ms` | `680.4ms` | `1536.8 MB/s` |
+| 4KB | `56us` | `89us` | `108us` | `65.0 MB/s` |
+| 64KB | `96us` | `135us` | `164us` | `617.9 MB/s` |
+| 10MB | `6.0ms` | `6.5ms` | `7.0ms` | `1637.9 MB/s` |
+| 100MB | `55.7ms` | `59.9ms` | `74.9ms` | `1766.5 MB/s` |
+| 1GB | `579.7ms` | `643.2ms` | `643.2ms` | `1754.3 MB/s` |
 
 #### GET (NullBackend returns empty, not meaningful at large sizes)
 
 | Size | p50 | p95 | p99 | throughput |
 |---|---|---|---|---|
-| 4KB | `54us` | `76us` | `97us` | `69.7 MB/s` |
-| 64KB | `53us` | `79us` | `96us` | `1121.6 MB/s` |
+| 4KB | `50us` | `75us` | `90us` | `74.4 MB/s` |
+| 64KB | `51us` | `76us` | `93us` | `1177.1 MB/s` |
 
 GET at 10MB+ is not meaningful because NullBackend returns zero bytes
 regardless of requested size. The GET latency at all sizes is just
-s3s dispatch overhead (~52-118us).
+s3s dispatch overhead (~50-93us).
 
 `s3s` parses S3 headers and dispatches into `AbixioS3::put_object`.
 `src/s3_service.rs` then:
@@ -249,13 +249,13 @@ Source: `abixio-ui bench --layers L4`, `bench-results/l4-compute.json`
 
 | Op | 4KB p50 | 64KB p50 | 10MB p50 | 100MB p50 | 1GB p50 | throughput |
 |---|---|---|---|---|---|---|
-| blake3 | `2us` | `14us` | `2.2ms` | `23.3ms` | `239.6ms` | `4283 MB/s` |
-| md5 | `6us` | `89us` | `14.2ms` | `141.8ms` | `1.45s` | `702 MB/s` |
-| sha256 | `15us` | `224us` | `35.5ms` | `359.6ms` | `3.69s` | `277 MB/s` |
-| rs_encode 3+1 | `1us` | `20us` | `3.6ms` | `35.7ms` | `366.4ms` | `2781 MB/s` |
+| blake3 | `2us` | `13us` | `2.2ms` | `22.9ms` | `238.4ms` | `4273 MB/s` |
+| md5 | `6us` | `89us` | `14.2ms` | `142.1ms` | `1.45s` | `705 MB/s` |
+| sha256 | `15us` | `226us` | `36.1ms` | `360.2ms` | `3.69s` | `277 MB/s` |
+| rs_encode 3+1 | `1us` | `20us` | `3.6ms` | `35.4ms` | `364.1ms` | `2813 MB/s` |
 
 Throughput column is from the 1GB run. blake3 and RS encode are fast
-enough to be invisible in the storage pipeline. MD5 at 702 MB/s is
+enough to be invisible in the storage pipeline. MD5 at 705 MB/s is
 the bottleneck when Content-MD5 is required (skipped by default via
 xxhash64 ETag).
 
@@ -340,24 +340,26 @@ Isolated L3 storage pipeline. Direct VolumePool API call, no HTTP,
 no s3s. 1 disk, ftt=0, no write cache, Defender-excluded tmp dir.
 
 Source: `abixio-ui bench --layers L3 --write-paths wal`,
-`bench-results/1776077316.json`
+`bench-results/main-2026-04-18.json`
 
 | Size | PUT p50 | PUT throughput | GET p50 | GET throughput |
 |---|---|---|---|---|
-| 4KB | `148us` | `24.6 MB/s` | `533us` | `6.9 MB/s` |
-| 64KB | `292us` | `173.3 MB/s` | `565us` | `108.1 MB/s` |
-| 10MB | `30.8ms` | `320.6 MB/s` | `10.4ms` | `944.7 MB/s` |
-| 100MB | `336.5ms` | `293.6 MB/s` | `94.5ms` | `1059.2 MB/s` |
-| 1GB | `3.45s` | `296.7 MB/s` | `1.37s` | `755.7 MB/s` |
+| 4KB | `136us` | `28.3 MB/s` | `491us` | `8.0 MB/s` |
+| 64KB | `274us` | `185.1 MB/s` | `507us` | `121.9 MB/s` |
+| 10MB | `26.9ms` | `368.4 MB/s` | `8.6ms` | `1140.0 MB/s` |
+| 100MB | `315.9ms` | `306.6 MB/s` | `87.2ms` | `1149.2 MB/s` |
+| 1GB | `3.24s` | `289.5 MB/s` | `849.4ms` | `1198.7 MB/s` |
 
 The WAL appends a checksummed needle directly into a writable mmap
 segment (zero syscalls, zero allocation). At 4KB it is 5.4x faster
-than the file tier. At 64KB it is competitive with all tiers. At 10MB+ the WalShardWriter buffers then falls back to
-the file tier, which adds overhead vs the direct file path.
+than the file tier. At 64KB it is competitive with all tiers. At
+10MB+ the WalShardWriter buffers then falls back to the file tier,
+which adds overhead vs the direct file path.
 
 Head-to-head release-mode unit test (`write_shard` only, same process,
-same disk): WAL 3us, file 878us at 4KB. WAL 30us at 64KB. The L3 bench numbers above include VolumePool routing
-overhead (EC, placement, quorum).
+same disk): WAL 3us, file 878us at 4KB. WAL 30us at 64KB. The L3 bench
+numbers above include VolumePool routing overhead (EC, placement,
+quorum).
 
 If the WAL is enabled on a `LocalVolume`, small non-versioned objects
 route through the WAL. Objects above the WAL threshold (default 64KB)
@@ -397,15 +399,15 @@ Isolated L3 storage pipeline. Direct VolumePool API call, no HTTP,
 no s3s. 1 disk, ftt=0, no write cache.
 
 Source: `abixio-ui bench --layers L3 --write-paths file`,
-`bench-results/l3-storage.json`
+`bench-results/main-2026-04-18.json` (put_stream and get_stream rows)
 
 | Size | PUT p50 | PUT throughput | GET p50 | GET throughput |
 |---|---|---|---|---|
-| 4KB | `798us` | `3.9 MB/s` | `428us` | `8.6 MB/s` |
-| 64KB | `961us` | `63.7 MB/s` | `427us` | `137.1 MB/s` |
-| 10MB | `20.1ms` | `496.7 MB/s` | `425us` | `23011 MB/s` |
-| 100MB | `186.2ms` | `536.6 MB/s` | `554us` | `185106 MB/s` |
-| 1GB | `1.89s` | `533.6 MB/s` | `636us` | `1559866 MB/s` |
+| 4KB | `730us` | `4.9 MB/s` | `416us` | `8.9 MB/s` |
+| 64KB | `841us` | `70.9 MB/s` | `411us` | `147.9 MB/s` |
+| 10MB | `19.0ms` | `520.6 MB/s` | `411us` | `23665 MB/s` |
+| 100MB | `181.6ms` | `545.7 MB/s` | `463us` | `207966 MB/s` |
+| 1GB | `1.92s` | `532.3 MB/s` | `629us` | `1601927 MB/s` |
 
 The file tier writes object data and meta.json directly to their
 final paths. No post-write rename, no pre-opened files. At 4KB it
@@ -512,22 +514,23 @@ Isolated L5 disk I/O. Direct tokio::fs calls, no storage pipeline,
 no HTTP, no hashing, no EC. This is the filesystem ceiling. Nothing
 in the stack can write faster than this.
 
-Source: `abixio-ui bench --layers L5`, `bench-results/l5-disk.json`
+Source: `abixio-ui bench --layers L5`,
+`bench-results/main-2026-04-18.json`
 
 | Size | write p50 | write+fsync p50 | read p50 | write MB/s | read MB/s |
 |---|---|---|---|---|---|
-| 4KB | `236us` | `2.5ms` | `66us` | `15.7` | `52.8` |
-| 64KB | `258us` | `2.6ms` | `82us` | `227.1` | `732.2` |
-| 10MB | `4.8ms` | `10.8ms` | `3.6ms` | `2009.5` | `2682.1` |
-| 100MB | `91.9ms` | `79.7ms` | `35.2ms` | `1082.6` | `2859.3` |
-| 1GB | `1.03s` | `1.02s` | `404.6ms` | `996.6` | `2584.2` |
+| 4KB | `262us` | `2.6ms` | `62us` | `14.6` | `61.3` |
+| 64KB | `280us` | `2.7ms` | `71us` | `208.8` | `854.1` |
+| 10MB | `4.7ms` | `14.1ms` | `7.8ms` | `2007.5` | `1281.2` |
+| 100MB | `100.3ms` | `102.5ms` | `73.8ms` | `942.6` | `1336.4` |
+| 1GB | `1.02s` | `893.2ms` | `841.5ms` | `1005.5` | `1217.2` |
 
 Write without fsync goes to OS page cache (RAM). Write+fsync forces
 to physical disk. AbixIO does not fsync individual writes (same as
 MinIO and RustFS). At 1GB the two converge because the OS flushes
 dirty pages during the write.
 
-The gap between L5 write (236us at 4KB) and L3 file tier PUT (847us
+The gap between L5 write (262us at 4KB) and L3 file tier PUT (729us
 at 4KB) is the storage pipeline overhead: EC encoding, hashing,
 metadata serialization, mkdir, and multiple file creates per shard.
 
@@ -542,48 +545,48 @@ pending entries are materialized and write cache is flushed before any
 timed GETs begin. This ensures GET measures read performance from
 the final storage location, not from transitional temp files.
 
-Source: `abixio-ui bench --layers L3 --write-paths file,wal,log,pool`,
-`bench-results/1776077316.json`
+Source: `abixio-ui bench --layers L3 --write-paths file,wal`,
+`bench-results/main-2026-04-18.json`
 
 #### PUT p50 latency by tier (1+0 fast path)
 
-| Size | file | **wal** | best tier |
-|---|---|---|---|---|---|
-| 4KB | `898us` | **`148us`** | `157us` | `160us` | wal |
-| 64KB | `898us` | **`292us`** | `308us` | `277us` | pool |
-| 10MB | `20.1ms` | `30.8ms` | `30.1ms` | **`18.0ms`** | pool |
-| 100MB | `186.2ms` | `336.5ms` | `338.3ms` | **`179.0ms`** | pool |
-| 1GB | **`1.89s`** | `3.45s` | `3.24s` | `1.92s` | file |
-
-#### GET p50 latency by tier (get_stream, mmap, page-cache hot)
-
 | Size | file | wal | best tier |
-|---|---|---|---|---|---|
-| 4KB | `452us` | `533us` | **`33us`** | `660us` | log |
-| 64KB | `519us` | `565us` | **`76us`** | `748us` | log |
+|---|---|---|---|
+| 4KB | `729us` | **`136us`** | wal |
+| 64KB | `858us` | **`274us`** | wal |
+| 10MB | **`23.9ms`** | `26.9ms` | file |
+| 100MB | **`232.7ms`** | `315.9ms` | file |
+| 1GB | **`2.36s`** | `3.24s` | file |
 
-GET is sub-millisecond at all sizes because data sits in OS page
-cache. Log store GET is fastest at small sizes because it reads
-from the permanent in-memory index + mmap segment (no directory
-traversal). WAL GET reads from the segment mmap while pending, then
-falls through to file tier after materialization.
+#### GET p50 latency by tier (buffered, mmap, page-cache hot)
+
+| Size | file | wal |
+|---|---|---|
+| 4KB | `444us` | `491us` |
+| 64KB | `455us` | `507us` |
+| 10MB | `9.2ms` | `8.6ms` |
+| 100MB | `87.2ms` | `87.2ms` |
+| 1GB | `860.7ms` | `849.4ms` |
+
+GET is sub-millisecond at small sizes because data sits in OS page
+cache. WAL GET reads from the segment mmap while pending, then
+falls through to file tier after materialization. At 10MB+ the two
+tiers converge because the mmap read path is the bottleneck.
 
 #### Tier handoff
 
-- **<=64KB PUT**: WAL wins at 4KB (148us, 5.4x faster than file).
-  Pool wins at 64KB (277us) by a small margin over WAL (292us).
-  Both beat file tier by 3x+
-- **<=64KB GET**: file tier and WAL are similar (~500us).
-  A planned read cache will close this gap for hot objects
-- **10MB-100MB**: pool and file win PUT. WAL and log fall back to
-  file tier at these sizes (above the 64KB threshold) and add
-  buffering overhead
-- **>=1GB**: file tier wins PUT. All non-file tiers fall back to
-  file tier with overhead
+- **<=64KB PUT**: WAL wins big (5.4x faster than file at 4KB, 3.1x
+  at 64KB) because it appends directly to a writable mmap segment
+  instead of doing mkdir + File::create per object
+- **<=64KB GET**: file tier and WAL are similar (~450-500us). The
+  LRU read cache closes this gap for hot objects
+- **10MB-1GB PUT**: file wins. WAL above the 64KB threshold falls
+  back to file-tier materialization and adds buffering overhead
 
-**WAL is the recommended default.** It matches or beats log on PUT
-at every size up to the threshold, gives file-per-object final layout,
-has no GC, no permanent index, and bounded startup cost. 
+**WAL is the recommended default for small writes.** Below the
+threshold it is measurably faster with no GC, no permanent index,
+and bounded startup cost. Above the threshold file-tier takes over
+transparently.
 
 ## How other docs should use this page
 
@@ -599,35 +602,39 @@ L6 is NOT isolated. It combines L1 (HTTP) + L2 (S3 protocol) + L3
 (storage) into a single in-process stack. This is what the server
 itself costs per request, without SDK client overhead or TLS.
 
-Source: `abixio-ui bench --layers L6`, `bench-results/l6-s3storage.json`
+Source: `abixio-ui bench --layers L6`,
+`bench-results/main-2026-04-18.json`
 
 Drain and flush between PUT and GET. 1 disk, ftt=0, no write cache.
 
 #### L6 PUT p50 by tier
 
 | Size | file | wal |
-|---|---|---|---|
-| 4KB | `708us` | **`303us`** | `372us` |
-| 64KB | `1.1ms` | **`405us`** | `378us` |
-| 10MB | **`31.1ms`** | `45.1ms` | `45.1ms` |
-| 100MB | **`155.0ms`** | `357.9ms` | `155.9ms` |
-| 1GB | **`1.73s`** | `3.10s` | `1.66s` |
+|---|---|---|
+| 4KB | `675us` | **`290us`** |
+| 64KB | `802us` | **`397us`** |
+| 10MB | **`31.0ms`** | `46.3ms` |
+| 100MB | **`139.9ms`** | `276.0ms` |
+| 1GB | **`1.54s`** | `3.04s` |
 
 #### L6 GET p50 by tier
 
 | Size | file | wal |
-|---|---|---|---|
-| 4KB | `581us` | **`190us`** | `801us` |
-| 64KB | `948us` | **`239us`** | `801us` |
-| 10MB | `18.6ms` | `13.1ms` | **`10.5ms`** |
-| 100MB | `103.9ms` | `201.7ms` | **`107.4ms`** |
-| 1GB | **`1.33s`** | `1.53s` | `1.37s` |
+|---|---|---|
+| 4KB | `537us` | `616us` |
+| 64KB | `683us` | `673us` |
+| 10MB | **`9.2ms`** | `9.1ms` |
+| 100MB | `78.4ms` | `79.4ms` |
+| 1GB | **`955.4ms`** | `918.1ms` |
 
-At 4KB the WAL is the fastest PUT path through the full S3 stack.
+At 4KB the WAL is the fastest PUT path through the full S3 stack
+(2.3x faster than file). Above the 64KB threshold file wins; GET
+converges across tiers at medium+ sizes.
 
 ## Accuracy Report
 
-Audited against the codebase on 2026-04-11.
+Audited against the codebase on 2026-04-18. Timing tables refreshed
+from `bench-results/main-2026-04-18.json`.
 
 | Claim | Status | Evidence |
 |---|---|---|
@@ -641,8 +648,8 @@ Audited against the codebase on 2026-04-11.
 | File-tier writes place the object in its final path before ack | Verified | `src/storage/local_volume.rs` |
 | Remote shard writes POST into `/_storage/v1/*` and then execute the target node's local `write_shard` path | Verified | `src/storage/remote_volume.rs`, `src/storage/storage_server.rs` |
 | Timing tables on this page are measured-only | Verified | All numeric timings here are sourced from existing benchmark or trace docs; no new estimated timings were added |
-| The specific timing values were independently re-run in this pass | Not re-run in this pass | Values were taken from current repo docs and bench artifacts, not freshly benchmarked during this edit |
-| Per-branch tier tables (B/C/D) carry full 5-size PUT and GET p50 plus throughput | Verified | Source: `bench-results/phase8.7-tier-matrix.txt`. Throughput cells are derived as `size_bytes / 1.048576 / p50_us`, so each cell tracks the latency cell exactly and uses the same MB definition as the bench output (1 MB = 1048576 bytes) |
+| The specific timing values were independently re-run in this pass | Verified | All L1/L2/L3/L4/L5/L6 tables re-run on 2026-04-18 via `abixio-ui bench --servers abixio --clients sdk --write-paths file,wal --write-cache both` |
+| Per-branch tier tables (B/C) carry full 5-size PUT and GET p50 plus throughput | Verified | Source: `bench-results/main-2026-04-18.json`. Throughput cells are derived from the same p50 measurements; MB = 1048576 bytes |
 | WAL wins at small sizes, file tier wins at large sizes | Verified | Tier matrix tables in "Where the time goes" show WAL winning <=64KB PUT, file tier winning at 10MB+ |
 
 Verdict: the routing and ack/final-resting-place semantics on this page are grounded in the current code. The timing sections are as authoritative as the current benchmark corpus, but they remain benchmark-derived rather than freshly re-measured in this pass.

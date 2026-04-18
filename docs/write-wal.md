@@ -32,8 +32,9 @@ always open and always fast.
 6. return Ok                  ack to caller
 ```
 
-Total hot path at 4KB: ~147us (vs 143us log, 159us pool, 793us file).
-Head-to-head unit test: 25us WAL vs 30us log (WAL is fastest).
+Total hot path at 4KB: L3 put 136us (7236 obj/s) vs file tier 729us
+(1264 obj/s). WAL is 5.4x faster than file at 4KB, 3.1x at 64KB.
+Measured 2026-04-18, see `docs/benchmarks.md`.
 
 ### Write path (PUT, object > wal_threshold)
 
