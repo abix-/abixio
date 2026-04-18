@@ -579,7 +579,10 @@ tiers converge because the mmap read path is the bottleneck.
   at 64KB) because it appends directly to a writable mmap segment
   instead of doing mkdir + File::create per object
 - **<=64KB GET**: file tier and WAL are similar (~450-500us). The
-  LRU read cache closes this gap for hot objects
+  LRU read cache closes this gap for hot objects. The read cache is
+  populated on every successful small-object PUT (warm-on-write), so
+  the first GET after a write hits RAM: L7 4KB GET p50 drops from
+  1.5ms to 807us when rc is enabled (see `benchmarks.md`)
 - **10MB-1GB PUT**: file wins. WAL above the 64KB threshold falls
   back to file-tier materialization and adds buffering overhead
 

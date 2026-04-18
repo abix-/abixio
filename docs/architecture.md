@@ -69,13 +69,18 @@ cluster-control direction.
     file 878us. No fsync. Page cache serves both read and write
     paths. See [write-wal.md](write-wal.md).
 
-14. **Three-tier storage architecture.** WAL handles fast writes (append
-    to mmap, ack, materialize in background). The read cache handles
-    fast reads for hot small objects (LRU eviction, bounded RAM,
-    invalidated on PUT/DELETE/versioning ops). The file tier is the
-    permanent storage (shard.dat +
-    meta.json, inspectable, no GC). Each tier is independent: WAL owns
-    writes, read cache will own reads, file tier owns durability.
+14. **Three-tier storage architecture.** WAL handles fast writes
+    (append to mmap, ack, materialize in background). The read cache
+    handles fast reads for hot small objects (LRU eviction, bounded
+    RAM, invalidated on PUT/DELETE/versioning ops). The file tier is
+    the permanent storage (shard.dat + meta.json, inspectable, no
+    GC). Each tier is independent: WAL owns writes, read cache owns
+    small-object reads, file tier owns durability.
+
+    **Warm-on-write.** For PUTs <= 64KB, the read cache is populated
+    as part of the write path so the next GET is a RAM hit. The
+    measured 4KB wal+wc+rc L7 GET p50 is 807us, down from 1.5ms
+    without the read cache (1.86x, see [benchmarks.md](benchmarks.md)).
 
 ## Data flow
 

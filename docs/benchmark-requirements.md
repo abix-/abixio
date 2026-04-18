@@ -97,6 +97,7 @@ Comma-separated values to select multiple. Single value to narrow.
 | `--layers` | `L1,L2,L3,L4,L5,L6,L7` | all |
 | `--write-paths` | `file,wal` | all |
 | `--write-cache` | `on,off,both` | both |
+| `--read-cache` | `on,off,both` | both |
 | `--servers` | `abixio,rustfs,minio` | all |
 | `--clients` | `sdk,aws-cli,rclone` | all |
 | `--ops` | `PUT,GET,HEAD,LIST,DELETE` | all |
@@ -214,23 +215,47 @@ crossover point.
 | off | no RAM cache, writes go directly to the tier | `--write-cache 0` |
 | on | RAM DashMap, immediate ack, async flush to disk | `--write-cache 256` (default) |
 
+### Read cache
+
+| State | What it is | CLI flag |
+|---|---|---|
+| off | no read cache, every GET hits disk (or WAL mmap) | `--read-cache 0` |
+| on | LRU post-decode cache, populated on PUT <= 64KB (warm-on-write) AND on GET. Objects > 64KB bypass. | `--read-cache 256` (default) |
+
 ### Test matrix
 
-Every tier tested with write cache off AND write cache on:
+Every tier tested with write cache off / on AND read cache off / on:
 
 | Config | CLI flags |
 |---|---|
-| file | `--write-tier file --write-cache 0` |
-| file+wc | `--write-tier file` |
-| wal | `--write-tier wal --write-cache 0` |
-| wal+wc | `--write-tier wal` |
+| file | `--write-tier file --write-cache 0 --read-cache 0` |
+| file+wc | `--write-tier file --read-cache 0` |
+| file+rc | `--write-tier file --write-cache 0` |
+| file+wc+rc | `--write-tier file` |
+| wal | `--write-tier wal --write-cache 0 --read-cache 0` |
+| wal+wc | `--write-tier wal --read-cache 0` |
+| wal+rc | `--write-tier wal --write-cache 0` |
+| wal+wc+rc | `--write-tier wal` |
 
-This produces 4 AbixIO configurations. The raw tier rows (without
-write cache) show true disk-tier performance. The +wc rows show the
-write cache benefit on top of each tier.
+This produces 8 AbixIO configurations. The raw tier rows show true
+disk-tier performance. `+wc` shows the write cache benefit. `+rc`
+shows the read cache benefit (both cold populate on first GET and
+warm-on-write on PUT).
 
-All operations (PUT, GET, HEAD, LIST, DELETE) tested per configuration.
-All sizes tested per configuration.
+All operations (PUT, GET, HEAD, LIST, DELETE, plus `get_hot` for
+small objects) tested per configuration. All sizes tested per
+configuration.
+
+### get_hot
+
+For sizes <= 64KB (the read cache ceiling), L7 also runs a
+`get_hot` op: after the regular GET loop finishes, the harness
+re-reads a fixed 50-key working set 20 times (1000 iters total).
+This pins the working set inside the LRU so every iteration after
+the first-per-key is a guaranteed cache hit. In practice the
+regular GET loop is already fully cached once warm-on-write kicks
+in; `get_hot` just provides a clean label and a sanity check that
+the hot path has no hidden first-read penalty.
 
 ## Requirement 4: Competitive comparison
 

@@ -499,6 +499,39 @@ impl VolumePool {
                     let shard_bytes: Vec<bytes::Bytes> = shards.into_iter().map(bytes::Bytes::from).collect();
                     drop(ec_span);
 
+                    // warm-on-write: seed the read cache with the freshly
+                    // written bytes so the next GET hits RAM instead of
+                    // paying the disk/materialize round-trip. Size ceiling
+                    // is enforced inside ReadCache::put (max_object_bytes).
+                    // One cheap memcpy from `data`; shard_bytes still flow
+                    // to downstream tiers untouched. Works for any EC
+                    // shape because the GET path checks the cache before
+                    // it inspects erasure geometry.
+                    if let Some(ref cache) = self.read_cache {
+                        if (data.len() as u64) <= cache.max_object_bytes() {
+                            let info = super::metadata::ObjectInfo {
+                                bucket: bucket.to_string(),
+                                key: key.to_string(),
+                                size: data.len() as u64,
+                                etag: etag.clone(),
+                                content_type: content_type.clone(),
+                                created_at,
+                                user_metadata: opts.user_metadata.clone(),
+                                tags: opts.tags.clone(),
+                                version_id: String::new(),
+                                is_delete_marker: false,
+                            };
+                            cache.put(
+                                bucket,
+                                key,
+                                super::read_cache::CacheEntry {
+                                    data: bytes::Bytes::copy_from_slice(&data),
+                                    info,
+                                },
+                            );
+                        }
+                    }
+
                     // try RAM write cache first (zero disk I/O)
                     if let Some(ref cache) = self.write_cache {
                         let cache_entry = super::write_cache::CacheEntry {
@@ -810,19 +843,21 @@ impl Store for VolumePool {
             for disk in self.disks() {
                 if let Ok((mmap, meta)) = disk.mmap_shard(bucket, key).await {
                     let info = Self::meta_to_info(bucket, key, &meta);
-                    // Populate LRU read cache for future GETs, but only
-                    // when the object fits under the cache's object
-                    // ceiling. For bigger objects the mmap path is
-                    // already zero-copy.
+                    // Wrap mmap in a ref-counted Bytes view. Cloning the
+                    // Bytes is a refcount bump; the underlying mmap stays
+                    // alive as long as any clone outlives the original.
+                    // This lets us seed the read cache with a zero-copy
+                    // view instead of memcpy'ing the whole object.
+                    let owned = bytes::Bytes::from_owner(mmap);
                     if let Some(ref cache) = self.read_cache {
                         if meta.version_id.is_empty() && !meta.is_delete_marker
-                            && (mmap.len() as u64) <= cache.max_object_bytes()
+                            && (owned.len() as u64) <= cache.max_object_bytes()
                         {
                             cache.put(
                                 bucket,
                                 key,
                                 super::read_cache::CacheEntry {
-                                    data: bytes::Bytes::copy_from_slice(&mmap[..]),
+                                    data: owned.clone(),
                                     info: info.clone(),
                                 },
                             );
@@ -830,7 +865,6 @@ impl Store for VolumePool {
                     }
                     // yield mmap as 4MB zero-copy slices so hyper can start writing
                     // to TCP immediately instead of processing one 1GB body frame.
-                    let owned = bytes::Bytes::from_owner(mmap);
                     let len = owned.len();
                     let chunk_size = 4 * 1024 * 1024;
                     let chunks: Vec<_> = (0..len).step_by(chunk_size).map(|start| {

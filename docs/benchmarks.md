@@ -83,6 +83,60 @@ from DashMap).
 
 ---
 
+## L7: Read cache for 4KB/64KB GET (warm-on-write)
+
+Measured 2026-04-18, 1000 iters per op, SDK client. The read cache
+is populated on PUT for objects <= 64KB (warm-on-write) and on GET
+for anything that still misses. Subsequent GETs are served from RAM
+without touching disk.
+
+Run: `abixio-ui bench --layers L7 --sizes 4KB,64KB --servers abixio
+--clients sdk --write-paths file,wal --write-cache both
+--read-cache both --ops PUT,GET`. Results in
+`bench-results/rc-axis-2026-04-18.json`.
+
+### L7 4KB GET with / without read cache
+
+| Config | p50 (rc off) | p50 (rc on) | Speedup |
+|---|---|---|---|
+| file | 1.3ms | **875us** | 1.49x |
+| file+wc | 1.3ms | **891us** | 1.46x |
+| wal | 1.4ms | **904us** | 1.55x |
+| wal+wc | 1.5ms | **807us** | **1.86x** |
+
+`get_hot` (re-GETs over a fixed 50-key working set, 20 rounds) sits
+within 5% of the regular GET on rc-on configs, confirming the
+normal bench access pattern already saturates the cache thanks to
+warm-on-write -- there is no "first-read penalty" to hide.
+
+### L7 64KB GET with / without read cache
+
+| Config | p50 (rc off) | p50 (rc on) | Speedup |
+|---|---|---|---|
+| file | 1.8ms | **1.2ms** | 1.50x |
+| file+wc | 1.7ms | **1.2ms** | 1.42x |
+| wal | 1.8ms | **1.2ms** | 1.50x |
+| wal+wc | 1.8ms | **1.2ms** | 1.50x |
+
+### L7 PUT is unchanged by the read cache
+
+Warm-on-write adds a single ~60KB memcpy worst case. That sits
+inside the existing PUT noise floor, so the put / put_signed rows
+are within run-to-run variance across rc on/off.
+
+### What this means
+
+- The `wal+wc+rc` stack is the canonical small-object setup: RAM
+  caches in both directions, WAL for durable-ack fast writes, file
+  tier behind it as the permanent home.
+- A GET of a just-written <= 64KB object is a RAM path with a
+  single SDK round-trip. p50 ~800us at 4KB is almost entirely TLS
+  + SigV4 + hyper -- the storage itself contributes microseconds.
+- Above 64KB, the read cache does not apply (ceiling). GET goes
+  straight to mmap from file tier; see the standard L7 GET table.
+
+---
+
 ## L7: Competitive (AbixIO vs RustFS vs MinIO)
 
 Same harness, same TLS, same SDK, same warmup. Numbers are from the
