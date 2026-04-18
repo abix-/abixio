@@ -6,11 +6,17 @@ how to run benchmarks, see
 
 Measured 2026-04-18 on the WAL + write-cache + read-cache +
 kovarex-enforcement code (post 0a8434c). Release build. 1 disk,
-Defender-excluded tmpdir at `C:\code\bench-tmp`. All layers run back
-to back via `abixio-ui bench --servers abixio --clients sdk
---write-paths file,wal --write-cache both`. JSON archived at
-`bench-results/main-2026-04-18.json`. Competitive comparison
-(RustFS, MinIO) is a separate run.
+Defender-excluded tmpdir at `C:\code\bench-tmp`. SDK client
+(aws-sdk-s3), HTTPS + SigV4, disk-backed PUT source / GET sink.
+
+- L1-L7 abixio-only: `bench-results/main-2026-04-18.json`
+  (run: `abixio-ui bench --servers abixio --clients sdk
+  --write-paths file,wal --write-cache both`)
+- L7 competitive vs RustFS + MinIO:
+  `bench-results/competitive-2026-04-18.json` (run:
+  `abixio-ui bench --servers abixio,rustfs,minio --clients sdk
+  --layers L7 --sizes 4KB,64KB,10MB,1GB --write-paths file,wal
+  --write-cache both`)
 
 ---
 
@@ -74,6 +80,71 @@ read effect (recent entries stay in the mmap region).
 Metadata is tier-independent. HEAD 566-692us, DELETE ~950us-1.1ms,
 LIST 100 objects ~20-21ms. Write cache trims HEAD by ~100us (serves
 from DashMap).
+
+---
+
+## L7: Competitive (AbixIO vs RustFS vs MinIO)
+
+Same harness, same TLS, same SDK, same warmup. Numbers are from the
+competitive run and differ slightly from the abixio-only tables above
+because of per-run variance. Best abixio config per size is shown.
+
+### L7 4KB-64KB (MB/s, SDK, HTTPS)
+
+| Op | AbixIO best | RustFS | MinIO |
+|---|---|---|---|
+| 4KB PUT unsigned | **3.0** (file+wc) | 1.5 | 1.9 |
+| 4KB PUT signed | **2.9** (file+wc) | 1.4 | 1.9 |
+| 4KB GET | 3.0 (file+wc) | 2.4 | **3.6** |
+| 64KB PUT unsigned | **40.8** (file+wc) | 20.9 | 26.5 |
+| 64KB PUT signed | **33.7** (file+wc) | 16.1 | 23.0 |
+| 64KB GET | 35.2 (wal+wc) | 27.7 | **40.8** |
+
+AbixIO's write cache dominates small-object PUT: 2.0x faster than
+RustFS and 1.5x faster than MinIO at 64KB. MinIO wins small GET
+because it has no per-object shard file or meta.json to mmap
+(single-file inlined meta).
+
+### L7 10MB-1GB (MB/s, SDK, HTTPS)
+
+| Op | AbixIO best | RustFS | MinIO |
+|---|---|---|---|
+| 10MB PUT unsigned | 293.6 (wal+wc) | **432.8** | 269.7 |
+| 10MB PUT signed | **108.1** (file) | 75.1 | 113.8 |
+| 10MB GET | **262.4** (file+wc) | 215.0 | 225.2 |
+| 1GB PUT unsigned | 326.8 (wal+wc) | **540.3** | 448.5 |
+| 1GB PUT signed | 105.7 (file+wc) | 79.0 | **130.4** |
+| 1GB GET | 261.0 (wal+wc) | **297.8** | 252.8 |
+
+RustFS wins large unsigned PUT by a wide margin. AbixIO pays the
+per-object EC overhead (RS encode, per-shard blake3, separate
+shard.dat + meta.json) on every write, even at ftt=0 on 1 disk.
+See [write-path.md::Design gap: unnecessary EC on single disk] for
+the known fix path.
+
+### L7 metadata (p50 latency)
+
+| Op | AbixIO best | RustFS | MinIO |
+|---|---|---|---|
+| HEAD | 602us (wal) | 577us | **532us** |
+| LIST (100 obj) | 20.1ms (wal) | 31.3ms | **6.8ms** |
+| DELETE | **944us** (file+wc) | 2.1ms | 1.3ms |
+
+MinIO's LIST is 3x faster than AbixIO; its single-file metadata
+layout is a serious win for bucket scans. AbixIO wins DELETE by a
+comfortable margin against both competitors.
+
+### Summary
+
+- **Small PUT**: AbixIO wins unsigned and signed at 4KB-64KB thanks
+  to the write cache and WAL.
+- **Large PUT**: RustFS wins unsigned; MinIO wins signed 1GB.
+  AbixIO's per-object EC pipeline is the bottleneck.
+- **Small GET**: MinIO wins; AbixIO is within 20%.
+- **Large GET**: AbixIO and RustFS swap the lead by size; MinIO
+  trails slightly.
+- **LIST**: MinIO 3x ahead. Our listing needs work.
+- **DELETE**: AbixIO wins clearly.
 
 ---
 
@@ -254,4 +325,5 @@ layout, layer map, and testing spec.
 
 L1-L7 results above measured 2026-04-18 with the 2-tier (file/wal)
 x write cache matrix, SDK client only, release build. L7
-competitive comparison (RustFS, MinIO) pending a separate run.
+competitive comparison against RustFS and MinIO also measured
+2026-04-18 (`bench-results/competitive-2026-04-18.json`).
