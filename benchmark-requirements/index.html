@@ -1,0 +1,1941 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="S3-compatible erasure-coded object storage server in Rust">
+      
+      
+      
+        <link rel="canonical" href="https://abix-.github.io/abixio/benchmark-requirements/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Benchmark Requirements - AbixIO Server</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#benchmark-requirements" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="AbixIO Server" class="md-header__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AbixIO Server
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Benchmark Requirements
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="AbixIO Server" class="md-nav__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    AbixIO Server
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../write-path/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write Path
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../per-object-ec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-Object EC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../admin-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multipart-upload/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multipart Upload
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../healing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Healing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed-placement-testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tagging/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tagging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../presigned-urls/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Presigned URLs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../conditional-requests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conditional Requests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../error-responses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Error Responses
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bucket-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bucket Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../encryption/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encryption
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../s3-compliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    S3 Compliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#repo-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Repo ownership
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Repo ownership">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#file-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        File layout
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#what-each-layer-tests" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What each layer tests
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#critical-release-mode-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Critical: release mode only
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#critical-defender-excluded-directory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Critical: Defender-excluded directory
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-principle" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design principle
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuration
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sizes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sizes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#requirement-1-raw-disk-io-baseline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirement 1: Raw disk I/O baseline
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#requirement-2-per-layer-performance-through-the-stack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirement 2: Per-layer performance through the stack
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Requirement 2: Per-layer performance through the stack">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#isolation-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Isolation rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#layer-table" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer table
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#requirement-3-per-write-path-performance" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirement 3: Per-write-path performance
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Requirement 3: Per-write-path performance">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#write-tiers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write tiers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#write-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#read-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#test-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Test matrix
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get_hot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        get_hot
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#requirement-4-competitive-comparison" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirement 4: Competitive comparison
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Requirement 4: Competitive comparison">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#test-infrastructure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Test infrastructure
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#clients" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Clients
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#servers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Servers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metrics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metrics
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#requirement-5-flush-before-read" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirement 5: Flush before read
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#requirement-6-fairness" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirement 6: Fairness
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#requirement-7-reproducibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Requirement 7: Reproducibility
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#known-limitations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Known limitations
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#windows-caveats" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Windows caveats
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-we-do-not-test" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What we do NOT test
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#running-benchmarks" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Running benchmarks
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="benchmark-requirements">Benchmark Requirements<a class="headerlink" href="#benchmark-requirements" title="Permanent link">&para;</a></h1>
+<p>What we test, why, and how. This is the spec. All benchmark code
+must satisfy these requirements.</p>
+<h2 id="repo-ownership">Repo ownership<a class="headerlink" href="#repo-ownership" title="Permanent link">&para;</a></h2>
+<p>All benchmarks live in abixio-ui. One harness, one place.</p>
+<p>Test files: <code>abixio-ui/src/bench/</code></p>
+<p>abixio-ui depends on the abixio crate as a library, so it can
+directly import and call internal APIs (VolumePool, LocalVolume,
+Backend, ClusterManager, AbixioDispatch, etc.) for in-process
+layer testing. It also spawns real server processes for L7 and
+competitive comparison.</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>How it runs</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L1 (HTTP transport)</td>
+<td>in-process hyper server</td>
+</tr>
+<tr>
+<td>L2 (S3 protocol)</td>
+<td>in-process s3s server</td>
+</tr>
+<tr>
+<td>L3 (VolumePool)</td>
+<td>in-process, direct VolumePool API calls</td>
+</tr>
+<tr>
+<td>L4 (hashing + RS)</td>
+<td>in-process, direct abixio API calls</td>
+</tr>
+<tr>
+<td>L5 (disk I/O)</td>
+<td>in-process, direct tokio::fs calls</td>
+</tr>
+<tr>
+<td>L6 (S3 + real storage)</td>
+<td>in-process s3s + real VolumePool</td>
+</tr>
+<tr>
+<td>L7 (full SDK client)</td>
+<td>child process, real TCP/TLS</td>
+</tr>
+<tr>
+<td>Competitive comparison</td>
+<td>child processes (AbixIO, RustFS, MinIO)</td>
+</tr>
+</tbody>
+</table>
+<p>L3, L6, and L7 include real storage, so they test all write path
+configurations (2 tiers x 2 cache states).</p>
+<p>L7 and competitive comparison spawn real server binaries. Everything
+else calls abixio library code directly.</p>
+<h3 id="file-layout">File layout<a class="headerlink" href="#file-layout" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>src/bench/
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>    mod.rs              -- run(), CLI arg routing
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>    stats.rs            -- BenchResult, Stats, print/parse, JSON output, baseline comparison
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    l1_http.rs          -- hyper transport floor (PUT/GET, no S3)
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>    l2_s3proto.rs       -- s3s protocol overhead (NullBackend, no real storage)
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>    l3_storage.rs       -- VolumePool put/get/put_stream/get_stream, 1+4 disks
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>    l4_compute.rs       -- hashing (blake3, md5, sha256) + reed-solomon encode
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>    l5_disk.rs          -- raw disk I/O (write, write+fsync, read)
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>    l6_s3storage.rs     -- s3s + real VolumePool (write path x cache matrix)
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>    l7_e2e.rs           -- full SDK client, child servers, competitive comparison
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>    tls.rs              -- TLS cert generation for HTTPS benchmarks
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>    servers.rs          -- AbixioServer builder, ExternalServer (RustFS/MinIO)
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a>    clients.rs          -- AwsCliHarness, rclone helpers, binary finders
+</span></code></pre></div>
+<h3 id="what-each-layer-tests">What each layer tests<a class="headerlink" href="#what-each-layer-tests" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>File</th>
+<th>What it measures</th>
+<th>Write path varies?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L1</td>
+<td>l1_http.rs</td>
+<td>hyper PUT/GET, no S3</td>
+<td>no</td>
+</tr>
+<tr>
+<td>L2</td>
+<td>l2_s3proto.rs</td>
+<td>s3s SigV4+XML, NullBackend</td>
+<td>no</td>
+</tr>
+<tr>
+<td>L3</td>
+<td>l3_storage.rs</td>
+<td>VolumePool put/get, streaming, 1+4 disks</td>
+<td>yes (file/wal x cache on/off)</td>
+</tr>
+<tr>
+<td>L4</td>
+<td>l4_compute.rs</td>
+<td>blake3, md5, sha256, reed-solomon encode</td>
+<td>no</td>
+</tr>
+<tr>
+<td>L5</td>
+<td>l5_disk.rs</td>
+<td>tokio::fs write/read, fsync</td>
+<td>no</td>
+</tr>
+<tr>
+<td>L6</td>
+<td>l6_s3storage.rs</td>
+<td>s3s + real VolumePool</td>
+<td>yes (file/wal x cache on/off)</td>
+</tr>
+<tr>
+<td>L7</td>
+<td>l7_e2e.rs</td>
+<td>full SDK/aws-cli/rclone, AbixIO/RustFS/MinIO, all ops</td>
+<td>yes (file/wal x cache on/off)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="critical-release-mode-only">Critical: release mode only<a class="headerlink" href="#critical-release-mode-only" title="Permanent link">&para;</a></h2>
+<p>Never benchmark with <code>cargo test</code> (debug mode). Debug mode inflates
+hash functions by 48x, mmap writes by 10x, and serialization by 5x.
+All numbers become meaningless.</p>
+<p>Use <code>abixio-ui bench</code> (always release), or <code>cargo test --release</code>
+for in-tree benchmark tests.</p>
+<h2 id="critical-defender-excluded-directory">Critical: Defender-excluded directory<a class="headerlink" href="#critical-defender-excluded-directory" title="Permanent link">&para;</a></h2>
+<p>Benchmark disk paths must be in a Windows Defender exclusion directory.
+Default: <code>C:\code\bench-tmp</code> (configured in abixio-ui <code>--tmp-dir</code>).
+Defender real-time scanning adds 2-10x overhead to file I/O.</p>
+<p>Check exclusions: <code>powershell -Command "(Get-MpPreference).ExclusionPath"</code>
+(requires admin).</p>
+<h2 id="design-principle">Design principle<a class="headerlink" href="#design-principle" title="Permanent link">&para;</a></h2>
+<p>One configurable harness. Defaults match the production server
+stack (wal+wc+rc, the canonical AbixIO configuration). Ablations
+and cross-tier comparisons are opt-in via explicit CLI flags.</p>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<p>All axes controlled by CLI flags. Single-value defaults produce the
+canonical stack; comma-separated or <code>both</code> produce ablation rows.</p>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Values</th>
+<th>Default</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--sizes</code></td>
+<td><code>4KB,64KB,10MB,100MB,1GB</code></td>
+<td>all</td>
+</tr>
+<tr>
+<td><code>--layers</code></td>
+<td><code>L1,L2,L3,L4,L5,L6,L7</code></td>
+<td>all</td>
+</tr>
+<tr>
+<td><code>--write-paths</code></td>
+<td><code>file,wal</code></td>
+<td><code>wal</code> (canonical)</td>
+</tr>
+<tr>
+<td><code>--write-cache</code></td>
+<td><code>on,off,both</code></td>
+<td><code>on</code> (canonical)</td>
+</tr>
+<tr>
+<td><code>--read-cache</code></td>
+<td><code>on,off,both</code></td>
+<td><code>on</code> (canonical)</td>
+</tr>
+<tr>
+<td><code>--servers</code></td>
+<td><code>abixio,rustfs,minio</code></td>
+<td>all</td>
+</tr>
+<tr>
+<td><code>--clients</code></td>
+<td><code>sdk,aws-cli,rclone</code></td>
+<td>all</td>
+</tr>
+<tr>
+<td><code>--ops</code></td>
+<td><code>PUT,GET,HEAD,LIST,DELETE</code></td>
+<td>all</td>
+</tr>
+<tr>
+<td><code>--iters</code></td>
+<td>number</td>
+<td>auto-scaled by size (cap 1000)</td>
+</tr>
+<tr>
+<td><code>--disks</code></td>
+<td><code>1,4</code> (comma-separated)</td>
+<td>1</td>
+</tr>
+<tr>
+<td><code>--tls</code></td>
+<td><code>on,off,both</code></td>
+<td>on</td>
+</tr>
+<tr>
+<td><code>--tmp-dir</code></td>
+<td>path</td>
+<td><code>C:\code\bench-tmp</code></td>
+</tr>
+</tbody>
+</table>
+<p>Examples:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="c1"># canonical stack against every server and client</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>abixio-ui<span class="w"> </span>bench
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="c1"># full ablation matrix (8 configs)</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>abixio-ui<span class="w"> </span>bench<span class="w"> </span>--write-paths<span class="w"> </span>file,wal<span class="w"> </span>--write-cache<span class="w"> </span>both<span class="w"> </span>--read-cache<span class="w"> </span>both
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="c1"># canonical stack at 4KB + 64KB only, abixio vs competitors</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>abixio-ui<span class="w"> </span>bench<span class="w"> </span>--sizes<span class="w"> </span>4KB,64KB<span class="w"> </span>--layers<span class="w"> </span>L7
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="c1"># just the disk baseline</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>abixio-ui<span class="w"> </span>bench<span class="w"> </span>--layers<span class="w"> </span>L5
+</span></code></pre></div>
+<h2 id="sizes">Sizes<a class="headerlink" href="#sizes" title="Permanent link">&para;</a></h2>
+<p>All benchmarks must support these sizes:</p>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td>small object hot path (metadata-bound)</td>
+</tr>
+<tr>
+<td>64KB</td>
+<td>mid-small, tests transition between small/large paths</td>
+</tr>
+<tr>
+<td>10MB</td>
+<td>medium, throughput starts to matter</td>
+</tr>
+<tr>
+<td>100MB</td>
+<td>large, sustained throughput</td>
+</tr>
+<tr>
+<td>1GB</td>
+<td>very large, streaming path, memory pressure</td>
+</tr>
+</tbody>
+</table>
+<h2 id="requirement-1-raw-disk-io-baseline">Requirement 1: Raw disk I/O baseline<a class="headerlink" href="#requirement-1-raw-disk-io-baseline" title="Permanent link">&para;</a></h2>
+<p>Measure the filesystem floor. Nothing in the stack can exceed this.</p>
+<ul>
+<li><code>tokio::fs::write</code> (page cache, may not hit disk)</li>
+<li><code>tokio::fs::write</code> + <code>fsync</code> (forces to physical disk)</li>
+<li><code>tokio::fs::read</code></li>
+<li>At every size</li>
+</ul>
+<p>This is Layer 5 (L5). It answers: "how fast is the disk?"</p>
+<h2 id="requirement-2-per-layer-performance-through-the-stack">Requirement 2: Per-layer performance through the stack<a class="headerlink" href="#requirement-2-per-layer-performance-through-the-stack" title="Permanent link">&para;</a></h2>
+<p>Each layer must be tested in isolation. The benchmark for a layer
+measures ONLY that layer's overhead, not the layers above or below it.
+This is critical for tuning: if you cannot measure a layer by itself,
+you cannot tell whether a change to that layer made it faster or slower.</p>
+<h3 id="isolation-rules">Isolation rules<a class="headerlink" href="#isolation-rules" title="Permanent link">&para;</a></h3>
+<ul>
+<li>L1 tests ONLY HTTP transport. No S3, no storage, no compute.</li>
+<li>L2 tests ONLY S3 protocol parsing and dispatch. No TCP/HTTP
+  transport overhead. Uses in-memory pipe, not a TCP socket.</li>
+<li>L3 tests ONLY the storage pipeline. Calls VolumePool directly,
+  no HTTP, no s3s.</li>
+<li>L4 tests ONLY hashing and erasure coding. Direct function calls,
+  no I/O.</li>
+<li>L5 tests ONLY raw disk I/O. Direct filesystem calls, no storage
+  pipeline.</li>
+<li>L6 is NOT isolated. It is an integration test that combines
+  L1+L2+L3 into a single in-process stack (s3s + real VolumePool).</li>
+<li>L7 is NOT isolated. It is a full end-to-end test with a real
+  server process, real client, TLS, and auth.</li>
+</ul>
+<p>L1 through L5 are isolated layers. Each one can be tuned independently.
+L6 and L7 are integration layers that show how the isolated layers
+compose together.</p>
+<h3 id="layer-table">Layer table<a class="headerlink" href="#layer-table" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>What it measures</th>
+<th>Isolation method</th>
+<th>Write path varies?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L1</td>
+<td>HTTP transport</td>
+<td>bare hyper, reqwest client, no S3</td>
+<td>no</td>
+</tr>
+<tr>
+<td>L2</td>
+<td>S3 protocol</td>
+<td>s3s dispatch via in-memory pipe, NullBackend</td>
+<td>no</td>
+</tr>
+<tr>
+<td>L3</td>
+<td>storage pipeline</td>
+<td>direct VolumePool API, no HTTP</td>
+<td>yes (file/wal x cache on/off)</td>
+</tr>
+<tr>
+<td>L4</td>
+<td>hashing + erasure coding</td>
+<td>direct function calls</td>
+<td>no</td>
+</tr>
+<tr>
+<td>L5</td>
+<td>raw disk I/O</td>
+<td>direct tokio::fs calls</td>
+<td>no</td>
+</tr>
+<tr>
+<td>L6</td>
+<td>S3 + real storage (integration)</td>
+<td>in-process s3s + VolumePool</td>
+<td>yes (file/wal x cache on/off)</td>
+</tr>
+<tr>
+<td>L7</td>
+<td>full e2e (integration)</td>
+<td>child process server, real SDK client</td>
+<td>yes (file/wal x cache on/off)</td>
+</tr>
+</tbody>
+</table>
+<p>Each layer tested at every size.</p>
+<p>L3, L6, and L7 include real storage, so they must be tested across
+all write path configurations (2 tiers x 2 cache states = 4 configs).
+L1, L2, L4, L5 have no storage, so write path does not apply.</p>
+<h2 id="requirement-3-per-write-path-performance">Requirement 3: Per-write-path performance<a class="headerlink" href="#requirement-3-per-write-path-performance" title="Permanent link">&para;</a></h2>
+<p>Two independent axes: write tier and write cache. Test every combination.</p>
+<h3 id="write-tiers">Write tiers<a class="headerlink" href="#write-tiers" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>What it is</th>
+<th>CLI flag</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>file</td>
+<td>direct filesystem writes (mkdir + create + write)</td>
+<td><code>--write-tier file</code></td>
+</tr>
+<tr>
+<td>wal</td>
+<td>write-ahead log, mmap append + background materialize</td>
+<td><code>--write-tier wal</code> (default)</td>
+</tr>
+</tbody>
+</table>
+<p>WAL is the default and handles objects &lt;=64KB in production. File
+handles &gt;64KB. Benchmarks test both tiers at all sizes to show the
+crossover point.</p>
+<h3 id="write-cache">Write cache<a class="headerlink" href="#write-cache" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>What it is</th>
+<th>CLI flag</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>off</td>
+<td>no RAM cache, writes go directly to the tier</td>
+<td><code>--write-cache 0</code></td>
+</tr>
+<tr>
+<td>on</td>
+<td>RAM DashMap, immediate ack, async flush to disk</td>
+<td><code>--write-cache 256</code> (default)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="read-cache">Read cache<a class="headerlink" href="#read-cache" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>What it is</th>
+<th>CLI flag</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>off</td>
+<td>no read cache, every GET hits disk (or WAL mmap)</td>
+<td><code>--read-cache 0</code></td>
+</tr>
+<tr>
+<td>on</td>
+<td>LRU post-decode cache, populated on PUT &lt;= 64KB (warm-on-write) AND on GET. Objects &gt; 64KB bypass.</td>
+<td><code>--read-cache 256</code> (default)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="test-matrix">Test matrix<a class="headerlink" href="#test-matrix" title="Permanent link">&para;</a></h3>
+<p>Every tier tested with write cache off / on AND read cache off / on:</p>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th>CLI flags</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>file</td>
+<td><code>--write-tier file --write-cache 0 --read-cache 0</code></td>
+</tr>
+<tr>
+<td>file+wc</td>
+<td><code>--write-tier file --read-cache 0</code></td>
+</tr>
+<tr>
+<td>file+rc</td>
+<td><code>--write-tier file --write-cache 0</code></td>
+</tr>
+<tr>
+<td>file+wc+rc</td>
+<td><code>--write-tier file</code></td>
+</tr>
+<tr>
+<td>wal</td>
+<td><code>--write-tier wal --write-cache 0 --read-cache 0</code></td>
+</tr>
+<tr>
+<td>wal+wc</td>
+<td><code>--write-tier wal --read-cache 0</code></td>
+</tr>
+<tr>
+<td>wal+rc</td>
+<td><code>--write-tier wal --write-cache 0</code></td>
+</tr>
+<tr>
+<td>wal+wc+rc</td>
+<td><code>--write-tier wal</code></td>
+</tr>
+</tbody>
+</table>
+<p>This produces 8 AbixIO configurations. The raw tier rows show true
+disk-tier performance. <code>+wc</code> shows the write cache benefit. <code>+rc</code>
+shows the read cache benefit (both cold populate on first GET and
+warm-on-write on PUT).</p>
+<p>All operations (PUT, GET, HEAD, LIST, DELETE, plus <code>get_hot</code> for
+small objects) tested per configuration. All sizes tested per
+configuration.</p>
+<h3 id="get_hot">get_hot<a class="headerlink" href="#get_hot" title="Permanent link">&para;</a></h3>
+<p>For sizes &lt;= 64KB (the read cache ceiling), L7 also runs a
+<code>get_hot</code> op: after the regular GET loop finishes, the harness
+re-reads a fixed 50-key working set 20 times (1000 iters total).
+This pins the working set inside the LRU so every iteration after
+the first-per-key is a guaranteed cache hit. In practice the
+regular GET loop is already fully cached once warm-on-write kicks
+in; <code>get_hot</code> just provides a clean label and a sanity check that
+the hot path has no hidden first-read penalty.</p>
+<h2 id="requirement-4-competitive-comparison">Requirement 4: Competitive comparison<a class="headerlink" href="#requirement-4-competitive-comparison" title="Permanent link">&para;</a></h2>
+<p>AbixIO vs RustFS vs MinIO through real S3 clients.</p>
+<table>
+<thead>
+<tr>
+<th>Axis</th>
+<th>Values</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Servers</td>
+<td>AbixIO (each write path), RustFS, MinIO</td>
+</tr>
+<tr>
+<td>Clients</td>
+<td>aws-sdk-s3, aws-cli, rclone</td>
+</tr>
+<tr>
+<td>Operations</td>
+<td>PUT, GET, HEAD, LIST, DELETE</td>
+</tr>
+<tr>
+<td>Sizes</td>
+<td>4KB, 64KB, 10MB, 100MB, 1GB</td>
+</tr>
+<tr>
+<td>Auth</td>
+<td>HTTPS + SigV4 + UNSIGNED-PAYLOAD</td>
+</tr>
+</tbody>
+</table>
+<p>All servers run single-node, 1 disk, NTFS tmpdir, same machine,
+release build. Servers started fresh for each configuration.</p>
+<p>HEAD, LIST, DELETE are latency-bound metadata ops. These only need
+the sdk client (CLI process spawn overhead makes the comparison
+meaningless for sub-millisecond ops).</p>
+<h3 id="test-infrastructure">Test infrastructure<a class="headerlink" href="#test-infrastructure" title="Permanent link">&para;</a></h3>
+<p>All benchmarks launch real server processes, create temp dirs, and
+benchmark through real S3 clients. No synthetic tests, no mocked
+storage. Real servers, real clients, real data.</p>
+<h3 id="clients">Clients<a class="headerlink" href="#clients" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Client</th>
+<th>Type</th>
+<th>Auth</th>
+<th>Connection</th>
+<th>Overhead</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>aws-sdk-s3 (Rust)</td>
+<td>in-process SDK</td>
+<td>SigV4, UNSIGNED-PAYLOAD</td>
+<td>keep-alive</td>
+<td>none</td>
+</tr>
+<tr>
+<td>AWS CLI</td>
+<td>per-process CLI</td>
+<td>SigV4, UNSIGNED-PAYLOAD via <code>payload_signing_enabled = false</code></td>
+<td>new process per op</td>
+<td>measured at runtime</td>
+</tr>
+<tr>
+<td>rclone</td>
+<td>per-process CLI</td>
+<td>SigV4, UNSIGNED-PAYLOAD via <code>--s3-use-unsigned-payload true</code></td>
+<td>new process per op</td>
+<td>measured at runtime</td>
+</tr>
+</tbody>
+</table>
+<p>For CLI tools, process spawn overhead is measured before each benchmark
+run and printed in the output for transparency.</p>
+<h3 id="servers">Servers<a class="headerlink" href="#servers" title="Permanent link">&para;</a></h3>
+<ul>
+<li>AbixIO: Rust S3 server (this project)</li>
+<li>RustFS 1.0.0-alpha.90: Rust S3 server (MinIO-compatible)</li>
+<li>MinIO RELEASE.2026-04-07: Go S3 server (reference implementation)</li>
+</ul>
+<p>All binaries must be release builds. Debug builds are 5-7x slower.
+RustFS and MinIO binaries auto-detected at <code>C:\tools\rustfs.exe</code> and
+<code>C:\tools\minio.exe</code>. Override with <code>RUSTFS_BIN</code> and <code>MINIO_BIN</code> env vars.</p>
+<h3 id="metrics">Metrics<a class="headerlink" href="#metrics" title="Permanent link">&para;</a></h3>
+<ul>
+<li>obj/sec: operations per second (primary metric for small objects)</li>
+<li>MB/s: throughput (primary metric for large objects)</li>
+<li>latency: per-request time in microseconds or milliseconds</li>
+</ul>
+<h2 id="requirement-5-flush-before-read">Requirement 5: Flush before read<a class="headerlink" href="#requirement-5-flush-before-read" title="Permanent link">&para;</a></h2>
+<p>PUT and GET must be measured separately. After all PUTs complete and
+before any timed GETs begin, the bench must flush all pending work
+to its final resting place:</p>
+<ul>
+<li><strong>Pool tier</strong>: drain all pending renames so temp files are moved
+  to their final object paths</li>
+<li><strong>Write cache</strong>: flush cached entries to disk</li>
+<li><strong>Log store</strong>: no flush needed (data is already in the segment)</li>
+<li><strong>File tier</strong>: no flush needed (data is already at final path)</li>
+</ul>
+<p>This ensures GET measures the actual read performance of the storage
+format, not the transitional state of data in temp files or RAM cache.</p>
+<p>The flush/drain time itself should be measured separately so we know
+how long each tier takes to reach its final resting place. This is a
+durability metric, not a throughput metric.</p>
+<p>The L3 bench currently implements this correctly: it calls
+<code>drain_pending_writes()</code> and <code>flush_write_cache()</code> between PUT and
+GET timing loops.</p>
+<h2 id="requirement-6-fairness">Requirement 6: Fairness<a class="headerlink" href="#requirement-6-fairness" title="Permanent link">&para;</a></h2>
+<p>Authoritative normalized client mode: HTTPS + SigV4 + UNSIGNED-PAYLOAD.
+Cross-client numbers are only directly comparable when the harness holds
+the major variables constant.</p>
+<ol>
+<li>
+<p><strong>Same warmup.</strong> 20 PUT + 3 GET warmup operations before timing, for
+   every client. Ensures TCP connections are established, caches are warm,
+   and JIT (if any) has run.</p>
+</li>
+<li>
+<p><strong>Same I/O model.</strong> All clients read PUT payload from a temp file on
+   disk. All clients write GET output to a temp file on disk. No client
+   gets the advantage of in-memory I/O while others do disk I/O.</p>
+</li>
+<li>
+<p><strong>Same connection warming.</strong> Every client gets the same warmup count
+   before timing. Connection reuse is not fully normalized: aws-sdk-s3
+   runs in-process and reuses connections, while AWS CLI and rclone are
+   invoked as new processes per operation. Published matrix numbers are
+   end-to-end and include that difference.</p>
+</li>
+<li>
+<p><strong>Same iterations.</strong> All clients run the same number of iterations per
+   (server, size) combination.</p>
+</li>
+<li>
+<p><strong>Same payload.</strong> Identical byte pattern, identical size, identical
+   content-type for all clients.</p>
+</li>
+<li>
+<p><strong>Same auth mode.</strong> HTTPS + SigV4 + UNSIGNED-PAYLOAD for every
+   comparable client: aws-sdk-s3, AWS CLI, and rclone.</p>
+</li>
+<li>
+<p><strong>Same server config.</strong> Each server runs single-node, 1 disk, NTFS
+   tmpdir, same machine, release build. Servers are started fresh for
+   each benchmark run.</p>
+</li>
+</ol>
+<h2 id="requirement-7-reproducibility">Requirement 7: Reproducibility<a class="headerlink" href="#requirement-7-reproducibility" title="Permanent link">&para;</a></h2>
+<ul>
+<li>All benchmarks must report: p50 (median), p95 (tail), p99 (worst case), ops/sec, MB/s (where applicable)</li>
+<li>CLI process spawn overhead must be measured and reported (not subtracted)</li>
+<li>Results must include git commit hash and timestamp</li>
+<li>Results must be machine-readable (JSON output alongside human tables)</li>
+</ul>
+<h2 id="known-limitations">Known limitations<a class="headerlink" href="#known-limitations" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Windows-only: all benchmarks run on Windows 10. Linux numbers may
+  differ due to epoll vs IOCP, different TCP stack, different filesystem
+  performance.</li>
+<li>Single machine: client and server share CPU, memory, and network stack.
+  No network latency. Results represent localhost throughput, not
+  production deployment.</li>
+<li>Per-process CLI overhead: uses a lightweight operation (ls/lsd) to
+  estimate overhead. Actual cp process overhead may be slightly higher.
+  Small objects may show inflated throughput after subtraction.</li>
+<li>Iteration count: 3 iterations for 1GB may show variance. Larger
+  iteration counts are more reliable for large-object numbers.</li>
+</ul>
+<h2 id="windows-caveats">Windows caveats<a class="headerlink" href="#windows-caveats" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Always use <code>127.0.0.1</code>, never <code>localhost</code> (Windows DNS adds ~200ms)</li>
+<li>TCP connect on Windows loopback = ~0.2ms (Linux = ~0.03ms)</li>
+<li>TCP_NODELAY must be set explicitly (Go sets it by default)</li>
+<li>hyper needs <code>writev(true)</code> + <code>max_buf_size(4MB)</code> for optimal throughput</li>
+</ul>
+<h2 id="what-we-do-not-test">What we do NOT test<a class="headerlink" href="#what-we-do-not-test" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Multi-disk EC scaling (2/3/4 disks). Separate concern, not part of the core benchmark.</li>
+<li>Concurrent/parallel clients. Sequential only for now.</li>
+<li>Network latency. Localhost only.</li>
+<li>Linux. Windows 10 only. Document this limitation.</li>
+</ul>
+<h2 id="running-benchmarks">Running benchmarks<a class="headerlink" href="#running-benchmarks" title="Permanent link">&para;</a></h2>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="c1"># build</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nb">cd</span><span class="w"> </span>/path/to/abixio-ui<span class="w"> </span><span class="o">&amp;&amp;</span><span class="w"> </span>cargo<span class="w"> </span>build<span class="w"> </span>--release
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="c1"># full suite</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>abixio-ui<span class="w"> </span>bench
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="c1"># just one layer</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>abixio-ui<span class="w"> </span>bench<span class="w"> </span>--layers<span class="w"> </span>L3
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="c1"># just competitive comparison</span>
+</span><span id="__span-2-11"><a id="__codelineno-2-11" name="__codelineno-2-11" href="#__codelineno-2-11"></a>abixio-ui<span class="w"> </span>bench<span class="w"> </span>--layers<span class="w"> </span>L7<span class="w"> </span>--servers<span class="w"> </span>abixio,rustfs,minio
+</span></code></pre></div>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      AbixIO Server &mdash; Erasure-coded storage with a steel-blue control-plane aesthetic
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/abix-/abixio" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "search.highlight", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

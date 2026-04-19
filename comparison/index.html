@@ -1,0 +1,2334 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="S3-compatible erasure-coded object storage server in Rust">
+      
+      
+      
+        <link rel="canonical" href="https://abix-.github.io/abixio/comparison/">
+      
+      
+        <link rel="prev" href="../s3-compliance/">
+      
+      
+        <link rel="next" href="../security-review/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Comparison - AbixIO Server</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#comparison" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="AbixIO Server" class="md-header__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AbixIO Server
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Comparison
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="AbixIO Server" class="md-nav__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    AbixIO Server
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../write-path/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write Path
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../per-object-ec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-Object EC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../admin-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multipart-upload/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multipart Upload
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../healing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Healing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed-placement-testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tagging/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tagging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../presigned-urls/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Presigned URLs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../conditional-requests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conditional Requests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../error-responses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Error Responses
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bucket-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bucket Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../encryption/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encryption
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../s3-compliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    S3 Compliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Comparison
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#disclaimer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Disclaimer
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#snapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Snapshot
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#project-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Project Status
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#overlap-map" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overlap Map
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rust-native-peers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust-Native Peers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#broader-ecosystem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Broader Ecosystem
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-capability-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Capability Matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage-model-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage Model Matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#admin-and-operations-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin And Operations Matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scope-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope Matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-abixio-is-different" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where AbixIO Is Different
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Where AbixIO Is Different">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#write-ahead-log-for-small-objects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write-ahead log for small objects
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-object-erasure-coding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-object erasure coding
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#self-describing-clustered-volumes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Self-describing clustered volumes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#storage-engine-facing-admin-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage-engine-facing admin workflows
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#embrace-of-heterogeneous-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Embrace of heterogeneous nodes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#one-node-through-many-node-topology-without-changing-product-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-node through many-node topology without changing product modes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#thick-ui-exposure-of-storage-mechanics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Thick UI exposure of storage mechanics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backend-abstraction-as-a-possible-long-term-differentiator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend abstraction as a possible long-term differentiator
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#single-node-is-a-first-class-deployment-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Single-node is a first-class deployment mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation Notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-abixio-is-weak" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where AbixIO Is Weak
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#honest-positioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Honest Positioning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sources
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#disclaimer" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Disclaimer
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#snapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Snapshot
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#project-status" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Project Status
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#overlap-map" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Overlap Map
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rust-native-peers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Rust-Native Peers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#broader-ecosystem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Broader Ecosystem
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-capability-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Capability Matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage-model-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage Model Matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#admin-and-operations-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Admin And Operations Matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scope-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope Matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-abixio-is-different" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where AbixIO Is Different
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Where AbixIO Is Different">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#write-ahead-log-for-small-objects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write-ahead log for small objects
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#per-object-erasure-coding" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Per-object erasure coding
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#self-describing-clustered-volumes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Self-describing clustered volumes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#storage-engine-facing-admin-workflows" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage-engine-facing admin workflows
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#embrace-of-heterogeneous-nodes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Embrace of heterogeneous nodes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#one-node-through-many-node-topology-without-changing-product-modes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        One-node through many-node topology without changing product modes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#thick-ui-exposure-of-storage-mechanics" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Thick UI exposure of storage mechanics
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#backend-abstraction-as-a-possible-long-term-differentiator" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Backend abstraction as a possible long-term differentiator
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#single-node-is-a-first-class-deployment-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Single-node is a first-class deployment mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#validation-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation Notes
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-abixio-is-weak" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where AbixIO Is Weak
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#honest-positioning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Honest Positioning
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Sources
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="comparison">Comparison<a class="headerlink" href="#comparison" title="Permanent link">&para;</a></h1>
+<p>Reference page for where AbixIO overlaps with adjacent projects, where it is
+actually different, and where the differentiation is still only planned.</p>
+<h2 id="disclaimer">Disclaimer<a class="headerlink" href="#disclaimer" title="Permanent link">&para;</a></h2>
+<p>This page is for orientation, not procurement.</p>
+<p>Project status and capability notes for MinIO, Garage, RustFS, SeaweedFS, Ceph
+Object Gateway, OpenStack Swift, OpenIO, and Riak CS are based on public GitHub
+repositories, upstream docs, and public compatibility pages checked on
+2026-04-05. These projects change over time. For any serious decision, verify
+current behavior yourself.</p>
+<p>Legend:</p>
+<ul>
+<li><code>✅ Yes</code> = clearly supported / strong fit</li>
+<li><code>⚠️ Partial</code> = supported in some form, but with limits or a different model</li>
+<li><code>❌ No</code> = not supported or explicitly rejected</li>
+<li><code>?</code> = not verified strongly enough to claim more</li>
+</ul>
+<h2 id="snapshot">Snapshot<a class="headerlink" href="#snapshot" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Project</th>
+<th>One-line read</th>
+<th>Overlap</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>AbixIO</strong></td>
+<td>Early Rust S3 server built to scale down cleanly to one node and up to multi-node clusters under one storage model.</td>
+<td>Baseline</td>
+</tr>
+<tr>
+<td><strong>MinIO</strong></td>
+<td>Historical closest match: self-hosted S3 object storage server.</td>
+<td><strong>High</strong></td>
+</tr>
+<tr>
+<td><strong>Garage</strong></td>
+<td>Closest current Rust neighbor in the self-hosted S3 space.</td>
+<td><strong>Medium-high</strong></td>
+</tr>
+<tr>
+<td><strong>RustFS</strong></td>
+<td>Large, active Rust-native S3 object store positioned directly against MinIO and Ceph.</td>
+<td><strong>Medium-high</strong></td>
+</tr>
+<tr>
+<td><strong>SeaweedFS</strong></td>
+<td>Real S3 competitor, but broader than object storage alone.</td>
+<td><strong>Medium</strong></td>
+</tr>
+<tr>
+<td><strong>Ceph Object Gateway</strong></td>
+<td>Established object gateway in the Ceph ecosystem with S3 and Swift APIs.</td>
+<td><strong>Medium</strong></td>
+</tr>
+<tr>
+<td><strong>OpenStack Swift</strong></td>
+<td>Long-running object store with native Swift API and optional S3 compatibility.</td>
+<td><strong>Medium</strong></td>
+</tr>
+<tr>
+<td><strong>OpenIO</strong></td>
+<td>Object storage platform with an S3-compatible interface.</td>
+<td><strong>Medium-low</strong></td>
+</tr>
+<tr>
+<td><strong>Riak CS</strong></td>
+<td>Older S3-compatible storage layer on top of Riak.</td>
+<td><strong>Medium-low</strong></td>
+</tr>
+</tbody>
+</table>
+<h2 id="project-status">Project Status<a class="headerlink" href="#project-status" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Project</th>
+<th>Language</th>
+<th>Public repo status</th>
+<th>Public positioning</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>AbixIO</strong></td>
+<td>Rust</td>
+<td>Active public repo. Very early stage.</td>
+<td>S3-compatible erasure-coded object store for single-node or clustered deployment</td>
+</tr>
+<tr>
+<td><strong>MinIO</strong></td>
+<td>Go</td>
+<td><strong>Archived</strong> on GitHub. Upstream README says the repository is no longer maintained.</td>
+<td>High-performance S3-compatible object store</td>
+</tr>
+<tr>
+<td><strong>Garage</strong></td>
+<td>Rust</td>
+<td>Active public repo. README says it has been used in production since 2020.</td>
+<td>S3-compatible distributed object storage for small-to-medium self-hosted geo-distributed deployments</td>
+</tr>
+<tr>
+<td><strong>RustFS</strong></td>
+<td>Rust</td>
+<td>Active public repo, not archived, heavily starred and actively updated.</td>
+<td>High-performance distributed object storage in Rust with S3 compatibility and coexistence / migration story for MinIO and Ceph</td>
+</tr>
+<tr>
+<td><strong>SeaweedFS</strong></td>
+<td>Go</td>
+<td>Active public repo.</td>
+<td>Distributed storage system with object storage, file system, WebDAV, Hadoop, cloud tiering, and more</td>
+</tr>
+<tr>
+<td><strong>Ceph Object Gateway</strong></td>
+<td>C++ / Ceph stack</td>
+<td>Active project inside Ceph.</td>
+<td>Object gateway exposing S3- and Swift-compatible APIs on top of Ceph</td>
+</tr>
+<tr>
+<td><strong>OpenStack Swift</strong></td>
+<td>Python</td>
+<td>Active OpenStack project.</td>
+<td>Distributed object storage with native Swift API and documented S3 compatibility information</td>
+</tr>
+<tr>
+<td><strong>OpenIO</strong></td>
+<td>Multiple / platform stack</td>
+<td>Public docs and compatibility references exist; not one clean single-repo story here.</td>
+<td>Object storage platform with S3-compatible interface</td>
+</tr>
+<tr>
+<td><strong>Riak CS</strong></td>
+<td>Erlang ecosystem</td>
+<td>Legacy / older project docs remain available.</td>
+<td>S3-compatible storage API layer for Riak</td>
+</tr>
+</tbody>
+</table>
+<h2 id="overlap-map">Overlap Map<a class="headerlink" href="#overlap-map" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Rank</th>
+<th>Project</th>
+<th>Why the overlap is real</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>1</code></td>
+<td><strong>MinIO</strong></td>
+<td>Same simplest mental model: self-hosted S3-compatible object storage server.</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td><strong>Garage</strong></td>
+<td>Same broad product space, also Rust, also self-hosted distributed S3.</td>
+</tr>
+<tr>
+<td><code>3</code></td>
+<td><strong>RustFS</strong></td>
+<td>Another Rust-native S3 object store with explicit competitive positioning against MinIO and Ceph.</td>
+</tr>
+<tr>
+<td><code>4</code></td>
+<td><strong>SeaweedFS</strong></td>
+<td>Competes on S3 object storage use cases, but belongs to a broader storage platform category.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="rust-native-peers">Rust-Native Peers<a class="headerlink" href="#rust-native-peers" title="Permanent link">&para;</a></h2>
+<p>If the narrower question is "what else in Rust is trying to do this?", the
+important names are:</p>
+<table>
+<thead>
+<tr>
+<th>Project</th>
+<th>Why it matters</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>AbixIO</strong></td>
+<td>Earlier and smaller, but differentiated by per-object EC, flexible single-node through multi-node topology, heterogeneous layouts, and a thick-console operating model.</td>
+</tr>
+<tr>
+<td><strong>Garage</strong></td>
+<td>Smaller-scale, geo-distributed, explicitly duplication-based Rust object store.</td>
+</tr>
+<tr>
+<td><strong>RustFS</strong></td>
+<td>Much larger public footprint, aggressive performance positioning, and direct S3 object-store ambitions in Rust.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="broader-ecosystem">Broader Ecosystem<a class="headerlink" href="#broader-ecosystem" title="Permanent link">&para;</a></h2>
+<p>These are adjacent systems worth knowing about even when they are not the
+closest architectural match.</p>
+<table>
+<thead>
+<tr>
+<th>Project</th>
+<th>Why it matters in the comparison</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>AbixIO</strong></td>
+<td>Baseline for the comparison: an early Rust object store centered on explicit storage mechanics, flexible topology from one node upward, mixed layouts, and thick-client administration.</td>
+</tr>
+<tr>
+<td><strong>Ceph Object Gateway</strong></td>
+<td>One of the major established S3-compatible gateways in serious infrastructure environments.</td>
+</tr>
+<tr>
+<td><strong>OpenStack Swift</strong></td>
+<td>One of the oldest object-store ecosystems here, with explicit S3/Swift compatibility documentation.</td>
+</tr>
+<tr>
+<td><strong>OpenIO</strong></td>
+<td>Shows up in compatibility matrices and represents another object-storage implementation with an S3 surface.</td>
+</tr>
+<tr>
+<td><strong>Riak CS</strong></td>
+<td>Mostly historical context: a long-standing S3-compatible design showing what this space has already tried.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="core-capability-matrix">Core Capability Matrix<a class="headerlink" href="#core-capability-matrix" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>AbixIO</th>
+<th>MinIO</th>
+<th>Garage</th>
+<th>RustFS</th>
+<th>SeaweedFS</th>
+<th>Ceph RGW</th>
+<th>Swift</th>
+<th>OpenIO</th>
+<th>Riak CS</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Self-hosted multi-node storage</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+</tr>
+<tr>
+<td>S3-compatible API</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>⚠️ Partial</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+</tr>
+<tr>
+<td>Object-store-first identity</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>⚠️ Partial</td>
+<td>⚠️ Partial</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+</tr>
+<tr>
+<td>Rust implementation</td>
+<td>✅ Yes</td>
+<td>❌ No</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>❌ No</td>
+<td>❌ No</td>
+<td>❌ No</td>
+<td>❌ No</td>
+<td>❌ No</td>
+</tr>
+<tr>
+<td>Operational maturity</td>
+<td>⚠️ Partial: very early</td>
+<td>✅ Yes: very high historically</td>
+<td>✅ Yes: high</td>
+<td>✅ Yes: medium-high</td>
+<td>✅ Yes: high</td>
+<td>✅ Yes: high</td>
+<td>✅ Yes: high</td>
+<td>⚠️ Partial: medium</td>
+<td>⚠️ Partial: legacy</td>
+</tr>
+</tbody>
+</table>
+<h2 id="storage-model-matrix">Storage Model Matrix<a class="headerlink" href="#storage-model-matrix" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>AbixIO</th>
+<th>MinIO</th>
+<th>Garage</th>
+<th>RustFS</th>
+<th>SeaweedFS</th>
+<th>Ceph RGW</th>
+<th>Swift</th>
+<th>OpenIO</th>
+<th>Riak CS</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Single-node through multi-node under one operating model</strong></td>
+<td>✅ Yes: one node is a first-class deployment, and clustering scales out from the same storage model rather than a separate "real mode" product shape</td>
+<td>⚠️ Partial: single-node and clustered deployments exist, but the mental model is centered more on homogeneous server-pool layouts</td>
+<td>✅ Yes</td>
+<td>⚠️ Partial: supports single-node and clustered deployments, but pool constraints make the topology model more rigid</td>
+<td>✅ Yes</td>
+<td>⚠️ Partial</td>
+<td>⚠️ Partial</td>
+<td>⚠️ Partial</td>
+<td>⚠️ Partial</td>
+</tr>
+<tr>
+<td><strong>Heterogeneous nodes / mixed disk layouts</strong></td>
+<td>✅ Yes: AbixIO's volume-pool design does not require identical node disk layouts, though live topology changes and rebalance are still future work</td>
+<td>⚠️ Partial: mixed hardware is feasible across server pools, but MinIO expects strong sameness within a pool/erasure-set layout</td>
+<td>✅ Yes: native multi-HDD support allows different per-drive capacities on a node and balances proportionally</td>
+<td>⚠️ Partial: RustFS scaling docs require identical disk type/capacity/quantity within a storage pool; heterogeneity is pool-to-pool, not node-to-node within a pool</td>
+<td>✅ Yes: SeaweedFS explicitly allows adding any server with disk space as more volume capacity</td>
+<td>✅ Yes: Ceph is built around weighted heterogeneous OSDs and CRUSH placement across mixed devices</td>
+<td>✅ Yes: Swift rings weight devices and support heterogeneous capacity layouts</td>
+<td>⚠️ Partial: OpenIO policy/placement model is flexible, but I did not verify a clean upstream statement specifically about mixed node disk layouts</td>
+<td>⚠️ Partial: Riak CS sits on Riak KV and does not present a first-class mixed-volume layout story in the checked docs</td>
+</tr>
+<tr>
+<td>Erasure coding</td>
+<td>✅ Yes</td>
+<td>✅ Yes: parity is described at the erasure-set / deployment level</td>
+<td>❌ No: Garage design docs explicitly reject erasure coding and limit Garage to duplication</td>
+<td>✅ Yes: source and docs show an erasure-coded storage engine, erasure-set healing, and EC planning guidance</td>
+<td>✅ Yes: documented around erasure-coded volumes and warm storage</td>
+<td>⚠️ Partial: comes from the underlying Ceph storage stack rather than RGW as its own storage model</td>
+<td>✅ Yes: Swift documents erasure coding as a storage policy</td>
+<td>✅ Yes: OpenIO documents erasure-coding storage policies with configurable <code>k</code> and <code>m</code></td>
+<td>⚠️ Partial: not central to checked docs used here; Riak CS docs emphasize chunking plus replication on Riak</td>
+</tr>
+<tr>
+<td><strong>Per-object EC / parity selection</strong></td>
+<td>✅ Yes</td>
+<td>❌ No: checked MinIO EC docs describe erasure-set parity, not object-level parity selection</td>
+<td>❌ No: Garage explicitly avoids erasure coding</td>
+<td>❌ No verified user-facing per-object EC selector; checked docs point to EC planning and storage-class style configuration</td>
+<td>❌ No: checked SeaweedFS docs describe EC at volume / warm-storage level</td>
+<td>❌ No verified RGW-level per-object EC selector; placement/storage classes are bucket-centric in checked docs</td>
+<td>❌ No: Swift EC is attached to a storage policy chosen when the container is created</td>
+<td>⚠️ Partial: OpenIO docs state storage policy can be chosen at object, container, or namespace level, and EC <code>k/m</code> live in the selected policy</td>
+<td>❌ No verified per-object EC selector in checked docs</td>
+</tr>
+<tr>
+<td>Self-describing volume identity on disk</td>
+<td>✅ Yes</td>
+<td>❌ No evidence in checked docs/source; MinIO docs focus on erasure sets and deployment topology</td>
+<td>❌ No evidence in checked docs/source; Garage public docs focus on cluster/distribution properties instead</td>
+<td>❌ No evidence in checked docs/source; checked docs emphasize JBOD disks and EC sets, not self-describing disk identity</td>
+<td>❌ No evidence in checked docs/source</td>
+<td>❌ No evidence in checked docs/source; RGW docs describe placement on Ceph, not self-describing gateway volumes</td>
+<td>❌ No: Swift uses externally managed rings to map data to devices</td>
+<td>❌ No evidence in checked docs/source</td>
+<td>❌ No evidence in checked docs/source; Riak CS docs focus on Riak backends beneath the API layer</td>
+</tr>
+<tr>
+<td>Arbitrary pluggable volume backends</td>
+<td>⚠️ Partial: today through <code>Backend</code>; broader third-party backends are planned</td>
+<td>⚠️ Partial: official docs expose object tiering to remote MinIO, Azure, GCS, and S3, but not arbitrary interchangeable volume backends</td>
+<td>❌ No: checked Garage docs position it as duplicated storage nodes, not pluggable backend volumes</td>
+<td>⚠️ Partial: source includes warm-tier backends for S3, MinIO, Azure, GCS, R2, Aliyun, Tencent, and Huawei Cloud, but not as arbitrary interchangeable primary volume backends</td>
+<td>⚠️ Partial: Cloud Drive, remote object-store gateway, and cloud tiering are documented, but not as arbitrary interchangeable volume backends</td>
+<td>❌ No: gateway surface over Ceph, not arbitrary volume plugins</td>
+<td>⚠️ Partial: Swift has pluggable on-disk back-end APIs, but not a generic cloud-volume plugin model</td>
+<td>❌ No: checked docs describe storage/data-security policies and protocol connectors rather than arbitrary pluggable backend volumes</td>
+<td>⚠️ Partial: Riak KV beneath Riak CS supports multiple backends, but Riak CS itself is an S3 layer over that stack, not a generic volume-plugin model</td>
+</tr>
+</tbody>
+</table>
+<h2 id="admin-and-operations-matrix">Admin And Operations Matrix<a class="headerlink" href="#admin-and-operations-matrix" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>AbixIO</th>
+<th>MinIO</th>
+<th>Garage</th>
+<th>RustFS</th>
+<th>SeaweedFS</th>
+<th>Ceph RGW</th>
+<th>Swift</th>
+<th>OpenIO</th>
+<th>Riak CS</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Admin tooling</td>
+<td>⚠️ Partial: current API/admin surface is strong, and the intended thick desktop console is part of the architecture, but the full multi-node console story is still emerging</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes: README, console routes, admin handlers, Helm, and deployment assets all point to a substantial admin surface</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes: OpenIO docs describe REST-accessible admin and maintenance actions</td>
+<td>⚠️ Partial</td>
+</tr>
+<tr>
+<td><strong>Thick multi-node admin/client console as a design goal</strong></td>
+<td>✅ Yes: AbixIO explicitly leans toward a native console that can aggregate and inspect multiple nodes directly instead of relying only on a per-node thin web UI</td>
+<td>❌ No: built-in web/admin tooling is the main model</td>
+<td>❌ No verified thick-console direction</td>
+<td>❌ No verified thick-console direction</td>
+<td>❌ No verified thick-console direction</td>
+<td>❌ No verified thick-console direction</td>
+<td>❌ No verified thick-console direction</td>
+<td>❌ No verified thick-console direction</td>
+<td>❌ No verified thick-console direction</td>
+</tr>
+<tr>
+<td>Shard-level inspection</td>
+<td>✅ Yes</td>
+<td>⚠️ Partial: official docs expose <code>mc admin object info</code> for object shard summaries on disk</td>
+<td>❌ No specific shard-inspection workflow confirmed from checked docs/source</td>
+<td>⚠️ Partial: docs and source expose erasure-set/object inspection and healing information, but not the same shard-inspection workflow AbixIO exposes</td>
+<td>⚠️ Partial: maintenance and EC tooling exist, but not as the same shard-inspection model</td>
+<td>⚠️ Partial: admin APIs and tooling expose object/bucket state, but I did not verify an AbixIO-style shard inspection surface</td>
+<td>❌ No AbixIO-style shard inspection; Swift admin model is ring/object replication oriented</td>
+<td>⚠️ Partial: docs describe integrity loops, crawls, and REST maintenance actions over chunks/objects</td>
+<td>❌ No AbixIO-style shard inspection confirmed from checked docs</td>
+</tr>
+<tr>
+<td>Healing / repair workflows</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes: docs and source include heal manager, erasure-set healer, scanner, resume logic, and bitrot handling</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes: Swift documents replication, auditors, and EC repair flows</td>
+<td>✅ Yes: OpenIO docs explicitly describe self-healing / integrity loops and on-demand maintenance actions</td>
+<td>⚠️ Partial</td>
+</tr>
+</tbody>
+</table>
+<h2 id="scope-matrix">Scope Matrix<a class="headerlink" href="#scope-matrix" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Capability</th>
+<th>AbixIO</th>
+<th>MinIO</th>
+<th>Garage</th>
+<th>RustFS</th>
+<th>SeaweedFS</th>
+<th>Ceph RGW</th>
+<th>Swift</th>
+<th>OpenIO</th>
+<th>Riak CS</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Narrow S3 server focus</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>✅ Yes</td>
+<td>❌ No</td>
+<td>⚠️ Partial</td>
+<td>❌ No</td>
+<td>⚠️ Partial</td>
+<td>✅ Yes</td>
+</tr>
+<tr>
+<td>Broader storage platform beyond S3</td>
+<td>❌ No</td>
+<td>⚠️ Partial</td>
+<td>⚠️ Partial</td>
+<td>⚠️ Partial</td>
+<td>✅ Yes</td>
+<td>✅ Yes: via the wider Ceph platform</td>
+<td>⚠️ Partial: broader OpenStack object-storage ecosystem, but not an S3-first product</td>
+<td>⚠️ Partial</td>
+<td>⚠️ Partial</td>
+</tr>
+<tr>
+<td>Cloud tiering / cloud-integrated storage story</td>
+<td>⚠️ Partial: planned direction only</td>
+<td>✅ Yes: object tiering is documented</td>
+<td>❌ No cloud tiering story confirmed from checked docs/source</td>
+<td>⚠️ Partial: source includes warm-tier backends for multiple cloud/object targets, and docs position RustFS for multi-cloud use, but the tiering story is less explicit than MinIO/SeaweedFS</td>
+<td>✅ Yes: cloud tiering, Cloud Drive, and remote object-store gateway are documented</td>
+<td>⚠️ Partial: replication / multisite / wider Ceph ecosystem, but not the same tiering story</td>
+<td>❌ No: not central to checked docs used here</td>
+<td>⚠️ Partial: OpenIO docs describe protocol connectors and policy-driven architecture, but not the same tiering story</td>
+<td>? Unclear</td>
+</tr>
+</tbody>
+</table>
+<h2 id="where-abixio-is-different">Where AbixIO Is Different<a class="headerlink" href="#where-abixio-is-different" title="Permanent link">&para;</a></h2>
+<h3 id="write-ahead-log-for-small-objects">Write-ahead log for small objects<a class="headerlink" href="#write-ahead-log-for-small-objects" title="Permanent link">&para;</a></h3>
+<p>Small objects (&lt;= 64KB) are written as checksummed needles directly
+into a writable mmap segment (zero syscalls, zero allocation). A
+background worker materializes each entry to its final file-per-object
+location (shard.dat + meta.json). The WAL is ephemeral -- entries are
+deleted after materialization. No GC, no compaction, no permanent
+in-memory index. 4KB PUT: 3us in release-mode head-to-head, 136us
+through the full VolumePool pipeline (L3 benchmark, 2026-04-18).
+See <a href="../write-wal/">write-wal.md</a>.</p>
+<p>MinIO and RustFS mitigate small-object overhead by inlining data into
+their metadata files. AbixIO goes further by eliminating the per-object
+file creation from the hot path entirely. A 4KB PUT appends one needle
+to the mmap -- no mkdir, no file create, no syscalls.</p>
+<h3 id="per-object-erasure-coding">Per-object erasure coding<a class="headerlink" href="#per-object-erasure-coding" title="Permanent link">&para;</a></h3>
+<p>This is the clearest current differentiator.</p>
+<p>AbixIO allows the data/parity ratio to vary per object:</p>
+<p><code>per-object FTT &gt; bucket FTT</code></p>
+<p>That is a materially different storage story from the usual server-level or
+pool-level redundancy model.</p>
+<h3 id="self-describing-clustered-volumes">Self-describing clustered volumes<a class="headerlink" href="#self-describing-clustered-volumes" title="Permanent link">&para;</a></h3>
+<p>AbixIO stores cluster and volume identity on the volumes themselves. That gives
+it a distinctive recovery and reconstruction story compared with the usual
+"bring the control plane back first" mental model.</p>
+<h3 id="storage-engine-facing-admin-workflows">Storage-engine-facing admin workflows<a class="headerlink" href="#storage-engine-facing-admin-workflows" title="Permanent link">&para;</a></h3>
+<p>AbixIO treats shard inspection, healing state, and volume health as first-class
+server concerns. That is closer to exposing the storage engine than merely
+wrapping an S3 API with an admin surface.</p>
+<h3 id="embrace-of-heterogeneous-nodes">Embrace of heterogeneous nodes<a class="headerlink" href="#embrace-of-heterogeneous-nodes" title="Permanent link">&para;</a></h3>
+<p>AbixIO is intentionally friendlier to mixed layouts than systems that expect
+identical nodes or rigid pool symmetry.</p>
+<p>The design centers on a volume pool:</p>
+<ul>
+<li>nodes do not need identical disk counts</li>
+<li>volumes do not need to be presented as one uniform per-node shape</li>
+<li>the architecture is comfortable with mixed local and remote volumes</li>
+</ul>
+<p>That does not mean the topology story is finished. Live topology changes and
+rebalance are still future work. But the design intent is clearly in favor of
+heterogeneity, not against it.</p>
+<h3 id="one-node-through-many-node-topology-without-changing-product-modes">One-node through many-node topology without changing product modes<a class="headerlink" href="#one-node-through-many-node-topology-without-changing-product-modes" title="Permanent link">&para;</a></h3>
+<p>AbixIO is designed to scale down to one node and scale out to multiple nodes
+without turning clustered operation into a different product with a different
+mental model.</p>
+<p>That matters because:</p>
+<ul>
+<li>a single-node deployment is fully valid, not a crippled demo mode</li>
+<li>a small home deployment and a larger cluster still use the same core storage
+  model</li>
+<li>node count is supposed to change the resilience envelope, not the basic
+  product identity</li>
+</ul>
+<p>That is different from systems whose language and operational shape are much
+more centered on uniform server pools or heavier control-plane assumptions.</p>
+<h3 id="thick-ui-exposure-of-storage-mechanics">Thick UI exposure of storage mechanics<a class="headerlink" href="#thick-ui-exposure-of-storage-mechanics" title="Permanent link">&para;</a></h3>
+<p>AbixIO does not want storage mechanics hidden behind a thin generic object-store
+console.</p>
+<p>The intended direction is to expose the real storage engine through the admin
+API and thick UI, not hide it:</p>
+<ul>
+<li>shard placement</li>
+<li>shard composition</li>
+<li>healing state</li>
+<li>volume health</li>
+<li>EC choices</li>
+<li>backend identity</li>
+<li>backend capacity</li>
+<li>failure visibility</li>
+<li>repair operations</li>
+<li>object storage layout details</li>
+</ul>
+<p>The stronger product point is not just "desktop UI exists." It is that a thick
+console is a better fit for a multi-node storage system:</p>
+<ul>
+<li>a built-in web UI is fine for one node or basic local administration</li>
+<li>once several nodes exist, a per-node web panel fragments visibility unless
+  one node becomes a control-plane proxy for the others</li>
+<li>a thick console can talk to multiple nodes directly, aggregate cluster state,
+  and expose storage-engine details without forcing all operator traffic through
+  one server</li>
+</ul>
+<p>That is a different philosophy from systems that keep the storage layer more
+opaque behind a generic thin S3 administration surface.</p>
+<h3 id="backend-abstraction-as-a-possible-long-term-differentiator">Backend abstraction as a possible long-term differentiator<a class="headerlink" href="#backend-abstraction-as-a-possible-long-term-differentiator" title="Permanent link">&para;</a></h3>
+<p>Current state:</p>
+<ul>
+<li>local directory volumes exist</li>
+<li>remote AbixIO node volumes exist over internode RPC</li>
+</ul>
+<h3 id="single-node-is-a-first-class-deployment-mode">Single-node is a first-class deployment mode<a class="headerlink" href="#single-node-is-a-first-class-deployment-mode" title="Permanent link">&para;</a></h3>
+<p>AbixIO is not only for clustered deployments.</p>
+<p>It is intended to run as:</p>
+<ul>
+<li>a single-node server on Windows, Linux, or macOS</li>
+<li>a multi-volume local server on one machine</li>
+<li>a multi-node clustered deployment</li>
+</ul>
+<p>The tradeoff is simple:</p>
+<ul>
+<li>single-node mode is fully valid</li>
+<li>what you lose is node-level resilience, not product support</li>
+<li>local disk redundancy still depends on the erasure-coding layout you choose</li>
+</ul>
+<p>Planned direction:</p>
+<ul>
+<li>Google Drive</li>
+<li>OneDrive</li>
+<li>WebDAV</li>
+<li>other third-party storage providers participating as volume backends</li>
+</ul>
+<p>If that happens, it becomes a meaningful differentiator. Right now it is still a
+roadmap claim, not a shipped advantage.</p>
+<h2 id="validation-notes">Validation Notes<a class="headerlink" href="#validation-notes" title="Permanent link">&para;</a></h2>
+<p>Specific upstream claims this page is anchored to:</p>
+<ul>
+<li><strong>MinIO</strong></li>
+<li>upstream README says the GitHub repository is no longer maintained</li>
+<li>erasure coding docs describe erasure sets, parity values such as <code>EC:4</code>,
+    and writes distributed across an erasure set</li>
+<li>
+<p>official docs expose object tiering targets for remote MinIO, Azure, GCS,
+    and S3</p>
+</li>
+<li>
+<p><strong>Garage</strong></p>
+</li>
+<li><code>goals.md</code> explicitly lists storage optimizations such as erasure coding as
+    a non-goal and says Garage limits itself to duplication</li>
+<li>
+<p>README positions Garage as a lightweight geo-distributed S3 object store
+    used in production since 2020</p>
+</li>
+<li>
+<p><strong>RustFS</strong></p>
+</li>
+<li>README positions RustFS as a high-performance distributed object storage
+    system built in Rust</li>
+<li>README explicitly claims S3 compatibility and coexistence / migration with
+    MinIO and Ceph</li>
+<li>README exposes a large built-in feature/status matrix and strong direct
+    performance positioning</li>
+<li>source clearly includes ECStore, erasure-set healing, bitrot protection,
+    console/admin surfaces, and warm-tier backends for several cloud targets</li>
+<li>RustFS docs describe object inspection and auto-recovery with <code>k</code> data
+    shards and <code>m</code> parity shards across <code>n=k+m</code> block devices</li>
+<li>
+<p>RustFS scaling docs say all nodes within a single storage pool must use
+    identical disk type, capacity, and quantity</p>
+</li>
+<li>
+<p><strong>SeaweedFS</strong></p>
+</li>
+<li>README positions SeaweedFS as a broader storage system with object storage,
+    file system, WebDAV, Hadoop, and cloud features</li>
+<li>README describes erasure coding specifically for warm storage</li>
+<li>
+<p>README documents Cloud Drive, remote object-store gateway, and cloud-tier
+    style integrations</p>
+</li>
+<li>
+<p><strong>Ceph Object Gateway</strong></p>
+</li>
+<li>official docs position RGW as an object gateway with S3 and Swift APIs</li>
+<li>
+<p>it should be thought of as part of the larger Ceph storage platform, not as
+    a narrow S3-only server in the same way as AbixIO or MinIO</p>
+</li>
+<li>
+<p><strong>OpenStack Swift</strong></p>
+</li>
+<li>official docs include an S3/Swift REST API comparison matrix</li>
+<li>Swift remains primarily a Swift-native object store with S3 compatibility as
+    a compatibility surface rather than its sole identity</li>
+<li>Swift documents erasure coding as a storage policy, storage-policy choice
+    at container creation time, externally managed rings, and pluggable on-disk
+    back-end APIs</li>
+<li>
+<p>Swift ring docs describe weighted devices, which is the core mechanism for
+    handling heterogeneous capacity layouts</p>
+</li>
+<li>
+<p><strong>OpenIO</strong></p>
+</li>
+<li>OpenIO docs describe S3 and Swift compatibility, REST-accessible admin and
+    maintenance actions, and self-healing / integrity loops</li>
+<li>
+<p>OpenIO docs describe erasure-coding storage policies with configurable
+    <code>k/m</code> and allow the storage policy to be selected at object, container, or
+    namespace level</p>
+</li>
+<li>
+<p><strong>Riak CS</strong></p>
+</li>
+<li>official docs describe a storage API compatible with the Amazon S3 REST API</li>
+<li>
+<p>included mostly as historical context and prior art in the S3-compatible
+    object-store space</p>
+</li>
+<li>
+<p><strong>AbixIO</strong></p>
+</li>
+<li>the repo implements per-object EC headers
+    <code>x-amz-meta-ec-ftt</code></li>
+<li>the repo uses a <code>Backend</code> trait with local and <code>RemoteVolume</code> backends</li>
+<li>volumes carry <code>.abixio.sys/volume.json</code></li>
+<li>the repo and README support standalone single-node operation as well as
+    clustered deployment; the difference is node resilience, not support status</li>
+</ul>
+<h2 id="where-abixio-is-weak">Where AbixIO Is Weak<a class="headerlink" href="#where-abixio-is-weak" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Weakness</th>
+<th>Reality today</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Production credibility</td>
+<td>None yet</td>
+</tr>
+<tr>
+<td>Benchmarks</td>
+<td>Published cross-server matrix at <a href="../benchmarks/#comprehensive-matrix">benchmarks.md::Comprehensive matrix</a> (3 servers x 3 clients x 3 sizes, HTTPS + SigV4 + UNSIGNED-PAYLOAD, single node, NTFS). Per-tier internal comparison at <a href="../write-path/#where-the-time-goes">write-path.md::Where the time goes</a>. L1-L7 layer ceilings at <a href="../layer-optimization/">layer-optimization.md</a>. Numbers are not duplicated here -- read those docs for the current measured story.</td>
+</tr>
+<tr>
+<td>Failure injection / long-haul testing</td>
+<td>Not there yet</td>
+</tr>
+<tr>
+<td>Packaging / deployment story</td>
+<td>Not there yet</td>
+</tr>
+<tr>
+<td>S3 surface completeness</td>
+<td>Incomplete</td>
+</tr>
+<tr>
+<td>Trust relative to established systems</td>
+<td>Low</td>
+</tr>
+</tbody>
+</table>
+<h2 id="honest-positioning">Honest Positioning<a class="headerlink" href="#honest-positioning" title="Permanent link">&para;</a></h2>
+<blockquote>
+<p>AbixIO is an early Rust S3-compatible object storage server that overlaps most
+with MinIO, Garage, and RustFS, but currently differentiates with per-object
+erasure coding, a storage model that spans single-node through multi-node
+deployment, self-describing clustered volumes, shard-level admin workflows,
+an explicitly thick-console operating model, and a planned backend model that
+could treat arbitrary storage providers as volume backends.</p>
+</blockquote>
+<h2 id="sources">Sources<a class="headerlink" href="#sources" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="https://github.com/minio/minio">MinIO repo</a></li>
+<li><a href="https://docs.min.io/community/minio-object-store/operations/concepts/erasure-coding.html">MinIO erasure coding docs</a></li>
+<li><a href="https://github.com/deuxfleurs-org/garage">Garage repo</a></li>
+<li><a href="https://garagehq.deuxfleurs.fr/documentation/reference-manual/s3-compatibility/">Garage S3 compatibility page</a></li>
+<li><a href="https://github.com/deuxfleurs-org/garage/blob/main/doc/book/design/goals.md">Garage design goals</a></li>
+<li><a href="https://github.com/deuxfleurs-org/garage/blob/main/doc/book/design/related-work.md">Garage related work</a></li>
+<li><a href="https://github.com/rustfs/rustfs">RustFS repo</a></li>
+<li><a href="https://docs.rustfs.com/troubleshooting/healing.html">RustFS healing docs</a></li>
+<li><a href="https://docs.rustfs.com/installation/linux/single-node-single-disk.html">RustFS installation docs</a></li>
+<li><a href="https://github.com/seaweedfs/seaweedfs">SeaweedFS repo</a></li>
+<li><a href="https://docs.rustfs.com/concepts/availability-and-resiliency.html">RustFS availability and scaling</a></li>
+<li><a href="https://docs.ceph.com/en/latest/radosgw/s3/">Ceph Object Gateway S3 API docs</a></li>
+<li><a href="https://docs.ceph.com/en/latest/radosgw/">Ceph Object Gateway overview</a></li>
+<li><a href="https://docs.openstack.org/swift/latest/">OpenStack Swift docs</a></li>
+<li><a href="https://docs.openstack.org/swift/rocky/s3_compat.html">OpenStack S3/Swift comparison matrix</a></li>
+<li><a href="https://docs.openstack.org/swift/latest/overview_policies.html">Swift storage policies</a></li>
+<li><a href="https://docs.openstack.org/swift/2024.1/admin/objectstorage-components.html">Swift components and rings</a></li>
+<li><a href="https://docs.openstack.org/swift/latest/development_ondisk_backends.html">Swift on-disk back-end APIs</a></li>
+<li><a href="https://docs.openio.io/latest/source/arch-design/data_access.html">OpenIO data access</a></li>
+<li><a href="https://docs.openio.io/latest/source/admin-guide/configuration_ec.html">OpenIO erasure coding configuration</a></li>
+<li><a href="https://docs.openio.io/latest/source/admin-guide/configuration_storagepolicies.html">OpenIO storage policies</a></li>
+<li><a href="https://docs.openio.io/latest/source/arch-design/sds_concepts.html">OpenIO SDS core concepts</a></li>
+<li><a href="https://docs.riak.com/riak/cs/latest/references/apis/storage/s3/index.html">Riak CS S3 API docs</a></li>
+<li><a href="https://docs.riak.com/riak/cs/latest/tutorials/fast-track/what-is-riak-cs/index.html">Riak CS architecture</a></li>
+<li><a href="https://docs.riak.com/riak/cs/latest/cookbooks/configuration/index.html">Riak CS configuration overview</a></li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../s3-compliance/" class="md-footer__link md-footer__link--prev" aria-label="Previous: S3 Compliance">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                S3 Compliance
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../security-review/" class="md-footer__link md-footer__link--next" aria-label="Next: Security Review">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Security Review
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      AbixIO Server &mdash; Erasure-coded storage with a steel-blue control-plane aesthetic
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/abix-/abixio" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "search.highlight", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,2738 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="S3-compatible erasure-coded object storage server in Rust">
+      
+      
+      
+        <link rel="canonical" href="https://abix-.github.io/abixio/layer-optimization/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Layer optimization - AbixIO Server</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#layer-optimization" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="AbixIO Server" class="md-header__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AbixIO Server
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Layer optimization
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="AbixIO Server" class="md-nav__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    AbixIO Server
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../write-path/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write Path
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../per-object-ec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-Object EC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../admin-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multipart-upload/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multipart Upload
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../healing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Healing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed-placement-testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tagging/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tagging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../presigned-urls/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Presigned URLs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../conditional-requests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conditional Requests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../error-responses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Error Responses
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bucket-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bucket Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../encryption/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encryption
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../s3-compliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    S3 Compliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer architecture
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmark-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmark environment
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#l4-hashing-rs-encode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L4: Hashing + RS encode
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="L4: Hashing + RS encode">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#hashing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Hashing
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#numbers-10mb" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Numbers (10MB)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#md5-skip-optimization-done-2026-04-09" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MD5 skip optimization (done, 2026-04-09)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#md5-assembly-research" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MD5 assembly research
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#rs-encode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        RS encode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#numbers-10mb_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Numbers (10MB)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#analysis_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#decision" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#l5-disk-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L5: Disk I/O
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="L5: Disk I/O">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#numbers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Numbers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#analysis_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#decision_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#l3-storage-pipeline-volumepool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L3: Storage pipeline (VolumePool)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="L3: Storage pipeline (VolumePool)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#numbers-after-optimization" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Numbers (after optimization)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#put-analysis" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PUT analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#put-parallelism-experiments-all-failed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PUT parallelism experiments (all failed)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-analysis-and-optimization-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET analysis and optimization (done)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-optimization-mmap-fast-path-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET optimization: mmap fast path (done)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#l1-http-transport" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L1: HTTP transport
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="L1: HTTP transport">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#numbers-10mb_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Numbers (10MB)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#analysis_3" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#decision_2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#l6-s3-real-storage-s3s-full-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L6: S3 + real storage (s3s + full pipeline)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="L6: S3 + real storage (s3s + full pipeline)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#numbers-after-optimization_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Numbers (after optimization)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#put-optimization-versioning-config-cache-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PUT optimization: versioning config cache (done)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-optimization-streaming-response-done" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET optimization: streaming response (done)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#l7-full-client-path-aws-sdk-s3-auth" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L7: Full client path (aws-sdk-s3 + auth)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="L7: Full client path (aws-sdk-s3 + auth)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#numbers-1gb-2026-04-09" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Numbers (1GB, 2026-04-09)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#analysis_4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Analysis
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-to-layer-gaps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer-to-layer gaps
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Layer-to-layer gaps">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1gb-get-full-layer-breakdown-2026-04-09-after-chunked-mmap" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1GB GET: full layer breakdown (2026-04-09, after chunked mmap)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#1gb-put-full-layer-breakdown" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1GB PUT: full layer breakdown
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#remaining-gaps-after-tcp_nodelay" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Remaining gaps (after TCP_NODELAY)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tcp_nodelay-analysis-2026-04-09" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TCP_NODELAY analysis (2026-04-09)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#l1x-hyper-sub-layer-experiments-2026-04-09" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L1X: hyper sub-layer experiments (2026-04-09)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#optimization-history" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Optimization history
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Optimization history">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#before-and-after-l7-full-client-path-what-users-see" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Before and after (L7, full client path, what users see)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#before-and-after-matrix-external-benchmark-cumulative" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Before and after (matrix, external benchmark, cumulative)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#before-and-after-l6-s3-protocol-in-process" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Before and after (L6, S3 protocol in-process)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#before-and-after-l3-storage-pipeline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Before and after (L3, storage pipeline)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#allocation-audit" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Allocation audit
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Allocation audit">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#every-allocation-in-the-data-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Every allocation in the data path
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Every allocation in the data path">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#10-get-volume_poolrsget_object_stream-mmap-fast-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1+0 GET (volume_pool.rs:get_object_stream mmap fast path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ec-get-healthy-erasure_decodersread_and_decode_stream-fast-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        EC GET healthy (erasure_decode.rs:read_and_decode_stream fast path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ec-get-degraded-slow-path-missing-shards" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        EC GET degraded (slow path, missing shards)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#put-erasure_encodersencode_and_write-write_block" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PUT (erasure_encode.rs:encode_and_write + write_block)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#s3_servicers-responserequest-wrappers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        s3_service.rs response/request wrappers
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#allocation-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Allocation summary
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="layer-optimization">Layer optimization<a class="headerlink" href="#layer-optimization" title="Permanent link">&para;</a></h1>
+<p><strong>Authoritative for:</strong> optimization history. Per-layer performance
+analysis, before/after numbers, experiments (including failures),
+pool development phases (L0-L3.5), competitive analysis vs MinIO
+and RustFS, allocation audit. If you need to know why a design
+decision was made or what alternatives were tried, this is the only doc.</p>
+<p><strong>Not covered here:</strong> how writes work now (see <a href="../write-path/">write-path.md</a>),
+on-disk format (see <a href="../storage-layout/">storage-layout.md</a>),
+benchmark results (see <a href="../benchmarks/">benchmarks.md</a>).</p>
+<h2 id="table-of-contents">Table of contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="#layer-architecture">Layer architecture</a></li>
+<li><a href="#benchmark-environment">Benchmark environment</a></li>
+<li><a href="#l1-http-transport">L1: HTTP transport</a></li>
+<li><a href="#l2-s3-protocol-s3s--full-pipeline">L2: S3 protocol</a></li>
+<li><a href="#l3-storage-pipeline-volumepool">L3: Storage pipeline</a></li>
+<li><a href="#l4-hashing--rs-encode">L4: Hashing + RS encode</a></li>
+<li><a href="#l5-disk-io">L5: Disk I/O</a></li>
+<li><a href="#l6-s3--real-storage">L6: S3 + real storage</a></li>
+<li><a href="#l7-full-client-path-aws-sdk-s3--auth">L7: Full client path</a></li>
+<li><a href="#layer-to-layer-gaps">Layer-to-layer gaps</a></li>
+<li><a href="#optimization-history">Optimization history</a></li>
+<li><a href="#allocation-audit">Allocation audit</a></li>
+<li><a href="#log-structured-storage-implemented">Log-structured storage</a></li>
+<li><a href="#competitive-analysis-minio-and-rustfs">Competitive analysis</a></li>
+<li><a href="#future-optimization-candidates">Future optimization candidates</a></li>
+</ul>
+<hr />
+<h2 id="layer-architecture">Layer architecture<a class="headerlink" href="#layer-architecture" title="Permanent link">&para;</a></h2>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>PUT path (outside in, following the request):
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  Client request
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>       |
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  L1   HTTP transport (hyper)      accept TCP, read/write body
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  L2   S3 protocol (s3s)           parse HTTP, SigV4 verify, dispatch to AbixioS3
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>  L3   Storage pipeline            VolumePool: placement, RS encode, write shards
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>  L4   Hashing + RS encode         blake3, MD5, reed-solomon-erasure galois_8
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>  L5   Disk I/O                    tokio::fs::write / tokio::fs::read
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>  L6   S3 + real storage           s3s + VolumePool combined (integration)
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>  L7   Full client (aws-sdk-s3)    SigV4 signing, SDK HTTP, UNSIGNED-PAYLOAD
+</span></code></pre></div>
+<p>L1-L2 are protocol layers. L3 is the storage pipeline. L4-L5 are
+primitives measured in isolation. L6 combines L1-L5 into an integrated
+in-process test. L7 adds a real S3 client with auth.</p>
+<h2 id="benchmark-environment">Benchmark environment<a class="headerlink" href="#benchmark-environment" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Windows 10 Home, single machine, all volumes on same NTFS drive (tmpdir)</li>
+<li>Single-node, page-cache writes (no fsync), sequential requests</li>
+<li>10 iterations per measurement (50 for 4KB, 5 for 1GB, 30 for focused tests)</li>
+<li><code>bench_perf</code> in <code>abixio-ui/src/bench/</code> with JSON output and A/B comparison</li>
+</ul>
+<hr />
+<h2 id="l4-hashing-rs-encode">L4: Hashing + RS encode<a class="headerlink" href="#l4-hashing-rs-encode" title="Permanent link">&para;</a></h2>
+<h3 id="hashing">Hashing<a class="headerlink" href="#hashing" title="Permanent link">&para;</a></h3>
+<h3 id="numbers-10mb">Numbers (10MB)<a class="headerlink" href="#numbers-10mb" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Throughput</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>blake3</td>
+<td>4303 MB/s</td>
+</tr>
+<tr>
+<td>MD5</td>
+<td>703 MB/s</td>
+</tr>
+</tbody>
+</table>
+<h3 id="analysis">Analysis<a class="headerlink" href="#analysis" title="Permanent link">&para;</a></h3>
+<p>blake3 uses SIMD (AVX2/SSE4.1), 4.3 GB/s is near hardware ceiling. MD5 at
+703 MB/s is near theoretical max for single-threaded MD5. Both are computed
+inline during the streaming encode path, so their cost overlaps with I/O for
+large objects (10MB+).</p>
+<p>MD5 is required by S3 (ETag = MD5 of body) when the client sends
+<code>Content-MD5</code>. When absent, we skip MD5 and use xxhash64 for the ETag.</p>
+<h3 id="md5-skip-optimization-done-2026-04-09">MD5 skip optimization (done, 2026-04-09)<a class="headerlink" href="#md5-skip-optimization-done-2026-04-09" title="Permanent link">&para;</a></h3>
+<p><strong>Before</strong>: MD5 computed inline on every PUT regardless of client headers.
+703 MB/s throughput = ~30% of L3 PUT time for 1GB objects.</p>
+<p><strong>After</strong>: when <code>input.content_md5</code> is <code>None</code> (the common case; aws-sdk-s3
+with <code>disable_payload_signing()</code>, mc, rclone all skip it), set
+<code>PutOptions.skip_md5 = true</code>. The encode path uses xxhash64 (~10+ GB/s)
+instead of MD5 for the ETag. Format: <code>{xxh64:016x}{size:016x}</code> (32 hex
+chars, same length as MD5 ETags).</p>
+<p><strong>Result</strong>: L7 1GB PUT improved from 380 to <strong>695 MB/s (+83%)</strong>. Matrix
+PUT improved from 320 to <strong>441 MB/s (+38%)</strong>, now fastest of all three
+servers.</p>
+<p>Files changed:
+- <code>src/storage/metadata.rs</code>: added <code>skip_md5: bool</code> to <code>PutOptions</code>
+- <code>src/storage/erasure_encode.rs</code>: conditional MD5/xxhash in streaming path
+- <code>src/storage/volume_pool.rs</code>: conditional MD5/xxhash in small-object path
+- <code>src/s3_service.rs</code>: set <code>skip_md5</code> based on <code>content_md5</code> header</p>
+<h3 id="md5-assembly-research">MD5 assembly research<a class="headerlink" href="#md5-assembly-research" title="Permanent link">&para;</a></h3>
+<p>Investigated 2026-04-09 for cases where MD5 IS required:</p>
+<ul>
+<li><strong><code>md-5</code> crate <code>asm</code> feature</strong>: ships x86_64 assembly via <code>md5-asm</code> crate.
+  <strong>Fails on MSVC.</strong> The <code>.S</code> files use GAS syntax which <code>cl.exe</code> cannot
+  compile. Would work on Linux/macOS or with <code>x86_64-pc-windows-gnu</code> target.</li>
+<li><strong>Go's <code>crypto/md5</code></strong> (what MinIO uses): has hand-written amd64 assembly
+  that runs automatically.</li>
+<li><strong>RustCrypto/asm-hashes archived</strong> (Aug 2025). Official recommendation:
+  port to Rust <code>global_asm!</code> inline assembly in RustCrypto/hashes. SHA-1
+  already has <code>compress/x86.rs</code>; MD5 does not yet have x86_64 inline asm.</li>
+<li><strong>Future</strong>: write x86_64 MD5 compress using <code>global_asm!</code> (works on all
+  targets including MSVC). On Linux, enable <code>md-5 = { features = ["asm"] }</code>.</li>
+</ul>
+<h3 id="rs-encode">RS encode<a class="headerlink" href="#rs-encode" title="Permanent link">&para;</a></h3>
+<h3 id="numbers-10mb_1">Numbers (10MB)<a class="headerlink" href="#numbers-10mb_1" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Throughput</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RS encode 3+1</td>
+<td>2762 MB/s</td>
+</tr>
+</tbody>
+</table>
+<h3 id="analysis_1">Analysis<a class="headerlink" href="#analysis_1" title="Permanent link">&para;</a></h3>
+<p>reed-solomon-erasure with <code>simd-accel</code> feature. 2.8 GB/s is within expected
+range for galois_8 on x86. 6x faster than the L3 storage pipeline (439 MB/s).</p>
+<p>Could use ISA-L bindings for ~2x more, but pointless when L3 is the bottleneck.</p>
+<h3 id="decision">Decision<a class="headerlink" href="#decision" title="Permanent link">&para;</a></h3>
+<p><strong>No change.</strong> RS encode is not limiting.</p>
+<hr />
+<h2 id="l5-disk-io">L5: Disk I/O<a class="headerlink" href="#l5-disk-io" title="Permanent link">&para;</a></h2>
+<h3 id="numbers">Numbers<a class="headerlink" href="#numbers" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>10MB</th>
+<th>1GB</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>write (page cache)</td>
+<td>1625 MB/s</td>
+<td>1056 MB/s</td>
+</tr>
+<tr>
+<td>read (cached)</td>
+<td>2703 MB/s</td>
+<td>2902 MB/s</td>
+</tr>
+</tbody>
+</table>
+<h3 id="analysis_2">Analysis<a class="headerlink" href="#analysis_2" title="Permanent link">&para;</a></h3>
+<p>These are the ceiling numbers for L3. Page-cache writes avoid disk sync. Real
+durability requires fsync, which would cut throughput to physical disk speed
+(SATA SSD ~500 MB/s, NVMe ~2-3 GB/s).</p>
+<p>4KB writes are slow (13 MB/s) due to filesystem metadata overhead per operation.</p>
+<h3 id="decision_1">Decision<a class="headerlink" href="#decision_1" title="Permanent link">&para;</a></h3>
+<p><strong>No change.</strong> This is the theoretical ceiling, not the current bottleneck.
+Future: configurable fsync for durability, io_uring on Linux for zero-copy I/O.</p>
+<hr />
+<h2 id="l3-storage-pipeline-volumepool">L3: Storage pipeline (VolumePool)<a class="headerlink" href="#l3-storage-pipeline-volumepool" title="Permanent link">&para;</a></h2>
+<h3 id="numbers-after-optimization">Numbers (after optimization)<a class="headerlink" href="#numbers-after-optimization" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>1 disk 10MB</th>
+<th>1 disk 1GB</th>
+<th>4 disk 10MB</th>
+<th>4 disk 1GB</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>put_stream</td>
+<td>439 MB/s</td>
+<td>489 MB/s</td>
+<td>371 MB/s</td>
+<td>409 MB/s</td>
+</tr>
+<tr>
+<td>get (buffered)</td>
+<td>1175 MB/s</td>
+<td>1244 MB/s</td>
+<td>774 MB/s</td>
+<td>919 MB/s</td>
+</tr>
+<tr>
+<td>get_stream</td>
+<td>1287 MB/s</td>
+<td>1439 MB/s</td>
+<td>842 MB/s</td>
+<td>983 MB/s</td>
+</tr>
+</tbody>
+</table>
+<h3 id="put-analysis">PUT analysis<a class="headerlink" href="#put-analysis" title="Permanent link">&para;</a></h3>
+<p>The streaming PUT path (<code>encode_and_write</code> in <code>src/storage/erasure_encode.rs</code>)
+reads body chunks, accumulates to 1MB blocks, RS-encodes each block, and writes
+encoded shard data to each shard writer sequentially.</p>
+<p>The sequential write loop in <code>write_block()</code>:
+<div class="language-rust highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="n">i</span><span class="p">,</span><span class="w"> </span><span class="n">shard_data</span><span class="p">)</span><span class="w"> </span><span class="k">in</span><span class="w"> </span><span class="n">shards</span><span class="p">.</span><span class="n">iter</span><span class="p">().</span><span class="n">enumerate</span><span class="p">()</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">    </span><span class="n">shard_hashers</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">update</span><span class="p">(</span><span class="n">shard_data</span><span class="p">);</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="n">writers</span><span class="p">[</span><span class="n">i</span><span class="p">].</span><span class="n">write_chunk</span><span class="p">(</span><span class="n">shard_data</span><span class="p">).</span><span class="k">await</span><span class="o">?</span><span class="p">;</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="p">}</span>
+</span></code></pre></div></p>
+<p>L3 PUT at 510 MB/s (with skip_md5) vs L5 disk write at 1625 MB/s = 3.2x
+overhead from inline hashing (blake3 + xxhash64), RS encode, metadata
+writes, and the sequential shard write loop. Without skip_md5 (MD5
+required): 439 MB/s, 3.7x overhead.</p>
+<h3 id="put-parallelism-experiments-all-failed">PUT parallelism experiments (all failed)<a class="headerlink" href="#put-parallelism-experiments-all-failed" title="Permanent link">&para;</a></h3>
+<p>Three approaches were tested to parallelize shard writes:</p>
+<ol>
+<li>
+<p><strong>FuturesUnordered</strong> (earlier work): regressed 10MB from 147-&gt;74 MB/s.
+   Per-iteration spawn overhead exceeded sequential cost.</p>
+</li>
+<li>
+<p><strong>Channel-based shard tasks</strong> (this session): spawned one tokio task per
+   shard writer at encode start, sent blocks via mpsc channels. Regressed
+   4-disk 10MB by -21%. Channel + task scheduling overhead outweighed any
+   parallelism benefit.</p>
+</li>
+<li>
+<p><strong>join_all on concurrent writes</strong>: not possible due to Rust's borrow rules
+   (<code>write_chunk</code> takes <code>&amp;mut self</code>, can't hold multiple <code>&amp;mut</code> into a slice).</p>
+</li>
+</ol>
+<p><strong>Root cause</strong>: all tmpdir shard files are on the same physical NTFS volume.
+There is no actual I/O parallelism to exploit. The OS page cache serializes
+writes to the same device. Parallel shard writes would only help when shards
+map to different physical disks, which the single-machine benchmark doesn't
+test.</p>
+<p><strong>Decision</strong>: sequential writes are correct for same-disk configurations.
+The comment in <code>write_block()</code> documents this finding so future work doesn't
+repeat the experiment without separate physical disks.</p>
+<h3 id="get-analysis-and-optimization-done">GET analysis and optimization (done)<a class="headerlink" href="#get-analysis-and-optimization-done" title="Permanent link">&para;</a></h3>
+<p><strong>Before</strong>: <code>read_and_decode()</code> read all shard files in parallel via
+<code>join_all</code> (good), but collected the full decoded object into a <code>Vec&lt;u8&gt;</code>
+before returning. For 1GB objects, this allocated 1GB in memory before the
+first response byte could be sent.</p>
+<p><strong>After</strong>: <code>read_and_decode_stream()</code> opens shard files, reads them in 1MB
+blocks matching the encode path's <code>STREAM_BLOCK_SIZE</code>, RS-decodes each block,
+and yields decoded chunks via a <code>futures::channel::mpsc</code> channel (4-slot
+buffer). A spawned tokio task handles the block-by-block decode loop.</p>
+<p>Key implementation details:
+- <code>Backend::read_shard_stream()</code> returns <code>(AsyncRead, ObjectMeta)</code> instead of
+  <code>(Vec&lt;u8&gt;, ObjectMeta)</code>. LocalVolume opens the file; RemoteVolume falls back
+  to buffered read.
+- Block boundaries are derived from <code>total_size</code>, <code>data_n</code>, and
+  <code>STREAM_BLOCK_SIZE</code> (1MB). Each shard file stores blocks contiguously, so
+  per-block shard chunk size = <code>ceil(block_size / data_n)</code>.
+- The last block may be smaller than 1MB. <code>split_data</code> padding is handled
+  by truncating the reassembled block to the actual remaining bytes.</p>
+<p><strong>Result</strong>: +9-16% throughput at L3, but the bigger win is at L6 (see below).</p>
+<p>Files changed:
+- <code>src/storage/erasure_decode.rs</code>: <code>read_and_decode_stream()</code>
+- <code>src/storage/mod.rs</code>: <code>Backend::read_shard_stream()</code>, <code>Store::get_object_stream()</code>
+- <code>src/storage/local_volume.rs</code>: native file-backed <code>read_shard_stream()</code>
+- <code>src/storage/volume_pool.rs</code>: <code>VolumePool::get_object_stream()</code></p>
+<h3 id="get-optimization-mmap-fast-path-done">GET optimization: mmap fast path (done)<a class="headerlink" href="#get-optimization-mmap-fast-path-done" title="Permanent link">&para;</a></h3>
+<p><strong>Problem</strong>: streaming decode still allocated 1MB <code>Bytes</code> per chunk through
+an mpsc channel (1024 chunks for 1GB). RustFS uses <code>tokio::io::duplex</code> + mmap.</p>
+<p><strong>After</strong>: two-case approach via <code>memmap2</code>:</p>
+<ol>
+<li>
+<p><strong>1+0 (no EC)</strong>: mmap the shard file, <code>Bytes::from_owner(mmap)</code> gives a
+   ref-counted handle to the entire file. Yield 4MB <code>.slice()</code> chunks.
+   Zero-copy, zero allocation, no RS decode, no spawned task.</p>
+</li>
+<li>
+<p><strong>EC (N+M)</strong>: mmap all shard files. Spawned task slices directly into mmap
+   regions (no read syscall), RS-decodes 4MB blocks (4x fewer iterations than
+   1MB), yields decoded data through mpsc channel.</p>
+</li>
+</ol>
+<p>Both paths use <code>Backend::mmap_shard()</code> which returns <code>MmapOrVec</code>. Local
+volumes return a real mmap, remote volumes fall back to buffered read.</p>
+<p><strong>Result</strong>:
+- L3 GET (1 disk, mmap): 19,098 MB/s at 10MB (page cache), effectively instant
+- L6 GET (1 disk): 809 MB/s at 10MB, <strong>1048 MB/s at 1GB</strong> (was 833)
+- curl GET (no auth): <strong>1220 MB/s at 1GB</strong>, faster than MinIO through mc
+- EC GET (4 disk): <strong>1048 MB/s (10MB), 1236 MB/s (1GB)</strong>, zero-alloc fast
+  path slices from mmap when all shards healthy. +35% over pre-mmap baseline</p>
+<p>Files changed:
+- <code>Cargo.toml</code>: added <code>memmap2</code>
+- <code>src/storage/mod.rs</code>: <code>MmapOrVec</code> type, <code>Backend::mmap_shard()</code>
+- <code>src/storage/local_volume.rs</code>: mmap-backed <code>mmap_shard()</code>
+- <code>src/storage/erasure_decode.rs</code>: mmap-based <code>read_and_decode_stream()</code>, 4MB blocks
+- <code>src/storage/volume_pool.rs</code>: 1+0 mmap fast path in <code>get_object_stream()</code></p>
+<hr />
+<h2 id="l1-http-transport">L1: HTTP transport<a class="headerlink" href="#l1-http-transport" title="Permanent link">&para;</a></h2>
+<h3 id="numbers-10mb_2">Numbers (10MB)<a class="headerlink" href="#numbers-10mb_2" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>Throughput</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HTTP PUT (reqwest -&gt; hyper)</td>
+<td>762 MB/s</td>
+</tr>
+</tbody>
+</table>
+<h3 id="analysis_3">Analysis<a class="headerlink" href="#analysis_3" title="Permanent link">&para;</a></h3>
+<p>hyper 1.x with http-body-util on localhost. 762 MB/s is reasonable, limited
+by memcpy + TCP stack overhead. The benchmark uses <code>data.clone()</code> on each PUT
+which adds a copy; the real S3 path streams the body without copying.</p>
+<h3 id="decision_2">Decision<a class="headerlink" href="#decision_2" title="Permanent link">&para;</a></h3>
+<p><strong>No change.</strong> HTTP transport is not limiting (762 MB/s &gt; L6's 272 MB/s). L1 is the outermost layer a PUT request hits.</p>
+<hr />
+<h2 id="l6-s3-real-storage-s3s-full-pipeline">L6: S3 + real storage (s3s + full pipeline)<a class="headerlink" href="#l6-s3-real-storage-s3s-full-pipeline" title="Permanent link">&para;</a></h2>
+<h3 id="numbers-after-optimization_1">Numbers (after optimization)<a class="headerlink" href="#numbers-after-optimization_1" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>10MB</th>
+<th>1GB</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>S3 PUT</td>
+<td>272 MB/s</td>
+<td>310 MB/s</td>
+</tr>
+<tr>
+<td>S3 GET (1 disk, mmap)</td>
+<td>809 MB/s</td>
+<td>1048 MB/s</td>
+</tr>
+<tr>
+<td>curl GET (1 disk, no auth)</td>
+<td>n/a</td>
+<td>1220 MB/s</td>
+</tr>
+</tbody>
+</table>
+<p>L6 runs in-process with <code>no_auth: true</code> and raw reqwest (no SigV4).</p>
+<h3 id="put-optimization-versioning-config-cache-done">PUT optimization: versioning config cache (done)<a class="headerlink" href="#put-optimization-versioning-config-cache-done" title="Permanent link">&para;</a></h3>
+<p><strong>Before</strong>: every PUT called <code>get_versioning_config()</code> which read bucket
+settings from disk via <code>Backend::read_bucket_settings()</code>. This added a file
+read to every single PUT request, even when versioning was never configured.</p>
+<p><strong>After</strong>: <code>AbixioS3</code> caches versioning config in a <code>RwLock&lt;HashMap&gt;</code>. First
+access populates the cache from disk. <code>put_bucket_versioning</code> invalidates the
+cache entry. <code>get_bucket_versioning</code> also invalidates before re-reading to
+ensure fresh data.</p>
+<p><strong>Result</strong>: L6 PUT improved from 214 MB/s to 272 MB/s (+27%).</p>
+<p>Remaining PUT overhead (272 vs L3's 439 = 38% gap) is s3s request parsing,
+XML serialization, and service dispatch. This is inherent to the protocol
+layer and not easily reducible without replacing s3s.</p>
+<p>Files changed:
+- <code>src/s3_service.rs</code>: <code>cached_versioning_config()</code>, <code>invalidate_versioning_cache()</code></p>
+<h3 id="get-optimization-streaming-response-done">GET optimization: streaming response (done)<a class="headerlink" href="#get-optimization-streaming-response-done" title="Permanent link">&para;</a></h3>
+<p><strong>Before</strong>: <code>get_object()</code> called <code>Store::get_object()</code> which returned
+<code>(Vec&lt;u8&gt;, ObjectInfo)</code>, the entire object buffered in memory. Then it
+wrapped the data as a single-chunk <code>StreamingBlob::wrap(once(...))</code>. For
+1GB objects, this meant 1GB allocated before the first response byte was sent.</p>
+<p><strong>After</strong>: <code>get_object()</code> calls <code>Store::get_object_stream()</code> which returns
+<code>(ObjectInfo, Stream&lt;Item=Result&lt;Bytes&gt;&gt;)</code>. The stream feeds directly into
+<code>StreamingBlob::wrap()</code>. The first response byte is sent after decoding the
+first 1MB block, not after decoding the entire object.</p>
+<p>Key implementation detail: s3s <code>StreamingBlob::wrap()</code> requires <code>Send + Sync</code>.
+The boxed stream from <code>get_object_stream()</code> is <code>Send</code> but not <code>Sync</code>. A
+<code>SyncStream</code> newtype wrapper adds <code>Sync</code> via <code>unsafe impl</code>. This is safe
+because streams are only polled from one task at a time.</p>
+<p>Range requests and versioned GETs still use the buffered path because they
+need random access into the response body. This is acceptable because range
+requests typically target small byte ranges, and versioned objects are the
+minority of GET traffic.</p>
+<p><strong>Result</strong>: L6 GET improved from 365 to 750 MB/s at 10MB (+105%), and from
+452 to 833 MB/s at 1GB (+84%).</p>
+<p>Files changed:
+- <code>src/s3_service.rs</code>: streaming GET path, <code>SyncStream</code>, <code>get_object_buffered()</code></p>
+<hr />
+<h2 id="l7-full-client-path-aws-sdk-s3-auth">L7: Full client path (aws-sdk-s3 + auth)<a class="headerlink" href="#l7-full-client-path-aws-sdk-s3-auth" title="Permanent link">&para;</a></h2>
+<p>Added 2026-04-09 to close the gap between L6 (in-process, no auth) and
+external matrix benchmarks.</p>
+<h3 id="numbers-1gb-2026-04-09">Numbers (1GB, 2026-04-09)<a class="headerlink" href="#numbers-1gb-2026-04-09" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Operation</th>
+<th>L6 (no auth, reqwest)</th>
+<th>L6A (auth, reqwest)</th>
+<th>L7 (auth, aws-sdk-s3)</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>PUT (before skip-md5)</td>
+<td>344 MB/s</td>
+<td>337 MB/s</td>
+<td>380 MB/s</td>
+</tr>
+<tr>
+<td>PUT (after skip-md5)</td>
+<td>n/a</td>
+<td>n/a</td>
+<td><strong>695 MB/s</strong></td>
+</tr>
+<tr>
+<td>GET</td>
+<td>535 MB/s</td>
+<td>n/a</td>
+<td>696 MB/s</td>
+</tr>
+</tbody>
+</table>
+<h3 id="analysis_4">Analysis<a class="headerlink" href="#analysis_4" title="Permanent link">&para;</a></h3>
+<p>L7 runs in-process with auth enabled and the full aws-sdk-s3 client, the
+same path real users take. aws-sdk-s3 does not send <code>Content-MD5</code>, so
+<code>skip_md5</code> is active and xxhash64 is used for the ETag.</p>
+<p>The matrix benchmark previously showed 52 MB/s because it was running an
+unoptimized debug binary (<code>target/debug/abixio.exe</code>). After fixing the
+binary path to use release builds, matrix results match L7.</p>
+<p>Auth overhead is negligible (L6 vs L6A: 344 vs 337 MB/s, within noise).
+aws-sdk-s3 client overhead is negligible (L6 vs L7: 344 vs 380 MB/s pre-skip-md5).</p>
+<p>Note: L6A is an auth variant of L6, not a separate layer.</p>
+<hr />
+<h2 id="layer-to-layer-gaps">Layer-to-layer gaps<a class="headerlink" href="#layer-to-layer-gaps" title="Permanent link">&para;</a></h2>
+<h3 id="1gb-get-full-layer-breakdown-2026-04-09-after-chunked-mmap">1GB GET: full layer breakdown (2026-04-09, after chunked mmap)<a class="headerlink" href="#1gb-get-full-layer-breakdown-2026-04-09-after-chunked-mmap" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>1GB GET MB/s</th>
+<th>What it measures</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L3 get_stream</td>
+<td><strong>instant</strong> (mmap)</td>
+<td>Storage: zero-copy mmap, 4MB Bytes::slice</td>
+</tr>
+<tr>
+<td>L1 http_get</td>
+<td><strong>724</strong></td>
+<td>Raw hyper HTTP body (no S3, no storage)</td>
+</tr>
+<tr>
+<td>L6 s3s_get</td>
+<td><strong>714</strong></td>
+<td>s3s + storage, no auth, reqwest</td>
+</tr>
+<tr>
+<td>L7 sdk_get</td>
+<td><strong>920</strong></td>
+<td>s3s + auth + aws-sdk-s3 (in-process)</td>
+</tr>
+<tr>
+<td>Matrix</td>
+<td><strong>604</strong></td>
+<td>Separate abixio.exe process</td>
+</tr>
+<tr>
+<td>MinIO (matrix)</td>
+<td><strong>791</strong></td>
+<td>Separate minio.exe process</td>
+</tr>
+</tbody>
+</table>
+<p>Key findings:</p>
+<ol>
+<li>
+<p><strong>s3s adds near-zero overhead to GET</strong> (L1 724 vs L6 714, within noise).
+   The s3s response path is efficient. Prior attribution of GET bottleneck to
+   s3s was incorrect.</p>
+</li>
+<li>
+<p><strong>L1 (raw hyper) is the HTTP ceiling at 724 MB/s</strong> for writing 1GB over
+   127.0.0.1 TCP on Windows. This is the hyper/Windows loopback limit.</p>
+</li>
+<li>
+<p><strong>The real GET gap is L7 (920) -&gt; Matrix (604) = -34%</strong>. This is the cost
+   of running as a separate process on Windows. MinIO loses less here (791 vs
+   920-equivalent) because Go's <code>net/http</code> is more efficient at TCP response
+   writes on Windows than hyper.</p>
+</li>
+<li>
+<p><strong>AbixIO's GET code is not the bottleneck.</strong> The mmap path is zero-copy,
+   chunked yield is working, s3s adds nothing. The remaining gap vs MinIO is
+   hyper's TCP write performance on Windows vs Go's <code>net/http</code>.</p>
+</li>
+</ol>
+<h3 id="1gb-put-full-layer-breakdown">1GB PUT: full layer breakdown<a class="headerlink" href="#1gb-put-full-layer-breakdown" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>1GB PUT MB/s</th>
+<th>What it measures</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L3 put_stream</td>
+<td><strong>510</strong> (skip-md5)</td>
+<td>Storage: encode + write shards</td>
+</tr>
+<tr>
+<td>L6 s3s_put</td>
+<td><strong>344</strong> (with MD5)</td>
+<td>s3s + storage, no auth</td>
+</tr>
+<tr>
+<td>L7 sdk_put</td>
+<td><strong>695</strong> (skip-md5)</td>
+<td>s3s + auth + aws-sdk-s3 (in-process)</td>
+</tr>
+<tr>
+<td>Matrix</td>
+<td><strong>498</strong> (skip-md5, TCP_NODELAY)</td>
+<td>Separate abixio.exe process</td>
+</tr>
+<tr>
+<td>MinIO (matrix)</td>
+<td><strong>380</strong></td>
+<td>Separate minio.exe process</td>
+</tr>
+</tbody>
+</table>
+<h3 id="remaining-gaps-after-tcp_nodelay">Remaining gaps (after TCP_NODELAY)<a class="headerlink" href="#remaining-gaps-after-tcp_nodelay" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Gap</th>
+<th>Current</th>
+<th>Ratio</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L7 PUT -&gt; Matrix PUT</td>
+<td>695 vs 498 MB/s</td>
+<td>1.4x</td>
+<td>process boundary (improved from 1.5x with TCP_NODELAY)</td>
+</tr>
+<tr>
+<td>L7 GET -&gt; Matrix GET</td>
+<td>920 vs 686 MB/s</td>
+<td>1.3x</td>
+<td>process boundary (improved from 1.5x with TCP_NODELAY)</td>
+</tr>
+<tr>
+<td>Matrix GET: AbixIO vs MinIO</td>
+<td>686 vs 757 MB/s</td>
+<td>0.91x</td>
+<td>9% gap, down from 24% before TCP_NODELAY</td>
+</tr>
+<tr>
+<td>10MB GET: AbixIO vs MinIO</td>
+<td>324 vs 748 MB/s</td>
+<td>0.43x</td>
+<td><strong>2.3x gap</strong> from per-response overhead in hyper vs Go</td>
+</tr>
+<tr>
+<td>L3 PUT vs L5 write</td>
+<td>510 vs 1625 MB/s</td>
+<td>3.2x</td>
+<td>blake3 + xxhash + RS + metadata</td>
+</tr>
+<tr>
+<td>EC GET vs 1+0 GET</td>
+<td>1236 vs page cache</td>
+<td>n/a</td>
+<td>RS decode (inherent cost of EC)</td>
+</tr>
+</tbody>
+</table>
+<h3 id="tcp_nodelay-analysis-2026-04-09">TCP_NODELAY analysis (2026-04-09)<a class="headerlink" href="#tcp_nodelay-analysis-2026-04-09" title="Permanent link">&para;</a></h3>
+<p><strong>Root cause</strong>: Go enables <code>TCP_NODELAY</code> by default on all TCP connections.
+AbixIO did not. Nagle's algorithm was batching small writes, adding latency.</p>
+<p><strong>Fix</strong>: <code>stream.set_nodelay(true)?</code> in <code>src/main.rs</code> after <code>listener.accept()</code>.</p>
+<p><strong>Result</strong>: Matrix PUT +10% (453-&gt;498), Matrix GET +14% (604-&gt;686). Closed
+the 1GB GET gap from 24% to 9% vs MinIO.</p>
+<p><strong>Remaining 10MB GET gap (2.3x vs MinIO)</strong>: confirmed as hyper's HTTP
+write ceiling, not AbixIO code. Evidence: L1 raw hyper GET (no S3, no
+storage, just <code>Full::new(bytes)</code>) = <strong>510 MB/s</strong> with TCP_NODELAY. MinIO
+achieves <strong>748 MB/s</strong> through a full S3 stack in a separate process.</p>
+<h3 id="l1x-hyper-sub-layer-experiments-2026-04-09">L1X: hyper sub-layer experiments (2026-04-09)<a class="headerlink" href="#l1x-hyper-sub-layer-experiments-2026-04-09" title="Permanent link">&para;</a></h3>
+<p>Tested hyper config variants to find where time goes in HTTP GET responses.
+All measurements in-process, 10 iterations, TCP_NODELAY on.</p>
+<table>
+<thead>
+<tr>
+<th>Variant</th>
+<th>10MB GET MB/s</th>
+<th>1GB GET MB/s</th>
+<th>Config</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>raw_tcp</td>
+<td>327</td>
+<td>395</td>
+<td>Raw tokio write_all, no HTTP framing</td>
+</tr>
+<tr>
+<td>L1 (baseline)</td>
+<td>510</td>
+<td>724</td>
+<td>hyper default, Full::new(bytes)</td>
+</tr>
+<tr>
+<td>writev</td>
+<td>429</td>
+<td>605</td>
+<td>hyper writev(true)</td>
+</tr>
+<tr>
+<td>bigbuf</td>
+<td>364</td>
+<td><strong>800</strong></td>
+<td>hyper max_buf_size(4MB)</td>
+</tr>
+<tr>
+<td>stream</td>
+<td>462</td>
+<td><strong>849</strong></td>
+<td>hyper StreamBody (4MB frame chunks)</td>
+</tr>
+<tr>
+<td><strong>all_opts</strong></td>
+<td><strong>726</strong></td>
+<td><strong>844</strong></td>
+<td>writev + bigbuf + stream combined</td>
+</tr>
+<tr>
+<td>MinIO (matrix)</td>
+<td>648-685</td>
+<td>796</td>
+<td>Go net/http reference</td>
+</tr>
+</tbody>
+</table>
+<p>Key findings:</p>
+<ol>
+<li>
+<p><strong>Raw TCP is SLOWER than hyper</strong> (327 vs 510 MB/s at 10MB). Naive
+   <code>write_all</code> on a raw socket is worse than hyper's optimized write path.
+   hyper is NOT fundamentally slower; its default config just isn't
+   optimized for large bodies.</p>
+</li>
+<li>
+<p><strong><code>all_opts</code> hits 726 MB/s at 10MB</strong>, within 6% of MinIO's 685 at L1.
+   The combination of <code>writev(true)</code> + <code>max_buf_size(4MB)</code> + chunked
+   StreamBody nearly closes the gap at L5 level.</p>
+</li>
+<li>
+<p><strong>For 1GB, tuned hyper matches MinIO</strong> (844 vs 796 MB/s).</p>
+</li>
+<li>
+<p><strong>The prior claim that "hyper's ceiling is 32% below MinIO" was wrong.</strong>
+   hyper with correct config is competitive. The gap was configuration,
+   not architecture.</p>
+</li>
+</ol>
+<p>Applied: <code>writev(true)</code> + <code>max_buf_size(4MB)</code> in <code>src/main.rs</code>.
+The remaining matrix gap (674 vs 796 for 1GB) is the s3s/ChunkedBytes
+overhead between L1X and the full stack.</p>
+<hr />
+<h2 id="optimization-history">Optimization history<a class="headerlink" href="#optimization-history" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Change</th>
+<th>Layer</th>
+<th>Result</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Streaming GET</td>
+<td>L3+L6</td>
+<td><strong>GET +105%</strong> (10MB), <strong>+84%</strong> (1GB)</td>
+<td>done</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Parallel shard writes</td>
+<td>L3</td>
+<td><strong>Regressed</strong> -21%. Sequential faster on same disk</td>
+<td>reverted</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Versioning config cache</td>
+<td>L6</td>
+<td><strong>PUT +27%</strong> (10MB)</td>
+<td>done</td>
+</tr>
+<tr>
+<td>4</td>
+<td>mmap GET (1+0 fast path)</td>
+<td>L3+L6</td>
+<td><strong>L6 GET 1GB: 833-&gt;1048 MB/s (+26%)</strong>. curl: 1220 MB/s</td>
+<td>done</td>
+</tr>
+<tr>
+<td>5</td>
+<td>mmap GET (EC, 4MB blocks)</td>
+<td>L3</td>
+<td>4-disk GET 675-803 MB/s (regressed from mmap-&gt;Vec copy)</td>
+<td>superseded by #6</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Zero-alloc EC GET fast path</td>
+<td>L3</td>
+<td><strong>EC GET +35%</strong> (919-&gt;1236 MB/s at 1GB). Slices from mmap, no Vec alloc</td>
+<td>done</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Debug binary fix</td>
+<td>n/a</td>
+<td><strong>Matrix PUT 52-&gt;320 MB/s</strong> (was benchmarking debug build)</td>
+<td>done</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Pipeline experiments</td>
+<td>L3</td>
+<td>Double-buffer -96%, channel -96%, 4MB chunks -11%. All worse</td>
+<td>reverted</td>
+</tr>
+<tr>
+<td>9</td>
+<td>Skip MD5 (xxhash64 ETag)</td>
+<td>L4+L3+L7</td>
+<td><strong>L7 PUT +83%</strong> (380-&gt;695 MB/s). Matrix PUT +38% (320-&gt;441). Fastest PUT at all sizes</td>
+<td>done</td>
+</tr>
+<tr>
+<td>10</td>
+<td>Chunked mmap GET (4MB slices)</td>
+<td>L3+L7</td>
+<td><strong>Matrix GET +25%</strong> (484-&gt;604 MB/s). Zero-copy Bytes::slice</td>
+<td>done</td>
+</tr>
+<tr>
+<td>11</td>
+<td>TCP_NODELAY on accept</td>
+<td>L1+</td>
+<td><strong>Matrix PUT +10%</strong> (453-&gt;498), <strong>GET +14%</strong> (604-&gt;686). Go sets this by default</td>
+<td>done</td>
+</tr>
+<tr>
+<td>12</td>
+<td>ChunkedBytes GET (hybrid)</td>
+<td>L6+L7</td>
+<td><strong>10MB GET +36%</strong> (324-&gt;440 MB/s). Collect &lt;=64MB, stream &gt;64MB. Eliminates SyncStream+StreamWrapper chain</td>
+<td>done</td>
+</tr>
+<tr>
+<td>13</td>
+<td>hyper writev + max_buf_size</td>
+<td>L1+</td>
+<td><strong>1GB GET +15%</strong> (584-&gt;674). L1X shows hyper can match MinIO with correct config</td>
+<td>done</td>
+</tr>
+</tbody>
+</table>
+<h3 id="before-and-after-l7-full-client-path-what-users-see">Before and after (L7, full client path, what users see)<a class="headerlink" href="#before-and-after-l7-full-client-path-what-users-see" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>Operation          Before          After           Change
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>-----------        -----------     -----------     -------
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>PUT 1GB            380 MB/s        695 MB/s        +83%    (skip MD5)
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>GET 1GB            752 MB/s        880 MB/s        +17%    (chunked mmap)
+</span></code></pre></div>
+<h3 id="before-and-after-matrix-external-benchmark-cumulative">Before and after (matrix, external benchmark, cumulative)<a class="headerlink" href="#before-and-after-matrix-external-benchmark-cumulative" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>Operation          Start           Current         Change
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>-----------        -----------     -----------     -------
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>PUT 4KB            442 obj/s       1923 obj/s      +335%
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>PUT 10MB           50 MB/s         325 MB/s        +550%
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>PUT 1GB            52 MB/s         546 MB/s        +950%
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>GET 10MB           241 MB/s        399 MB/s        +66%
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>GET 1GB            577 MB/s        674 MB/s        +17%
+</span></code></pre></div>
+<p>All optimizations applied: debug binary fix, skip MD5 (xxhash64 ETag),
+chunked mmap (4MB Bytes::slice), TCP_NODELAY, ChunkedBytes hybrid
+response, hyper writev(true) + max_buf_size(4MB).</p>
+<h3 id="before-and-after-l6-s3-protocol-in-process">Before and after (L6, S3 protocol in-process)<a class="headerlink" href="#before-and-after-l6-s3-protocol-in-process" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>Operation          Before          After           Change
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>-----------        -----------     -----------     -------
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>PUT 10MB           214 MB/s        272 MB/s        +27%    (versioning cache)
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>PUT 1GB            305 MB/s        310 MB/s        ~same
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>GET 10MB           365 MB/s        809 MB/s        +122%   (streaming + mmap)
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>GET 1GB            452 MB/s        1048 MB/s       +132%   (mmap fast path)
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a>GET 1GB (curl)     n/a             1220 MB/s       n/a     (no mc overhead)
+</span></code></pre></div>
+<h3 id="before-and-after-l3-storage-pipeline">Before and after (L3, storage pipeline)<a class="headerlink" href="#before-and-after-l3-storage-pipeline" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a>Operation          Before          After           Change
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a>-----------        -----------     -----------     -------
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>GET 10MB (1d)      1175 MB/s       19098 MB/s      mmap page cache
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>GET 1GB (1d)       1244 MB/s       (page cache)    mmap instant
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>GET 10MB (4d EC)   774 MB/s        1048 MB/s       +35% (zero-alloc mmap)
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>GET 1GB (4d EC)    919 MB/s        1236 MB/s       +35% (zero-alloc mmap)
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>PUT 1GB (1d)       439 MB/s        510 MB/s        +16% (skip MD5, xxhash64)
+</span></code></pre></div>
+<hr />
+<h2 id="allocation-audit">Allocation audit<a class="headerlink" href="#allocation-audit" title="Permanent link">&para;</a></h2>
+<p>Every allocation in the hot path is a potential throughput ceiling. The 1+0
+GET path is already zero-alloc (mmap -&gt; Bytes::from_owner -&gt; slice). The EC
+GET and PUT paths still allocate heavily. This section inventories every
+allocation, rates its impact, and identifies the fix.</p>
+<h3 id="every-allocation-in-the-data-path">Every allocation in the data path<a class="headerlink" href="#every-allocation-in-the-data-path" title="Permanent link">&para;</a></h3>
+<p>Complete inventory of every heap allocation per request. "Per 1GB" counts
+assume 3+1 EC with 1024 encode blocks and 256 decode iterations (4MB each).</p>
+<h4 id="10-get-volume_poolrsget_object_stream-mmap-fast-path">1+0 GET (<code>volume_pool.rs:get_object_stream</code> mmap fast path)<a class="headerlink" href="#10-get-volume_poolrsget_object_stream-mmap-fast-path" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>File:line</th>
+<th>What</th>
+<th>Count</th>
+<th>Heap?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>volume_pool.rs:307</td>
+<td><code>Bytes::from_owner(mmap)</code></td>
+<td>1</td>
+<td>ref-counted wrapper, no data copy</td>
+</tr>
+<tr>
+<td>2</td>
+<td>volume_pool.rs:308</td>
+<td><code>stream::once(owned)</code>, yields entire Bytes</td>
+<td>1</td>
+<td>one yield, one poll_frame, zero slicing</td>
+</tr>
+<tr>
+<td>3</td>
+<td>s3_service.rs:419</td>
+<td><code>StreamingBlob::wrap(SyncStream(..))</code></td>
+<td>1</td>
+<td>one Box for stream trait object</td>
+</tr>
+<tr>
+<td>4</td>
+<td>s3_service.rs:424-435</td>
+<td><code>info.content_type.clone()</code> etc</td>
+<td>~5</td>
+<td>small strings, once per request</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Data-path allocs: 0. Stream yields: 1.</strong> Entire mmap served as single Bytes.
+hyper writes to TCP in kernel-sized chunks. No slicing, no Arc per chunk.</p>
+<h4 id="ec-get-healthy-erasure_decodersread_and_decode_stream-fast-path">EC GET healthy (<code>erasure_decode.rs:read_and_decode_stream</code> fast path)<a class="headerlink" href="#ec-get-healthy-erasure_decodersread_and_decode_stream-fast-path" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>File:line</th>
+<th>What</th>
+<th>Count</th>
+<th>Heap?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>:112</td>
+<td><code>mmap_slots: Vec&lt;Option&lt;MmapOrVec&gt;&gt;</code></td>
+<td>1</td>
+<td>once at start (N slots)</td>
+</tr>
+<tr>
+<td>2</td>
+<td>:135</td>
+<td><code>meta_clone = good_meta.clone()</code></td>
+<td>1</td>
+<td>strings in ObjectMeta</td>
+</tr>
+<tr>
+<td>3</td>
+<td>:137</td>
+<td><code>mpsc::channel(4)</code></td>
+<td>1</td>
+<td>channel internal buffers</td>
+</tr>
+<tr>
+<td>4</td>
+<td>:146</td>
+<td><code>ReedSolomon::new()</code></td>
+<td>1</td>
+<td>RS lookup tables</td>
+</tr>
+<tr>
+<td>5</td>
+<td>:158</td>
+<td><code>pool.take()</code>, <strong>4MB output buffer from pool</strong></td>
+<td><strong>0 (steady state)</strong></td>
+<td><strong>done. BufPool returns on drop</strong></td>
+</tr>
+<tr>
+<td>6</td>
+<td>:174-177</td>
+<td><code>extend_from_slice(&amp;mmap[..])</code> into iter_data</td>
+<td>256 x data_n</td>
+<td>copy from mmap (inherent for EC reassembly) but no alloc (writes into #5)</td>
+</tr>
+<tr>
+<td>7</td>
+<td>:218</td>
+<td><code>Bytes::from(iter_data)</code></td>
+<td>256/GB</td>
+<td>takes ownership of #5, no copy</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Data-path allocs: 8 warmup, then 0 steady state.</strong> BufPool pre-allocates
+8 x 4MB Vecs. <code>Bytes::from_owner(PooledBuf)</code> wraps the buffer; when hyper
+drops the Bytes, <code>PooledBuf::drop</code> returns the Vec to the pool. After
+warmup, buffers circulate without allocation. EC GET 4-disk 1GB: 2105 MB/s.</p>
+<h4 id="ec-get-degraded-slow-path-missing-shards">EC GET degraded (slow path, missing shards)<a class="headerlink" href="#ec-get-degraded-slow-path-missing-shards" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>File:line</th>
+<th>What</th>
+<th>Count</th>
+<th>Heap?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1-7</td>
+<td></td>
+<td>same as healthy</td>
+<td>same</td>
+<td>same</td>
+</tr>
+<tr>
+<td>8</td>
+<td>:183</td>
+<td><code>vec![None; total]</code> shard slot array</td>
+<td>per degraded block</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>9</td>
+<td>:188</td>
+<td><code>mmap[..].to_vec()</code> per available shard</td>
+<td>per shard per degraded block</td>
+<td><strong>yes, full shard copy</strong></td>
+</tr>
+<tr>
+<td>10</td>
+<td>:200</td>
+<td><code>rs.reconstruct()</code> internal</td>
+<td>per degraded block</td>
+<td>yes (reconstructs missing shards)</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Only when shards are missing.</strong> Correctness path, not optimized.</p>
+<h4 id="put-erasure_encodersencode_and_write-write_block">PUT (<code>erasure_encode.rs:encode_and_write</code> + <code>write_block</code>)<a class="headerlink" href="#put-erasure_encodersencode_and_write-write_block" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>File:line</th>
+<th>What</th>
+<th>Count</th>
+<th>Heap?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>:96-98</td>
+<td><code>content_type.clone()</code> or <code>.to_string()</code></td>
+<td>1</td>
+<td>once at start</td>
+</tr>
+<tr>
+<td>2</td>
+<td>:104</td>
+<td><code>distribution: Vec&lt;usize&gt;</code></td>
+<td>1</td>
+<td>once at start (N shards)</td>
+</tr>
+<tr>
+<td>3</td>
+<td>:109-112</td>
+<td><code>volume_ids: Vec&lt;String&gt;</code> from placement</td>
+<td>1</td>
+<td>once at start</td>
+</tr>
+<tr>
+<td>4</td>
+<td>:118</td>
+<td><code>ReedSolomon::new()</code></td>
+<td>1</td>
+<td>RS lookup tables</td>
+</tr>
+<tr>
+<td>5</td>
+<td>:131</td>
+<td><code>writers: Vec&lt;Box&lt;dyn ShardWriter&gt;&gt;</code></td>
+<td>1</td>
+<td>N boxed writers</td>
+</tr>
+<tr>
+<td>6</td>
+<td>:138</td>
+<td><code>shard_hashers: Vec&lt;blake3::Hasher&gt;</code></td>
+<td>1</td>
+<td>N hashers</td>
+</tr>
+<tr>
+<td>7</td>
+<td>:144-146</td>
+<td><code>shard_bufs: Vec&lt;Vec&lt;u8&gt;&gt;</code>, <strong>pre-allocated, reused</strong></td>
+<td>1</td>
+<td>N Vecs with capacity, allocated once</td>
+</tr>
+<tr>
+<td>8</td>
+<td>:149</td>
+<td><code>block_buf: Vec::with_capacity(2MB)</code></td>
+<td>1</td>
+<td>once, reused across all chunks</td>
+</tr>
+<tr>
+<td>9</td>
+<td>:313 (split_data_into)</td>
+<td><code>buf.clear()</code> + <code>extend_from_slice</code> + <code>resize</code></td>
+<td>0</td>
+<td><strong>zero alloc, reuses #7 capacity</strong></td>
+</tr>
+<tr>
+<td>10</td>
+<td>:318-320</td>
+<td>parity buf <code>clear()</code> + <code>resize</code></td>
+<td>0</td>
+<td><strong>zero alloc, reuses #7 capacity</strong></td>
+</tr>
+<tr>
+<td>11</td>
+<td>:193-195</td>
+<td><code>checksums: Vec&lt;String&gt;</code> from blake3 hex</td>
+<td>N shards</td>
+<td>finalize path, once</td>
+</tr>
+<tr>
+<td>12</td>
+<td>:206-223</td>
+<td><code>ObjectMeta { etag.clone(), .. }</code> per shard</td>
+<td>N shards</td>
+<td>finalize path, once per shard</td>
+</tr>
+<tr>
+<td>13</td>
+<td>:255-256</td>
+<td><code>MrfEntry { bucket.to_string(), .. }</code></td>
+<td>0 or 1</td>
+<td>only on partial write</td>
+</tr>
+<tr>
+<td>14</td>
+<td>:262-263</td>
+<td><code>ObjectInfo { bucket.to_string(), .. }</code></td>
+<td>1</td>
+<td>return value</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Data-path allocs per block: 0.</strong> The encode loop (#9, #10) allocates
+nothing. <code>split_data_into</code> and parity zeroing reuse pre-allocated buffers.
+All allocations are either once-at-start (#1-8) or once-at-finalize (#11-14).</p>
+<h4 id="s3_servicers-responserequest-wrappers">s3_service.rs response/request wrappers<a class="headerlink" href="#s3_servicers-responserequest-wrappers" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>File:line</th>
+<th>What</th>
+<th>Count</th>
+<th>Heap?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>:417</td>
+<td><code>io::Error::new(..e.to_string())</code> in stream map</td>
+<td>per chunk on error</td>
+<td><strong>error path only</strong></td>
+</tr>
+<tr>
+<td>2</td>
+<td>:419</td>
+<td><code>SyncStream(mapped)</code></td>
+<td>1</td>
+<td>stack wrapper, no heap</td>
+</tr>
+<tr>
+<td>3</td>
+<td>:419</td>
+<td><code>StreamingBlob::wrap()</code> -&gt; DynByteStream</td>
+<td>1</td>
+<td>one Box</td>
+</tr>
+<tr>
+<td>4</td>
+<td>:424-435</td>
+<td><code>info.etag.clone()</code> etc</td>
+<td>~5</td>
+<td>small strings</td>
+</tr>
+<tr>
+<td>5</td>
+<td>:352</td>
+<td>PUT body <code>chunk.map_err(..e.to_string())</code></td>
+<td>per chunk on error</td>
+<td><strong>error path only</strong></td>
+</tr>
+</tbody>
+</table>
+<p><strong>Data-path allocs: 0.</strong> Error conversions only allocate on error.</p>
+<h3 id="allocation-summary">Allocation summary<a class="headerlink" href="#allocation-summary" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Path</th>
+<th>Data-path allocs/GB</th>
+<th>Remaining alloc</th>
+<th>Can eliminate?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>1+0 GET</strong></td>
+<td><strong>0</strong></td>
+<td>none</td>
+<td>done</td>
+</tr>
+<tr>
+<td><strong>EC GET (healthy)</strong></td>
+<td><strong>0 (steady state)</strong></td>
+<td>8 warmup allocs, then pool recycles</td>
+<td><strong>done</strong>. BufPool + PooledBuf + Bytes::from_owner</td>
+</tr>
+<tr>
+<td><strong>EC GET (degraded)</strong></td>
+<td>~5400</td>
+<td>Vec per shard for RS reconstruct</td>
+<td>no: RS API requires owned buffers</td>
+</tr>
+<tr>
+<td><strong>PUT (per-block loop)</strong></td>
+<td><strong>0</strong></td>
+<td>none</td>
+<td>done</td>
+</tr>
+<tr>
+<td><strong>PUT (total request)</strong></td>
+<td>~10</td>
+<td>setup + finalize allocs</td>
+<td>no: inherent (metadata, hashers, writers)</td>
+</tr>
+<tr>
+<td><strong>Response wrapper</strong></td>
+<td><strong>0</strong></td>
+<td>none</td>
+<td>done</td>
+</tr>
+</tbody>
+</table>
+<hr />
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      AbixIO Server &mdash; Erasure-coded storage with a steel-blue control-plane aesthetic
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/abix-/abixio" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "search.highlight", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

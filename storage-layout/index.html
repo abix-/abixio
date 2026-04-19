@@ -1,0 +1,2043 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="S3-compatible erasure-coded object storage server in Rust">
+      
+      
+      
+        <link rel="canonical" href="https://abix-.github.io/abixio/storage-layout/">
+      
+      
+        <link rel="prev" href="../cluster/">
+      
+      
+        <link rel="next" href="../per-object-ec/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Storage Layout - AbixIO Server</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#storage-layout" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="AbixIO Server" class="md-header__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AbixIO Server
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Storage Layout
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="AbixIO Server" class="md-nav__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    AbixIO Server
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../write-path/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write Path
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage Layout
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#design-principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design Principles
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#metadata-layers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metadata Layers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-1-volume-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer 1: Volume Identity
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Layer 1: Volume Identity">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#volumejson-schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        volume.json schema
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#identity-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identity hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#boot-sequence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Boot sequence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validation-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-2-cluster-runtime-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer 2: Cluster Runtime State
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-3-bucket-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer 3: Bucket Config
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Layer 3: Bucket Config">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ec-resolution-cascade" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        EC resolution cascade
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-4-object-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer 4: Object Metadata
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Layer 4: Object Metadata">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#metajson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        meta.json
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#directory-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Directory Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#accuracy-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accuracy Report
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Accuracy Report">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#unversioned-objects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unversioned objects
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#versioned-objects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versioned objects
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#object-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Object detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#atomic-writes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Atomic writes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#shard-placement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shard placement
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../per-object-ec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-Object EC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../admin-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multipart-upload/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multipart Upload
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../healing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Healing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed-placement-testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tagging/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tagging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../presigned-urls/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Presigned URLs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../conditional-requests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conditional Requests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../error-responses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Error Responses
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bucket-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bucket Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../encryption/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encryption
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../s3-compliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    S3 Compliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#design-principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design Principles
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#metadata-layers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metadata Layers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-1-volume-identity" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer 1: Volume Identity
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Layer 1: Volume Identity">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#volumejson-schema" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        volume.json schema
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#example" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Example
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#identity-hierarchy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Identity hierarchy
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#boot-sequence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Boot sequence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#validation-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Validation rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-2-cluster-runtime-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer 2: Cluster Runtime State
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-3-bucket-config" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer 3: Bucket Config
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Layer 3: Bucket Config">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ec-resolution-cascade" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        EC resolution cascade
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-4-object-metadata" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer 4: Object Metadata
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Layer 4: Object Metadata">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#metajson" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        meta.json
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fields
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#directory-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Directory Structure
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#accuracy-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accuracy Report
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Accuracy Report">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#unversioned-objects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Unversioned objects
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#versioned-objects" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Versioned objects
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#object-detection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Object detection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#atomic-writes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Atomic writes
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#shard-placement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Shard placement
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cli" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        CLI
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="storage-layout">Storage Layout<a class="headerlink" href="#storage-layout" title="Permanent link">&para;</a></h1>
+<p><strong>Authoritative for:</strong> on-disk structure. Directory layout, metadata
+schemas (volume.json, meta.json), bucket config, shard placement,
+atomic write guarantees. If you need to know what's on disk and why,
+this is the only doc.</p>
+<p><strong>Not covered here:</strong> how data gets written (see <a href="../write-path/">write-path.md</a>),
+how writes were optimized (see <a href="../layer-optimization/">layer-optimization.md</a>).</p>
+<p>AbixIO stores all identity and configuration on the disks themselves. A fresh
+binary pointed at formatted disks can reconstruct the full cluster without
+external configuration.</p>
+<h2 id="design-principles">Design Principles<a class="headerlink" href="#design-principles" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>No master server.</strong> Identity is distributed across disks, not centralized.</li>
+<li><strong>Disks are self-describing.</strong> All identity lives on the disks themselves.</li>
+<li><strong>Binary is disposable.</strong> Delete it, install a fresh one, point at the disks,
+   the system comes online.</li>
+<li><strong>Disks are portable.</strong> Move them to different hardware. The binary reads the
+   format and serves.</li>
+<li><strong>Metadata lives at the right layer.</strong> Each layer stores exactly what belongs
+   to it. No duplication, no misplaced config.</li>
+</ol>
+<h2 id="metadata-layers">Metadata Layers<a class="headerlink" href="#metadata-layers" title="Permanent link">&para;</a></h2>
+<p>AbixIO has four metadata layers. Each has a single responsibility.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>Layer 1: Volume Identity       .abixio.sys/volume.json                        &quot;Who is this volume?&quot;
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>Layer 2: Cluster Runtime       .abixio.sys/cluster.json                     &quot;What is this node doing right now?&quot;
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>Layer 3: Bucket Config         .abixio.sys/buckets/&lt;bucket&gt;/settings.json   &quot;How should new objects behave?&quot;
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>Layer 4: Object Metadata       &lt;bucket&gt;/&lt;key&gt;/meta.json                     &quot;What is this object and where are its shards?&quot;
+</span></code></pre></div>
+<hr />
+<h2 id="layer-1-volume-identity">Layer 1: Volume Identity<a class="headerlink" href="#layer-1-volume-identity" title="Permanent link">&para;</a></h2>
+<p><strong>File</strong>: <code>.abixio.sys/volume.json</code> on every volume.</p>
+<p><strong>Responsibility</strong>: Permanent identity. Who is this volume, what cluster and
+volume pool does it belong to, and who are all the other members.</p>
+<h3 id="volumejson-schema">volume.json schema<a class="headerlink" href="#volumejson-schema" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>version</code></td>
+<td>u32</td>
+<td>Format schema version (currently <code>1</code>)</td>
+</tr>
+<tr>
+<td><code>cluster_id</code></td>
+<td>UUID</td>
+<td>Cluster-wide identifier. Same on every disk in the cluster</td>
+</tr>
+<tr>
+<td><code>node_id</code></td>
+<td>UUID</td>
+<td>Node identifier. Same on every disk owned by this node</td>
+</tr>
+<tr>
+<td><code>volume_id</code></td>
+<td>UUID</td>
+<td>Globally unique volume identifier</td>
+</tr>
+<tr>
+<td><code>volume_index</code></td>
+<td>u32</td>
+<td>This volume's position in the cluster member list</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>u64</td>
+<td>Unix timestamp when this disk was formatted</td>
+</tr>
+<tr>
+<td><code>cluster.members</code></td>
+<td>array</td>
+<td>Full cluster membership (see below)</td>
+</tr>
+</tbody>
+</table>
+<p>Each member in <code>cluster.members</code>:</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Type</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>volume_id</code></td>
+<td>UUID</td>
+<td>The member volume's unique identifier</td>
+</tr>
+<tr>
+<td><code>node_id</code></td>
+<td>UUID</td>
+<td>The node that owns this member volume</td>
+</tr>
+<tr>
+<td><code>index</code></td>
+<td>u32</td>
+<td>Position in the pool</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Does NOT store</strong>:
+- EC defaults (that is policy, not identity; belongs to Layer 3 or CLI)
+- Runtime state (belongs to Layer 2)
+- Bucket or object config</p>
+<h3 id="example">Example<a class="headerlink" href="#example" title="Permanent link">&para;</a></h3>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="p">,</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">&quot;cluster_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;a1b2c3d4-0000-0000-0000-000000000000&quot;</span><span class="p">,</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">  </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;11111111-0000-0000-0000-000000000000&quot;</span><span class="p">,</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="nt">&quot;volume_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aaaaaaaa-0000-0000-0000-000000000000&quot;</span><span class="p">,</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">  </span><span class="nt">&quot;volume_index&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="nt">&quot;created_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1712300000</span><span class="p">,</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="nt">&quot;cluster&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">&quot;members&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;volume_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;aaaaaaaa-0000-0000-0000-000000000000&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;11111111-0000-0000-0000-000000000000&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;index&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;volume_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;bbbbbbbb-0000-0000-0000-000000000000&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;11111111-0000-0000-0000-000000000000&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;index&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;volume_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;cccccccc-0000-0000-0000-000000000000&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;22222222-0000-0000-0000-000000000000&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;index&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">      </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;volume_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;dddddddd-0000-0000-0000-000000000000&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;node_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;22222222-0000-0000-0000-000000000000&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;index&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="p">]</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Every disk in the cluster carries the full cluster membership. Any single
+disk is enough to reconstruct the cluster's identity.</p>
+<h3 id="identity-hierarchy">Identity hierarchy<a class="headerlink" href="#identity-hierarchy" title="Permanent link">&para;</a></h3>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>cluster_id       one per cluster, all disks share it
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  node_id         one per node, all disks on a node share it
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>    volume_id       one per volume, globally unique
+</span></code></pre></div>
+<p>All three are UUIDv4, generated at format time, immutable after that.</p>
+<h3 id="boot-sequence">Boot sequence<a class="headerlink" href="#boot-sequence" title="Permanent link">&para;</a></h3>
+<p><strong>First boot (standalone)</strong>:</p>
+<ol>
+<li><code>abixio --volumes /d{1...4}</code></li>
+<li>No volume.json found. Generate node_id, volume_id UUIDs</li>
+<li>No <code>--nodes</code> set, so standalone mode. Generate cluster_id</li>
+<li>Write complete volume.json to every volume</li>
+<li>Serve</li>
+</ol>
+<p><strong>First boot (cluster)</strong>:</p>
+<ol>
+<li><code>abixio --volumes /d{1...2} --nodes http://node{1...2}:10000</code></li>
+<li>No volume.json found. Generate node_id, volume_id UUIDs</li>
+<li>Write partial volume.json (node_id, volume_id only)</li>
+<li>Exchange identity with nodes via <code>/_admin/cluster/join</code></li>
+<li>Block until all nodes respond</li>
+<li>Compute cluster_id deterministically from sorted node_ids</li>
+<li>Build full member list, write complete volume.json</li>
+<li>Serve</li>
+</ol>
+<p><strong>Subsequent boot</strong>:</p>
+<ol>
+<li>Read volume.json from each volume</li>
+<li>Validate all volumes agree on cluster_id, node_id</li>
+<li>If <code>--nodes</code> set: probe nodes for quorum confirmation</li>
+<li>Serve</li>
+</ol>
+<p><strong>Volume migration</strong>:</p>
+<ol>
+<li>Move volumes to new hardware</li>
+<li>Start abixio binary with <code>-v</code> pointing to the moved volumes</li>
+<li>Binary reads volume.json, discovers identity</li>
+<li>Peers recognize the node by its persisted node_id and volume_ids</li>
+<li>Node comes online</li>
+</ol>
+<p>The binary never stores identity. The volumes do. Hardware is irrelevant.</p>
+<h3 id="validation-rules">Validation rules<a class="headerlink" href="#validation-rules" title="Permanent link">&para;</a></h3>
+<p>On boot, the binary validates volume.json across all local volumes:</p>
+<table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Error</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>volume.json missing on some volumes but present on others</td>
+<td>Mixed state: refuse to start</td>
+</tr>
+<tr>
+<td>volume.json missing on all volumes, no nodes</td>
+<td>Standalone first boot: auto-format</td>
+</tr>
+<tr>
+<td>volume.json missing on all volumes, nodes set</td>
+<td>Cluster first boot: peer exchange</td>
+</tr>
+<tr>
+<td>cluster_id mismatch across local volumes</td>
+<td>Corrupt or mixed cluster: refuse to start</td>
+</tr>
+<tr>
+<td>node_id mismatch across local volumes</td>
+<td>Volumes from different nodes mixed: refuse to start</td>
+</tr>
+<tr>
+<td>volume_id duplicated</td>
+<td>Corrupt: refuse to start</td>
+</tr>
+<tr>
+<td>member list inconsistent across local volumes</td>
+<td>Stale member list: warn, use newest</td>
+</tr>
+<tr>
+<td>format version unsupported</td>
+<td>Refuse to start with upgrade message</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="layer-2-cluster-runtime-state">Layer 2: Cluster Runtime State<a class="headerlink" href="#layer-2-cluster-runtime-state" title="Permanent link">&para;</a></h2>
+<p><strong>File</strong>: <code>.abixio.sys/cluster.json</code> on every disk.</p>
+<p><strong>Responsibility</strong>: Current operational state. Cluster summary, epoch, peer
+reachability, fencing status. This is runtime state that changes frequently.</p>
+<p>volume.json provides the identity that cluster runtime state references.
+See <a href="../cluster/">cluster.md</a> for the full cluster design.</p>
+<hr />
+<h2 id="layer-3-bucket-config">Layer 3: Bucket Config<a class="headerlink" href="#layer-3-bucket-config" title="Permanent link">&para;</a></h2>
+<p><strong>File</strong>: <code>.abixio.sys/buckets/&lt;bucket&gt;/settings.json</code> on every disk.</p>
+<p><strong>Responsibility</strong>: Default behavior for new objects in this bucket. One file
+per bucket, containing all bucket-level config. These are policy settings, not
+identity. They influence new writes but do not affect existing objects.</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">&quot;versioning&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Enabled&quot;</span><span class="p">,</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">&quot;ftt&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">3</span><span class="p">,</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nt">&quot;tags&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;env&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prod&quot;</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="nt">&quot;policy&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;Version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2012-10-17&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;Statement&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span><span class="nt">&quot;lifecycle&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&lt;LifecycleConfiguration&gt;...&lt;/LifecycleConfiguration&gt;&quot;</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>All fields are optional. Absent means "not configured, use defaults."</p>
+<h3 id="ec-resolution-cascade">EC resolution cascade<a class="headerlink" href="#ec-resolution-cascade" title="Permanent link">&para;</a></h3>
+<p>EC parameters are resolved per-request at write time using this precedence:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>1. Per-object FTT        x-amz-meta-ec-ftt header on PUT               (highest)
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>2. Bucket FTT            .abixio.sys/buckets/&lt;bucket&gt;/settings.json     (lowest)
+</span></code></pre></div>
+<p>Every bucket gets FTT=1 at creation (FTT=0 for single-disk deployments).</p>
+<p>The resolved data/parity values are stored in <code>meta.json</code> with the object.
+After that, the object is self-describing. Changing bucket FTT does not
+affect existing objects.</p>
+<p>EC config is deliberately absent from volume.json. EC is policy (how to
+encode); volume.json is identity (who am I).</p>
+<p>See <a href="../per-object-ec/">per-object-ec.md</a> for full EC documentation.</p>
+<hr />
+<h2 id="layer-4-object-metadata">Layer 4: Object Metadata<a class="headerlink" href="#layer-4-object-metadata" title="Permanent link">&para;</a></h2>
+<p><strong>File</strong>: <code>&lt;bucket&gt;/&lt;key&gt;/meta.json</code> on every disk that holds a shard.</p>
+<p><strong>Responsibility</strong>: Everything about this specific object version. EC params,
+shard placement, checksums, user metadata, tags.</p>
+<p>Key rule: object metadata stores <strong>resolved</strong> values. The EC cascade is
+evaluated once at write time. The result is baked into meta.json. Reads and
+heals never consult bucket FTT; they use the stored
+values.</p>
+<h3 id="metajson">meta.json<a class="headerlink" href="#metajson" title="Permanent link">&para;</a></h3>
+<p>Single source of truth for all version metadata. Contains a <code>versions</code> array
+ordered newest-first.</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="p">{</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">&quot;versions&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="p">{</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">      </span><span class="nt">&quot;size&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1024</span><span class="p">,</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">      </span><span class="nt">&quot;etag&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;d41d8cd98f00b204e9800998ecf8427e&quot;</span><span class="p">,</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">      </span><span class="nt">&quot;content_type&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;text/plain&quot;</span><span class="p">,</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">      </span><span class="nt">&quot;created_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">1700000000</span><span class="p">,</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">      </span><span class="nt">&quot;erasure&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">        </span><span class="nt">&quot;ftt&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">        </span><span class="nt">&quot;index&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">        </span><span class="nt">&quot;epoch_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">7</span><span class="p">,</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">        </span><span class="nt">&quot;volume_ids&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;aaaaaaaa-...&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;cccccccc-...&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;eeeeeeee-...&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;gggggggg-...&quot;</span><span class="p">]</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a><span class="w">      </span><span class="p">},</span>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a><span class="w">      </span><span class="nt">&quot;checksum&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;abc123def456...&quot;</span><span class="p">,</span>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="w">      </span><span class="nt">&quot;user_metadata&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;x-amz-meta-author&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;alice&quot;</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="w">      </span><span class="nt">&quot;tags&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;env&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;prod&quot;</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a><span class="w">      </span><span class="nt">&quot;version_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;550e8400-e29b-41d4-a716-446655440000&quot;</span><span class="p">,</span>
+</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a><span class="w">      </span><span class="nt">&quot;is_latest&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a><span class="w">      </span><span class="nt">&quot;is_delete_marker&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">false</span>
+</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a><span class="w">    </span><span class="p">}</span>
+</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a><span class="w">  </span><span class="p">]</span>
+</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>The <code>volume_ids</code> in object metadata use the same UUIDs as volume.json. The
+healer and decoder can verify that a shard is on the correct disk by comparing
+<code>meta.json</code> volume_ids against <code>volume.json</code> volume_id.</p>
+<h3 id="fields">Fields<a class="headerlink" href="#fields" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>size</code></td>
+<td>Original object size in bytes (before erasure splitting)</td>
+</tr>
+<tr>
+<td><code>etag</code></td>
+<td>MD5 hex of the original object data</td>
+</tr>
+<tr>
+<td><code>content_type</code></td>
+<td>MIME type set on upload</td>
+</tr>
+<tr>
+<td><code>created_at</code></td>
+<td>Unix timestamp (seconds) of upload time</td>
+</tr>
+<tr>
+<td><code>erasure.ftt</code></td>
+<td>Failures to tolerate (parity shard count)</td>
+</tr>
+<tr>
+<td><code>erasure.index</code></td>
+<td>Which shard this disk holds (0-based)</td>
+</tr>
+<tr>
+<td><code>erasure.epoch_id</code></td>
+<td>Placement epoch recorded with the object</td>
+</tr>
+<tr>
+<td><code>erasure.volume_ids</code></td>
+<td>Ordered volume identity for each shard</td>
+</tr>
+<tr>
+<td><code>checksum</code></td>
+<td>blake3 hex of THIS shard's data (for bitrot detection)</td>
+</tr>
+<tr>
+<td><code>user_metadata</code></td>
+<td>Custom <code>x-amz-meta-*</code> headers from the PUT request</td>
+</tr>
+<tr>
+<td><code>tags</code></td>
+<td>Object tags (key-value pairs)</td>
+</tr>
+<tr>
+<td><code>version_id</code></td>
+<td>UUID for versioned objects, empty for unversioned</td>
+</tr>
+<tr>
+<td><code>is_latest</code></td>
+<td>True for the most recent non-delete-marker version</td>
+</tr>
+<tr>
+<td><code>is_delete_marker</code></td>
+<td>True for delete marker entries (no shard data)</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="directory-structure">Directory Structure<a class="headerlink" href="#directory-structure" title="Permanent link">&para;</a></h2>
+<p>AbixIO uses erasure coding across multiple disks. With FTT=1 on 4 disks,
+each object is split into 3 data + 1 parity shard distributed across all 4 disks.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a>disk0/
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a>  .abixio.sys/
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>    volume.json                   # disk identity (Layer 1)
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>    cluster.json                # cluster runtime state (Layer 2)
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>    buckets/
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a>      bucket-name/
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>        settings.json           # bucket config (Layer 3)
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>    multipart/                  # in-progress multipart uploads
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a>  bucket-name/
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>    object-key/
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a>      meta.json                 # object metadata (Layer 4)
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a>      shard.dat                 # shard data (unversioned objects)
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a>      &lt;uuid&gt;/                   # shard data (versioned objects, one dir per version)
+</span><span id="__span-6-14"><a id="__codelineno-6-14" name="__codelineno-6-14" href="#__codelineno-6-14"></a>        shard.dat
+</span><span id="__span-6-15"><a id="__codelineno-6-15" name="__codelineno-6-15" href="#__codelineno-6-15"></a>
+</span><span id="__span-6-16"><a id="__codelineno-6-16" name="__codelineno-6-16" href="#__codelineno-6-16"></a>disk1/
+</span><span id="__span-6-17"><a id="__codelineno-6-17" name="__codelineno-6-17" href="#__codelineno-6-17"></a>  .abixio.sys/
+</span><span id="__span-6-18"><a id="__codelineno-6-18" name="__codelineno-6-18" href="#__codelineno-6-18"></a>    volume.json                   # same cluster_id/node_id, different volume_id
+</span><span id="__span-6-19"><a id="__codelineno-6-19" name="__codelineno-6-19" href="#__codelineno-6-19"></a>    cluster.json
+</span><span id="__span-6-20"><a id="__codelineno-6-20" name="__codelineno-6-20" href="#__codelineno-6-20"></a>    buckets/
+</span><span id="__span-6-21"><a id="__codelineno-6-21" name="__codelineno-6-21" href="#__codelineno-6-21"></a>      bucket-name/
+</span><span id="__span-6-22"><a id="__codelineno-6-22" name="__codelineno-6-22" href="#__codelineno-6-22"></a>        settings.json
+</span><span id="__span-6-23"><a id="__codelineno-6-23" name="__codelineno-6-23" href="#__codelineno-6-23"></a>  bucket-name/
+</span><span id="__span-6-24"><a id="__codelineno-6-24" name="__codelineno-6-24" href="#__codelineno-6-24"></a>    object-key/
+</span><span id="__span-6-25"><a id="__codelineno-6-25" name="__codelineno-6-25" href="#__codelineno-6-25"></a>      meta.json                 # same structure, different shard index/checksum
+</span><span id="__span-6-26"><a id="__codelineno-6-26" name="__codelineno-6-26" href="#__codelineno-6-26"></a>      shard.dat
+</span></code></pre></div>
+<p>All system metadata lives under <code>.abixio.sys/</code>. Bucket data directories contain
+only user objects.</p>
+<p>Each disk holds one shard per object. The shard index and checksum differ per
+disk, but the rest of the metadata is identical.</p>
+<h2 id="accuracy-report">Accuracy Report<a class="headerlink" href="#accuracy-report" title="Permanent link">&para;</a></h2>
+<p>Audited against the codebase on 2026-04-11.</p>
+<table>
+<thead>
+<tr>
+<th>Claim</th>
+<th>Status</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>.abixio.sys/volume.json</code> is the durable volume identity file</td>
+<td>Verified</td>
+<td><code>src/storage/volume.rs</code></td>
+</tr>
+<tr>
+<td><code>volume.json</code> stores <code>version</code>, <code>node_id</code>, <code>volume_id</code>, <code>volume_index</code>, optional <code>cluster_id</code>, and optional <code>cluster.members</code></td>
+<td>Verified</td>
+<td><code>src/storage/volume.rs</code></td>
+</tr>
+<tr>
+<td><code>.abixio.sys/cluster.json</code> is the cluster runtime state file</td>
+<td>Verified in current cluster code, not exhaustively audited here</td>
+<td><code>src/cluster/mod.rs</code> defines <code>.abixio.sys/cluster.json</code>; this page's higher-level role matches that implementation</td>
+</tr>
+<tr>
+<td>Bucket settings are consolidated in <code>.abixio.sys/buckets/&lt;bucket&gt;/settings.json</code></td>
+<td>Verified</td>
+<td><code>src/storage/metadata.rs</code>, storage-layer bucket settings calls</td>
+</tr>
+<tr>
+<td>Object metadata is stored in <code>meta.json</code> with a <code>versions</code> array</td>
+<td>Verified</td>
+<td><code>src/storage/metadata.rs</code></td>
+</tr>
+<tr>
+<td>Shard checksum algorithm is SHA-256</td>
+<td>Corrected</td>
+<td>Current code uses blake3 checksums (<code>src/storage/bitrot.rs</code>, <code>src/storage/metadata.rs</code>)</td>
+</tr>
+<tr>
+<td>Small unversioned objects may inline data into <code>meta.json</code> instead of writing <code>shard.dat</code></td>
+<td>Verified</td>
+<td><code>src/storage/local_volume.rs:595-608</code>, <code>673-680</code>, <code>776-783</code></td>
+</tr>
+<tr>
+<td>Multipart-completed objects store part manifests in object metadata and per-part files in the object directory</td>
+<td>Verified</td>
+<td><code>src/multipart/mod.rs</code>, <code>src/storage/volume_pool.rs:450-515</code></td>
+</tr>
+</tbody>
+</table>
+<p>Verdict: the storage-layer structure is mostly aligned with the code. The main stale point in this page was the checksum algorithm, plus the need to remember that some small objects now live inline in <code>meta.json</code> rather than always as <code>shard.dat</code>.</p>
+<h3 id="unversioned-objects">Unversioned objects<a class="headerlink" href="#unversioned-objects" title="Permanent link">&para;</a></h3>
+<p>One entry in the <code>versions</code> array. Shard data at <code>key/shard.dat</code>. Each PUT
+replaces the single entry and overwrites <code>shard.dat</code>.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>key/
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>  meta.json       # versions: [{ version_id: &quot;&quot;, is_latest: true, ... }]
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>  shard.dat       # raw erasure shard
+</span></code></pre></div>
+<h3 id="versioned-objects">Versioned objects<a class="headerlink" href="#versioned-objects" title="Permanent link">&para;</a></h3>
+<p>Multiple entries in the <code>versions</code> array. Each version's shard data lives in a
+UUID subdirectory.</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a>key/
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>  meta.json       # versions: [{ version_id: &quot;uuid-2&quot;, is_latest: true }, { version_id: &quot;uuid-1&quot;, is_latest: false }]
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a>  uuid-2/
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>    shard.dat     # shard for version 2
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>  uuid-1/
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    shard.dat     # shard for version 1
+</span></code></pre></div>
+<h3 id="object-detection">Object detection<a class="headerlink" href="#object-detection" title="Permanent link">&para;</a></h3>
+<p>A directory is an object if it contains <code>meta.json</code>. The <code>walk_keys</code> function
+in <code>local_volume.rs</code> uses this to list objects.</p>
+<h3 id="atomic-writes">Atomic writes<a class="headerlink" href="#atomic-writes" title="Permanent link">&para;</a></h3>
+<p>Unversioned writes: data is written directly to <code>key/shard.dat</code> and <code>meta.json</code>
+is updated atomically.</p>
+<p>Versioned writes: data is written to <code>key/&lt;uuid&gt;/shard.dat</code>, then <code>meta.json</code>
+is updated with the new version entry prepended to the array.</p>
+<h3 id="shard-placement">Shard placement<a class="headerlink" href="#shard-placement" title="Permanent link">&para;</a></h3>
+<p>Each object records <code>volume_ids</code> in its metadata: an ordered list where
+<code>volume_ids[shard_idx]</code> identifies which volume holds that shard. The placement
+planner computes this deterministically from the object key and pool topology.</p>
+<p>Each disk's copy of <code>meta.json</code> also carries <code>erasure.index</code>, which says which
+shard that disk holds. The decode and heal paths use <code>index</code> to slot shards
+correctly without needing a separate mapping array.</p>
+<hr />
+<h2 id="cli">CLI<a class="headerlink" href="#cli" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Flag</th>
+<th>Required</th>
+<th>Default</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--volumes</code></td>
+<td>yes</td>
+<td>none</td>
+<td>Volume paths (comma-separated, supports <code>{N...M}</code>)</td>
+</tr>
+<tr>
+<td><code>--listen</code></td>
+<td>no</td>
+<td><code>:10000</code></td>
+<td>Bind address</td>
+</tr>
+<tr>
+<td><code>--nodes</code></td>
+<td>no</td>
+<td>empty</td>
+<td>All node endpoints (supports <code>{N...M}</code>)</td>
+</tr>
+<tr>
+<td><code>--no-auth</code></td>
+<td>no</td>
+<td>false</td>
+<td>Disable all authentication</td>
+</tr>
+</tbody>
+</table>
+<p>EC defaults are auto-computed from the volume count: 1 volume = <code>1+0</code>,
+2+ volumes = <code>(N-1)+1</code> for 1-failure tolerance. Override per bucket or
+per object.</p>
+<p>Node identity is read from volume.json. Cluster membership is established via
+peer exchange at startup.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../cluster/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Cluster">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Cluster
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../per-object-ec/" class="md-footer__link md-footer__link--next" aria-label="Next: Per-Object EC">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Per-Object EC
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      AbixIO Server &mdash; Erasure-coded storage with a steel-blue control-plane aesthetic
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/abix-/abixio" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "search.highlight", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

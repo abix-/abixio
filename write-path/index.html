@@ -1,0 +1,3074 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="S3-compatible erasure-coded object storage server in Rust">
+      
+      
+      
+        <link rel="canonical" href="https://abix-.github.io/abixio/write-path/">
+      
+      
+        <link rel="prev" href="../architecture/">
+      
+      
+        <link rel="next" href="../cluster/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Write Path - AbixIO Server</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#write-path" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="AbixIO Server" class="md-header__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AbixIO Server
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Write Path
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="AbixIO Server" class="md-nav__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    AbixIO Server
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write Path
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write Path
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#top-level-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Top-level flow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmark-layers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmark layers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#entry-and-request-shaping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Entry and request shaping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Entry and request shaping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-http-ingress" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. HTTP ingress
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. HTTP ingress">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#put-reqwest-hyper-body-consumed-and-discarded" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PUT (reqwest -&gt; hyper, body consumed and discarded)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-hyper-returns-sized-body-reqwest-consumes-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET (hyper returns sized body, reqwest consumes it)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-s3-protocol-and-abixio-request-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. S3 protocol and AbixIO request setup
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. S3 protocol and AbixIO request setup">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#put-hyper-client-in-memory-pipe-s3s-nullbackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PUT (hyper client -&gt; in-memory pipe -&gt; s3s -&gt; NullBackend)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-nullbackend-returns-empty-not-meaningful-at-large-sizes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET (NullBackend returns empty, not meaningful at large sizes)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#routing-decision-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Routing decision matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-by-layer-write-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer-by-layer write path
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Layer-by-layer write path">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#3-validation-and-bucket-existence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Validation and bucket existence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-small-object-body-collection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Small-object body collection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-ec-resolution-hashing-and-placement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. EC resolution, hashing, and placement
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage-branches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage branches
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Storage branches">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#branch-a-ram-write-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Branch A: RAM write cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#branch-b-write-ahead-log-wal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Branch B: Write-ahead log (WAL)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#branch-c-local-file-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Branch C: Local file tier
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#branch-d-remote-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Branch D: Remote backend
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ack-semantics-by-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ack semantics by branch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-gap-unnecessary-ec-on-single-disk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design gap: unnecessary EC on single disk
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Design gap: unnecessary EC on single disk">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fix-cluster-aware-ec-bypass" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fix: cluster-aware EC bypass
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#raw-disk-floor-l5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Raw disk floor (L5)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-the-time-goes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the time goes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Where the time goes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#put-p50-latency-by-tier-10-fast-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PUT p50 latency by tier (1+0 fast path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-p50-latency-by-tier-buffered-mmap-page-cache-hot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET p50 latency by tier (buffered, mmap, page-cache hot)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tier-handoff" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tier handoff
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-other-docs-should-use-this-page" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How other docs should use this page
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#integration-s3-real-storage-l6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration: S3 + real storage (L6)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Integration: S3 + real storage (L6)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#l6-put-p50-by-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L6 PUT p50 by tier
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#l6-get-p50-by-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L6 GET p50 by tier
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#accuracy-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accuracy Report
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../per-object-ec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-Object EC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../admin-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multipart-upload/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multipart Upload
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../healing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Healing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed-placement-testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tagging/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tagging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../presigned-urls/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Presigned URLs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../conditional-requests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conditional Requests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../error-responses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Error Responses
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bucket-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bucket Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../encryption/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encryption
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../s3-compliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    S3 Compliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#table-of-contents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Table of contents
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#top-level-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Top-level flow
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#benchmark-layers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmark layers
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#entry-and-request-shaping" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Entry and request shaping
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Entry and request shaping">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-http-ingress" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. HTTP ingress
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. HTTP ingress">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#put-reqwest-hyper-body-consumed-and-discarded" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PUT (reqwest -&gt; hyper, body consumed and discarded)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-hyper-returns-sized-body-reqwest-consumes-it" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET (hyper returns sized body, reqwest consumes it)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-s3-protocol-and-abixio-request-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. S3 protocol and AbixIO request setup
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. S3 protocol and AbixIO request setup">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#put-hyper-client-in-memory-pipe-s3s-nullbackend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PUT (hyper client -&gt; in-memory pipe -&gt; s3s -&gt; NullBackend)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-nullbackend-returns-empty-not-meaningful-at-large-sizes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET (NullBackend returns empty, not meaningful at large sizes)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#routing-decision-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Routing decision matrix
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-by-layer-write-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer-by-layer write path
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Layer-by-layer write path">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#3-validation-and-bucket-existence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Validation and bucket existence
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-small-object-body-collection" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Small-object body collection
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-ec-resolution-hashing-and-placement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. EC resolution, hashing, and placement
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#storage-branches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage branches
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Storage branches">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#branch-a-ram-write-cache" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Branch A: RAM write cache
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#branch-b-write-ahead-log-wal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Branch B: Write-ahead log (WAL)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#branch-c-local-file-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Branch C: Local file tier
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#branch-d-remote-backend" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Branch D: Remote backend
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ack-semantics-by-branch" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ack semantics by branch
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-gap-unnecessary-ec-on-single-disk" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design gap: unnecessary EC on single disk
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Design gap: unnecessary EC on single disk">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#fix-cluster-aware-ec-bypass" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Fix: cluster-aware EC bypass
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#raw-disk-floor-l5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Raw disk floor (L5)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-the-time-goes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where the time goes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Where the time goes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#put-p50-latency-by-tier-10-fast-path" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        PUT p50 latency by tier (1+0 fast path)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#get-p50-latency-by-tier-buffered-mmap-page-cache-hot" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        GET p50 latency by tier (buffered, mmap, page-cache hot)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#tier-handoff" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Tier handoff
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#how-other-docs-should-use-this-page" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        How other docs should use this page
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#integration-s3-real-storage-l6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Integration: S3 + real storage (L6)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Integration: S3 + real storage (L6)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#l6-put-p50-by-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L6 PUT p50 by tier
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#l6-get-p50-by-tier" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        L6 GET p50 by tier
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#accuracy-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accuracy Report
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="write-path">Write path<a class="headerlink" href="#write-path" title="Permanent link">&para;</a></h1>
+<p><strong>Authoritative for:</strong> how a PUT moves through AbixIO. End-to-end flow,
+routing decisions, the storage branches (RAM cache, WAL, file tier, remote backend), ack semantics, and current
+performance characteristics. If you need to know how a write works,
+this is the only doc.</p>
+<p><strong>Not covered here:</strong> on-disk format (see <a href="../storage-layout/">storage-layout.md</a>),
+optimization history (see <a href="../layer-optimization/">layer-optimization.md</a>),
+benchmark results (see <a href="../benchmarks/">benchmarks.md</a>).</p>
+<p>This page describes the code that exists now. Timings are measured-only:
+if a step has no benchmark in the repo, it is described but not given a
+numeric budget.</p>
+<h2 id="table-of-contents">Table of contents<a class="headerlink" href="#table-of-contents" title="Permanent link">&para;</a></h2>
+<ul>
+<li><a href="#scope">Scope</a></li>
+<li><a href="#top-level-flow">Top-level flow</a></li>
+<li><a href="#entry-and-request-shaping">Entry and request shaping</a></li>
+<li><a href="#1-http-ingress">1. HTTP ingress</a></li>
+<li><a href="#2-s3-protocol-and-abixio-request-setup">2. S3 protocol and AbixIO request setup</a></li>
+<li><a href="#routing-decision-matrix">Routing decision matrix</a></li>
+<li><a href="#layer-by-layer-write-path">Layer-by-layer write path</a></li>
+<li><a href="#3-validation-and-bucket-existence">3. Validation and bucket existence</a></li>
+<li><a href="#4-small-object-body-collection">4. Small-object body collection</a></li>
+<li><a href="#5-ec-resolution-hashing-and-placement">5. EC resolution, hashing, and placement</a></li>
+<li><a href="#storage-branches">Storage branches</a></li>
+<li><a href="#branch-a-ram-write-cache">Branch A: RAM write cache</a></li>
+<li><a href="#branch-b-write-ahead-log-wal">Branch B: Write-ahead log (WAL)</a></li>
+<li><a href="#branch-c-local-file-tier">Branch C: Local file tier</a></li>
+<li><a href="#branch-d-remote-backend">Branch D: Remote backend</a></li>
+<li><a href="#ack-semantics-by-branch">Ack semantics by branch</a></li>
+<li><a href="#where-the-time-goes">Where the time goes</a></li>
+<li><a href="#how-other-docs-should-use-this-page">How other docs should use this page</a></li>
+<li><a href="#accuracy-report">Accuracy Report</a></li>
+</ul>
+<h2 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h2>
+<p>This document covers:</p>
+<ul>
+<li>S3 <code>PutObject</code> request handling</li>
+<li>branch selection by object size, versioning, backend type, and cache state</li>
+<li>where success is acknowledged</li>
+<li>what background or follow-up work still remains after ack</li>
+<li>what "final resting place" means for each branch</li>
+<li>the measured performance of each layer where the repo has benchmarks</li>
+</ul>
+<p>This document does not cover:</p>
+<ul>
+<li>GET/read-path details</li>
+<li>multipart-complete assembly internals</li>
+<li>recovery/heal internals beyond write-path consequences</li>
+</ul>
+<h2 id="top-level-flow">Top-level flow<a class="headerlink" href="#top-level-flow" title="Permanent link">&para;</a></h2>
+<p>At a high level the write path is:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>client
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  -&gt; hyper HTTP server
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  -&gt; s3s S3 protocol layer
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>  -&gt; AbixioS3::put_object
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a>  -&gt; VolumePool::put_object_stream
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>  -&gt; branch:
+</span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a>       RAM write cache -&gt; ack -&gt; explicit flush later
+</span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>       WAL -&gt; ack -&gt; materialize worker later
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>       file tier -&gt; ack
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a>       remote volume RPC -&gt; ack after target node completes its local shard path
+</span></code></pre></div>
+<p>The main code anchors are:</p>
+<ul>
+<li><code>src/s3_service.rs</code>: request-level decisions</li>
+<li><code>src/storage/volume_pool.rs</code>: routing, EC, placement, quorum</li>
+<li><code>src/storage/local_volume.rs</code>: local WAL/file write behavior</li>
+<li><code>src/storage/write_cache.rs</code>: RAM cache structure</li>
+<li><code>src/storage/wal.rs</code>: WAL append and materialize worker</li>
+<li><code>src/storage/remote_volume.rs</code>: remote shard buffering and finalize POST</li>
+<li><code>src/storage/storage_server.rs</code>: remote target dispatch</li>
+</ul>
+<h2 id="benchmark-layers">Benchmark layers<a class="headerlink" href="#benchmark-layers" title="Permanent link">&para;</a></h2>
+<p>Each section below includes timing from <code>abixio-ui bench</code>. Layers
+L1 through L5 are isolated: each measures ONLY its own overhead.</p>
+<table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>What it measures</th>
+<th>How it isolates</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>L1</td>
+<td>HTTP transport</td>
+<td>bare hyper over TCP, no S3, no storage</td>
+</tr>
+<tr>
+<td>L2</td>
+<td>S3 protocol</td>
+<td>s3s over in-memory pipe (no TCP), NullBackend (no storage)</td>
+</tr>
+<tr>
+<td>L3</td>
+<td>storage pipeline</td>
+<td>direct VolumePool API call, no HTTP, no s3s</td>
+</tr>
+<tr>
+<td>L4</td>
+<td>hashing + RS encode</td>
+<td>direct function call on in-memory buffer, no I/O</td>
+</tr>
+<tr>
+<td>L5</td>
+<td>raw disk I/O</td>
+<td>direct tokio::fs call, no storage pipeline</td>
+</tr>
+<tr>
+<td>L6</td>
+<td>S3 + storage</td>
+<td>integration: TCP + s3s + real VolumePool</td>
+</tr>
+<tr>
+<td>L7</td>
+<td>full e2e</td>
+<td>integration: real server process, SDK client, TLS, auth</td>
+</tr>
+</tbody>
+</table>
+<p>L6 and L7 are integration tests, not isolated. They show how the
+layers compose together and what a real client actually sees.</p>
+<h2 id="entry-and-request-shaping">Entry and request shaping<a class="headerlink" href="#entry-and-request-shaping" title="Permanent link">&para;</a></h2>
+<h3 id="1-http-ingress">1. HTTP ingress<a class="headerlink" href="#1-http-ingress" title="Permanent link">&para;</a></h3>
+<p>Raw HTTP transport floor: bare <code>hyper</code> server, <code>reqwest</code> client,
+loopback 127.0.0.1. No S3, no storage. This is the lowest possible
+latency the stack can achieve at each size.</p>
+<p>Source: <code>abixio-ui bench --layers L1</code>, <code>bench-results/l1-http-ingress.json</code></p>
+<h4 id="put-reqwest-hyper-body-consumed-and-discarded">PUT (reqwest -&gt; hyper, body consumed and discarded)<a class="headerlink" href="#put-reqwest-hyper-body-consumed-and-discarded" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>p50</th>
+<th>p95</th>
+<th>p99</th>
+<th>throughput</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><code>87us</code></td>
+<td><code>129us</code></td>
+<td><code>152us</code></td>
+<td><code>41.0 MB/s</code></td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><code>117us</code></td>
+<td><code>160us</code></td>
+<td><code>187us</code></td>
+<td><code>506.8 MB/s</code></td>
+</tr>
+<tr>
+<td>10MB</td>
+<td><code>20.9ms</code></td>
+<td><code>29.0ms</code></td>
+<td><code>33.1ms</code></td>
+<td><code>514.5 MB/s</code></td>
+</tr>
+<tr>
+<td>100MB</td>
+<td><code>119.9ms</code></td>
+<td><code>265.0ms</code></td>
+<td><code>273.4ms</code></td>
+<td><code>710.6 MB/s</code></td>
+</tr>
+<tr>
+<td>1GB</td>
+<td><code>1.35s</code></td>
+<td><code>1.41s</code></td>
+<td><code>1.41s</code></td>
+<td><code>753.2 MB/s</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="get-hyper-returns-sized-body-reqwest-consumes-it">GET (hyper returns sized body, reqwest consumes it)<a class="headerlink" href="#get-hyper-returns-sized-body-reqwest-consumes-it" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>p50</th>
+<th>p95</th>
+<th>p99</th>
+<th>throughput</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><code>82us</code></td>
+<td><code>122us</code></td>
+<td><code>150us</code></td>
+<td><code>44.8 MB/s</code></td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><code>105us</code></td>
+<td><code>132us</code></td>
+<td><code>168us</code></td>
+<td><code>574.9 MB/s</code></td>
+</tr>
+<tr>
+<td>10MB</td>
+<td><code>11.8ms</code></td>
+<td><code>27.1ms</code></td>
+<td><code>29.7ms</code></td>
+<td><code>636.4 MB/s</code></td>
+</tr>
+<tr>
+<td>100MB</td>
+<td><code>117.6ms</code></td>
+<td><code>266.0ms</code></td>
+<td><code>276.4ms</code></td>
+<td><code>720.9 MB/s</code></td>
+</tr>
+<tr>
+<td>1GB</td>
+<td><code>1.29s</code></td>
+<td><code>2.07s</code></td>
+<td><code>2.07s</code></td>
+<td><code>725.6 MB/s</code></td>
+</tr>
+</tbody>
+</table>
+<p><code>hyper</code> accepts the request, parses HTTP/1.1, and exposes the body as
+a stream. At small sizes (4KB, 64KB), latency is dominated by TCP
+round-trip and HTTP framing, not data transfer. At large sizes (100MB,
+1GB), throughput reaches 700-750 MB/s, which is the hyper/Windows
+loopback ceiling.</p>
+<p>GET is faster than PUT at every size because the hyper server builds
+the response body from a pre-allocated <code>Bytes</code> buffer (zero-copy),
+while PUT requires the server to consume the incoming body stream.</p>
+<h3 id="2-s3-protocol-and-abixio-request-setup">2. S3 protocol and AbixIO request setup<a class="headerlink" href="#2-s3-protocol-and-abixio-request-setup" title="Permanent link">&para;</a></h3>
+<p>Isolated S3 protocol overhead. Uses an in-memory duplex pipe instead
+of TCP, so there is no L1 (HTTP transport) overhead in these numbers.
+NullBackend discards all writes, so there is no storage overhead either.
+This measures only: s3s header parsing, SigV4 verification, AbixioS3
+dispatch, and VolumePool routing.</p>
+<p>Source: <code>abixio-ui bench --layers L2</code>, <code>bench-results/l2-s3proto-isolated.json</code></p>
+<h4 id="put-hyper-client-in-memory-pipe-s3s-nullbackend">PUT (hyper client -&gt; in-memory pipe -&gt; s3s -&gt; NullBackend)<a class="headerlink" href="#put-hyper-client-in-memory-pipe-s3s-nullbackend" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>p50</th>
+<th>p95</th>
+<th>p99</th>
+<th>throughput</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><code>56us</code></td>
+<td><code>89us</code></td>
+<td><code>108us</code></td>
+<td><code>65.0 MB/s</code></td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><code>96us</code></td>
+<td><code>135us</code></td>
+<td><code>164us</code></td>
+<td><code>617.9 MB/s</code></td>
+</tr>
+<tr>
+<td>10MB</td>
+<td><code>6.0ms</code></td>
+<td><code>6.5ms</code></td>
+<td><code>7.0ms</code></td>
+<td><code>1637.9 MB/s</code></td>
+</tr>
+<tr>
+<td>100MB</td>
+<td><code>55.7ms</code></td>
+<td><code>59.9ms</code></td>
+<td><code>74.9ms</code></td>
+<td><code>1766.5 MB/s</code></td>
+</tr>
+<tr>
+<td>1GB</td>
+<td><code>579.7ms</code></td>
+<td><code>643.2ms</code></td>
+<td><code>643.2ms</code></td>
+<td><code>1754.3 MB/s</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="get-nullbackend-returns-empty-not-meaningful-at-large-sizes">GET (NullBackend returns empty, not meaningful at large sizes)<a class="headerlink" href="#get-nullbackend-returns-empty-not-meaningful-at-large-sizes" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>p50</th>
+<th>p95</th>
+<th>p99</th>
+<th>throughput</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><code>50us</code></td>
+<td><code>75us</code></td>
+<td><code>90us</code></td>
+<td><code>74.4 MB/s</code></td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><code>51us</code></td>
+<td><code>76us</code></td>
+<td><code>93us</code></td>
+<td><code>1177.1 MB/s</code></td>
+</tr>
+</tbody>
+</table>
+<p>GET at 10MB+ is not meaningful because NullBackend returns zero bytes
+regardless of requested size. The GET latency at all sizes is just
+s3s dispatch overhead (~50-93us).</p>
+<p><code>s3s</code> parses S3 headers and dispatches into <code>AbixioS3::put_object</code>.
+<code>src/s3_service.rs</code> then:</p>
+<ul>
+<li>resolves <code>content_type</code></li>
+<li>pulls user metadata</li>
+<li>reads cached bucket versioning state</li>
+<li>decides whether this request should allocate a version ID</li>
+<li>sets <code>skip_md5</code> when <code>Content-MD5</code> is absent</li>
+<li>forwards the body stream and optional <code>content_length</code> into
+  <code>VolumePool::put_object_stream</code></li>
+</ul>
+<h2 id="routing-decision-matrix">Routing decision matrix<a class="headerlink" href="#routing-decision-matrix" title="Permanent link">&para;</a></h2>
+<p><code>VolumePool::put_object_stream</code> chooses the write path from four facts:</p>
+<ul>
+<li>is the object versioned?</li>
+<li>is <code>content_length</code> present?</li>
+<li>is <code>content_length &lt;= 64KB</code>?</li>
+<li>is the RAM write cache enabled and able to accept the object?</li>
+</ul>
+<p>Current routing:</p>
+<table>
+<thead>
+<tr>
+<th>Condition</th>
+<th>Path</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>non-versioned and <code>content_length &lt;= 64KB</code></td>
+<td>collect body in memory, EC-encode, then try RAM cache first</td>
+</tr>
+<tr>
+<td>RAM cache insert succeeds</td>
+<td>ack from RAM cache</td>
+</tr>
+<tr>
+<td>RAM cache insert fails or cache disabled</td>
+<td>call <code>write_shard</code> per selected backend</td>
+</tr>
+<tr>
+<td>local backend + non-versioned + <code>data.len &lt;= wal_threshold</code> + WAL enabled</td>
+<td>WAL (append to mmap segment, background materialize)</td>
+</tr>
+<tr>
+<td>local backend fallback</td>
+<td>file tier</td>
+</tr>
+<tr>
+<td>remote backend</td>
+<td>HTTP POST to target node's storage server, which then executes its own local branch</td>
+</tr>
+<tr>
+<td>versioned object or unknown/large content length</td>
+<td>streaming <code>encode_and_write</code> path</td>
+</tr>
+</tbody>
+</table>
+<p>Important detail: the 64KB threshold is checked twice in different
+places for different reasons.</p>
+<ul>
+<li><code>VolumePool</code> uses <code>content_length &lt;= 64KB</code> to decide whether it can
+  buffer the full object and take the small-object path.</li>
+<li><code>LocalVolume::write_shard</code> checks the WAL threshold (default 64KB)
+  when deciding whether to append to the WAL or fall through to file tier.</li>
+</ul>
+<h2 id="layer-by-layer-write-path">Layer-by-layer write path<a class="headerlink" href="#layer-by-layer-write-path" title="Permanent link">&para;</a></h2>
+<h3 id="3-validation-and-bucket-existence">3. Validation and bucket existence<a class="headerlink" href="#3-validation-and-bucket-existence" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>4KB p50</th>
+<th>4KB throughput</th>
+<th>larger sizes</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>validation + bucket existence</td>
+<td>not isolated</td>
+<td>--</td>
+<td>not isolated</td>
+<td>included inside §2 dispatch cost; no standalone benchmark exists</td>
+</tr>
+</tbody>
+</table>
+<p>Before any data write, <code>VolumePool::put_object_stream</code> validates:</p>
+<ul>
+<li>bucket name</li>
+<li>object key</li>
+<li>optional version ID</li>
+<li>bucket existence</li>
+</ul>
+<p>If the bucket does not exist, the write stops here.</p>
+<h3 id="4-small-object-body-collection">4. Small-object body collection<a class="headerlink" href="#4-small-object-body-collection" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>4KB p50</th>
+<th>4KB throughput</th>
+<th>larger sizes</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>small-object branch decision + collect body into <code>Vec&lt;u8&gt;</code></td>
+<td><code>~20us</code></td>
+<td>--</td>
+<td>not isolated; only runs for <code>&lt;=64KB</code> non-versioned</td>
+<td>synthesized 4KB trace, originally in <code>write-cache.md::Request trace</code> (now removed); not from a benchmark</td>
+</tr>
+</tbody>
+</table>
+<p>For non-versioned requests with a declared <code>content_length &lt;= 64KB</code>,
+the body stream is fully collected into a <code>Vec&lt;u8&gt;</code>. This is what makes
+the small-object branches possible: AbixIO has the whole payload before
+choosing its durable tier.</p>
+<p>This collection step does not happen for versioned or streaming/large
+requests. Those stay on the streaming encode path.</p>
+<h3 id="5-ec-resolution-hashing-and-placement">5. EC resolution, hashing, and placement<a class="headerlink" href="#5-ec-resolution-hashing-and-placement" title="Permanent link">&para;</a></h3>
+<p>Isolated L4 compute. Direct function calls on in-memory buffers,
+no I/O, no storage pipeline, no HTTP. These are the per-byte CPU
+ceilings for each operation.</p>
+<p>Source: <code>abixio-ui bench --layers L4</code>, <code>bench-results/l4-compute.json</code></p>
+<table>
+<thead>
+<tr>
+<th>Op</th>
+<th>4KB p50</th>
+<th>64KB p50</th>
+<th>10MB p50</th>
+<th>100MB p50</th>
+<th>1GB p50</th>
+<th>throughput</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>blake3</td>
+<td><code>2us</code></td>
+<td><code>13us</code></td>
+<td><code>2.2ms</code></td>
+<td><code>22.9ms</code></td>
+<td><code>238.4ms</code></td>
+<td><code>4273 MB/s</code></td>
+</tr>
+<tr>
+<td>md5</td>
+<td><code>6us</code></td>
+<td><code>89us</code></td>
+<td><code>14.2ms</code></td>
+<td><code>142.1ms</code></td>
+<td><code>1.45s</code></td>
+<td><code>705 MB/s</code></td>
+</tr>
+<tr>
+<td>sha256</td>
+<td><code>15us</code></td>
+<td><code>226us</code></td>
+<td><code>36.1ms</code></td>
+<td><code>360.2ms</code></td>
+<td><code>3.69s</code></td>
+<td><code>277 MB/s</code></td>
+</tr>
+<tr>
+<td>rs_encode 3+1</td>
+<td><code>1us</code></td>
+<td><code>20us</code></td>
+<td><code>3.6ms</code></td>
+<td><code>35.4ms</code></td>
+<td><code>364.1ms</code></td>
+<td><code>2813 MB/s</code></td>
+</tr>
+</tbody>
+</table>
+<p>Throughput column is from the 1GB run. blake3 and RS encode are fast
+enough to be invisible in the storage pipeline. MD5 at 705 MB/s is
+the bottleneck when Content-MD5 is required (skipped by default via
+xxhash64 ETag).</p>
+<p>Once the full small object is buffered, <code>VolumePool</code>:</p>
+<ul>
+<li>resolves <code>(data_n, parity_n)</code> from per-object FTT or bucket FTT</li>
+<li>computes the ETag</li>
+<li>builds data and parity shards</li>
+<li>computes per-shard blake3 checksums</li>
+<li>asks the placement planner for shard distribution</li>
+<li>builds per-shard <code>ObjectMeta</code></li>
+</ul>
+<p>For large/versioned writes, the same logical decisions still happen, but
+the data then flows through the streaming <code>encode_and_write</code> pipeline
+instead of the small buffered path.</p>
+<h2 id="storage-branches">Storage branches<a class="headerlink" href="#storage-branches" title="Permanent link">&para;</a></h2>
+<h3 id="branch-a-ram-write-cache">Branch A: RAM write cache<a class="headerlink" href="#branch-a-ram-write-cache" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>4KB p50</th>
+<th>4KB throughput</th>
+<th>larger sizes</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>DashMap.insert</code> primitive</td>
+<td><code>~1us</code></td>
+<td>--</td>
+<td><code>1M+ obj/s</code> primitive rate</td>
+<td>not from a benchmark; primitive measurement</td>
+</tr>
+<tr>
+<td>end-to-end RAM-cache PUT branch</td>
+<td>not published</td>
+<td>--</td>
+<td>not published</td>
+<td>no isolated end-to-end bench exists for this branch yet; the SDK matrix bench in <code>benchmarks.md</code> does not exercise it because the harness boots abixio without the cache enabled</td>
+</tr>
+<tr>
+<td>end-to-end RAM-cache GET branch</td>
+<td>not published</td>
+<td>--</td>
+<td>not published</td>
+<td>same -- the harness does not enable the cache</td>
+</tr>
+</tbody>
+</table>
+<p>Synthesized 4KB request trace (not from a benchmark, just a model
+showing where the time goes when the cache <em>is</em> enabled):</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>[~80us]   hyper: accept TCP, parse HTTP/1.1 headers, read body
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>[~100us]  s3s: extract S3 headers, dispatch to AbixioS3::put_object()
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a>[~50us]   s3_service: versioning check, content_type, metadata, EC ftt
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a>[~20us]   volume_pool: collect 4KB body into Vec&lt;u8&gt;
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a>[~30us]   RS encode 3+1, MD5 ETag, blake3 per-shard checksum
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>[~10us]   placement: hash key -&gt; pick disk per shard
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>[~1us]    &gt;&gt;&gt; DashMap.insert(key, CacheEntry) &lt;&lt;&lt;  THE ACTUAL STORAGE
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>[~80us]   s3s: serialize 200 OK, hyper writes to TCP
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>Storage:  ~1us    (~0.3% of total)
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>Floor:    ~370us  (~99.7% of total) -- hyper + s3s + protocol work
+</span></code></pre></div>
+<p>The point of this trace is that the storage primitive is invisible
+under the protocol floor at 4KB. Cf. the SDK-matrix bench finding in
+<code>benchmarks.md::Comprehensive matrix</code>: file/wal tier choices are
+within 4% of each other at 4KB sdk PUT for exactly the same reason --
+the protocol floor dominates.</p>
+<p>Run <code>abixio-ui bench --layers L3</code> to see the
+file/wal branches end-to-end at all sizes.</p>
+<p>This branch exists only on the small-object buffered path. After the
+object has already been validated, buffered, encoded, and assigned to
+specific disks, <code>VolumePool</code> builds a <code>CacheEntry</code> and tries
+<code>WriteCache::insert(bucket, key, entry)</code>.</p>
+<p>What happens before ack:</p>
+<ul>
+<li>object bytes are already in memory as RS shards</li>
+<li>metadata is already built in memory</li>
+<li><code>DashMap</code> insert stores the entry by <code>(bucket, key)</code></li>
+<li><code>put_object_stream</code> returns success immediately</li>
+</ul>
+<p>What ack means here:</p>
+<ul>
+<li>the object is visible in the RAM cache and available to reads through
+  the cache-aware read path</li>
+<li>the object is <strong>not yet on disk</strong></li>
+</ul>
+<p>Final resting place:</p>
+<ul>
+<li>not automatic in the current code</li>
+<li>entries reach disk only when <code>VolumePool::flush_write_cache()</code> is
+  called, such as via the admin flush path</li>
+<li>that flush drains cached entries and calls backend <code>write_shard</code> for
+  each shard, which then re-enters the normal local or remote shard path</li>
+</ul>
+<h3 id="branch-b-write-ahead-log-wal">Branch B: Write-ahead log (WAL)<a class="headerlink" href="#branch-b-write-ahead-log-wal" title="Permanent link">&para;</a></h3>
+<p>Isolated L3 storage pipeline. Direct VolumePool API call, no HTTP,
+no s3s. 1 disk, ftt=0, no write cache, Defender-excluded tmp dir.</p>
+<p>Source: <code>abixio-ui bench --layers L3 --write-paths wal</code>,
+<code>bench-results/main-2026-04-18.json</code></p>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>PUT p50</th>
+<th>PUT throughput</th>
+<th>GET p50</th>
+<th>GET throughput</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><code>136us</code></td>
+<td><code>28.3 MB/s</code></td>
+<td><code>491us</code></td>
+<td><code>8.0 MB/s</code></td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><code>274us</code></td>
+<td><code>185.1 MB/s</code></td>
+<td><code>507us</code></td>
+<td><code>121.9 MB/s</code></td>
+</tr>
+<tr>
+<td>10MB</td>
+<td><code>26.9ms</code></td>
+<td><code>368.4 MB/s</code></td>
+<td><code>8.6ms</code></td>
+<td><code>1140.0 MB/s</code></td>
+</tr>
+<tr>
+<td>100MB</td>
+<td><code>315.9ms</code></td>
+<td><code>306.6 MB/s</code></td>
+<td><code>87.2ms</code></td>
+<td><code>1149.2 MB/s</code></td>
+</tr>
+<tr>
+<td>1GB</td>
+<td><code>3.24s</code></td>
+<td><code>289.5 MB/s</code></td>
+<td><code>849.4ms</code></td>
+<td><code>1198.7 MB/s</code></td>
+</tr>
+</tbody>
+</table>
+<p>The WAL appends a checksummed needle directly into a writable mmap
+segment (zero syscalls, zero allocation). At 4KB it is 5.4x faster
+than the file tier. At 64KB it is competitive with all tiers. At
+10MB+ two stream-optimizations kick in so we get disk/network
+overlap instead of a buffer-then-flush phase:</p>
+<ol>
+<li><code>WalShardWriter</code> buffers up to 1 MB, then opens the final
+   <code>shard.dat</code> and forwards subsequent chunks directly to it
+   (matching <code>LocalShardWriter</code>).</li>
+<li><code>encode_and_write</code>'s 1+0 fast path pipelines body-receive +
+   hash (on the main task) with disk-write (on a spawned tokio
+   task) via a bounded mpsc(8) channel. Gated on
+   <code>content_length &gt;= 1 MB</code> so small PUTs avoid the spawn cost.</li>
+</ol>
+<p>The two changes together took 1GB L7 PUT unsigned from 317 MB/s
+(pre-fix) to 449 MB/s on the canonical stack.</p>
+<p>Head-to-head release-mode unit test (<code>write_shard</code> only, same process,
+same disk): WAL 3us, file 878us at 4KB. WAL 30us at 64KB. The L3 bench
+numbers above include VolumePool routing overhead (EC, placement,
+quorum).</p>
+<p>If the WAL is enabled on a <code>LocalVolume</code>, small non-versioned objects
+route through the WAL. Objects above the WAL threshold (default 64KB)
+go straight to the file tier.</p>
+<p>What happens before ack:</p>
+<ul>
+<li><code>Needle::new</code> serializes ObjectMeta to msgpack</li>
+<li><code>serialize_into</code> writes the needle directly into the mmap segment
+  (header + bucket + key + meta + data, one copy, zero allocation)</li>
+<li>the in-memory pending map is updated so reads can find the object</li>
+<li>a lightweight <code>MaterializeRequest</code> (Arc<str> identity + 20 bytes of
+  offsets) is fire-and-forget sent to the background worker</li>
+</ul>
+<p>What ack means here:</p>
+<ul>
+<li>the object is durable in the WAL segment's mmap (OS page cache)</li>
+<li>reads see it immediately via the pending map</li>
+<li>the object is <strong>not yet at its final file-per-object location</strong></li>
+</ul>
+<p>Final resting place:</p>
+<ul>
+<li>the background materialize worker reads data from the segment mmap,
+  creates the object directory, and writes <code>shard.dat</code> + <code>meta.json</code>
+  concurrently via <code>tokio::try_join!</code></li>
+<li>once materialized, the pending entry is removed and reads fall
+  through to the file tier</li>
+<li>when all entries in a segment are materialized, the segment file
+  is deleted</li>
+</ul>
+<p>See <a href="../write-wal/">write-wal.md</a> for the full WAL design, recovery,
+and optimization history.</p>
+<h3 id="branch-c-local-file-tier">Branch C: Local file tier<a class="headerlink" href="#branch-c-local-file-tier" title="Permanent link">&para;</a></h3>
+<p>Isolated L3 storage pipeline. Direct VolumePool API call, no HTTP,
+no s3s. 1 disk, ftt=0, no write cache.</p>
+<p>Source: <code>abixio-ui bench --layers L3 --write-paths file</code>,
+<code>bench-results/main-2026-04-18.json</code> (put_stream and get_stream rows)</p>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>PUT p50</th>
+<th>PUT throughput</th>
+<th>GET p50</th>
+<th>GET throughput</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><code>730us</code></td>
+<td><code>4.9 MB/s</code></td>
+<td><code>416us</code></td>
+<td><code>8.9 MB/s</code></td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><code>841us</code></td>
+<td><code>70.9 MB/s</code></td>
+<td><code>411us</code></td>
+<td><code>147.9 MB/s</code></td>
+</tr>
+<tr>
+<td>10MB</td>
+<td><code>19.0ms</code></td>
+<td><code>520.6 MB/s</code></td>
+<td><code>411us</code></td>
+<td><code>23665 MB/s</code></td>
+</tr>
+<tr>
+<td>100MB</td>
+<td><code>181.6ms</code></td>
+<td><code>545.7 MB/s</code></td>
+<td><code>463us</code></td>
+<td><code>207966 MB/s</code></td>
+</tr>
+<tr>
+<td>1GB</td>
+<td><code>1.92s</code></td>
+<td><code>532.3 MB/s</code></td>
+<td><code>629us</code></td>
+<td><code>1601927 MB/s</code></td>
+</tr>
+</tbody>
+</table>
+<p>The file tier writes object data and meta.json directly to their
+final paths. No post-write rename, no pre-opened files. At 4KB it
+is the slowest tier because every PUT pays mkdir + File::create.
+GET uses mmap (page-cache hot).</p>
+<p>If the write does not hit RAM cache or WAL, it falls
+through to the file tier.</p>
+<p>There are two local file-tier shapes:</p>
+<ul>
+<li>small non-versioned objects may inline the shard bytes into
+  <code>meta.json</code></li>
+<li>larger objects write <code>shard.dat</code> and <code>meta.json</code> concurrently</li>
+</ul>
+<p>What happens before ack:</p>
+<ul>
+<li>object directory is created</li>
+<li>small inline path writes <code>meta.json</code> only</li>
+<li>larger path writes <code>shard.dat</code> and <code>meta.json</code> with <code>tokio::try_join!</code></li>
+</ul>
+<p>What ack means here:</p>
+<ul>
+<li>the final object files are already in place on the volume</li>
+<li>there is no extra post-ack rename step</li>
+</ul>
+<p>Final resting place:</p>
+<ul>
+<li>the final object directory on disk</li>
+</ul>
+<h3 id="branch-d-remote-backend">Branch D: Remote backend<a class="headerlink" href="#branch-d-remote-backend" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Metric</th>
+<th>4KB timing</th>
+<th>64KB timing</th>
+<th>10MB throughput</th>
+<th>1GB throughput</th>
+<th>Notes</th>
+<th>Source</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>remote backend branch</td>
+<td>not isolated</td>
+<td>not isolated</td>
+<td>not isolated</td>
+<td>not isolated</td>
+<td>current repo has no remote-only PUT benchmark; inherits target branch + internode HTTP overhead</td>
+<td>current benchmark corpus</td>
+</tr>
+</tbody>
+</table>
+<p>For a <code>RemoteVolume</code>, the local node does not write directly to the
+target disk. The current remote write shape is:</p>
+<ul>
+<li><code>RemoteShardWriter</code> buffers shard bytes in memory</li>
+<li><code>finalize()</code> serializes metadata to JSON</li>
+<li>it POSTs the full shard body plus <code>meta</code> query parameter to
+  <code>/_storage/v1/write-shard</code> or <code>/_storage/v1/write-versioned-shard</code></li>
+<li>the target node's <code>StorageServer</code> authenticates the request, resolves
+  the local volume from <code>x-abixio-volume-path</code>, and then calls that
+  <code>LocalVolume</code>'s <code>write_shard</code></li>
+</ul>
+<p>What ack means here:</p>
+<ul>
+<li>the remote node has accepted and completed its local <code>write_shard</code>
+  path for that shard</li>
+<li>the final resting place is whichever local branch the remote target
+  volume uses: WAL or file tier</li>
+</ul>
+<h2 id="ack-semantics-by-branch">Ack semantics by branch<a class="headerlink" href="#ack-semantics-by-branch" title="Permanent link">&para;</a></h2>
+<p>This is the main durability distinction the rest of the docs should
+reference.</p>
+<table>
+<thead>
+<tr>
+<th>Branch</th>
+<th>Ack means</th>
+<th>Final resting place reached at ack?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RAM write cache</td>
+<td>object is in RAM cache and readable from cache</td>
+<td>no</td>
+</tr>
+<tr>
+<td>WAL</td>
+<td>object is in mmap segment and pending map; materialize queued</td>
+<td>no (materialized in background)</td>
+</tr>
+<tr>
+<td>file tier</td>
+<td>final object files are written in their destination directory</td>
+<td>yes, modulo OS page-cache durability model</td>
+</tr>
+<tr>
+<td>remote backend</td>
+<td>target node completed its local shard write path</td>
+<td>depends on the target branch</td>
+</tr>
+</tbody>
+</table>
+<h2 id="design-gap-unnecessary-ec-on-single-disk">Design gap: unnecessary EC on single disk<a class="headerlink" href="#design-gap-unnecessary-ec-on-single-disk" title="Permanent link">&para;</a></h2>
+<p>When AbixIO runs with 1 disk and ftt=0, there is no redundancy to
+compute. The RS encode is 1+0 (one data shard, zero parity). The
+shard IS the original data. But AbixIO still pays the full EC
+pipeline cost:</p>
+<ol>
+<li>RS encode 1+0 (passthrough, but still allocates shard buffers)</li>
+<li>blake3 checksum per shard</li>
+<li>Build ObjectMeta with ErasureMeta</li>
+<li>Serialize meta.json separately from shard data</li>
+<li>Write shard.dat + meta.json to a nested directory</li>
+</ol>
+<p>MinIO and RustFS on a single disk just write the object bytes
+directly with a binary metadata header. No RS encode, no separate
+meta file, no nested directory per object.</p>
+<h3 id="fix-cluster-aware-ec-bypass">Fix: cluster-aware EC bypass<a class="headerlink" href="#fix-cluster-aware-ec-bypass" title="Permanent link">&para;</a></h3>
+<p>VolumePool knows how many backends are in the cluster. When there
+is only 1 volume, EC is pointless: there is nobody to replicate to
+and no disk failure to tolerate. The fix:</p>
+<ul>
+<li>VolumePool checks <code>disks.len()</code> at write time</li>
+<li>If 1 disk: force data_n=1, parity_n=0, skip RS encode entirely</li>
+<li>Write raw object bytes through write_shard (no shard encoding)</li>
+<li>The file tier and WAL both receive the original object
+  bytes, not encoded shard data</li>
+<li>Metadata still records the object, but ErasureMeta reflects 1+0</li>
+</ul>
+<p>This is not a config flag. It's automatic based on cluster topology.
+When a second volume joins the cluster, EC activates. When it's
+alone, it writes like MinIO and RustFS do on a single node.</p>
+<h2 id="raw-disk-floor-l5">Raw disk floor (L5)<a class="headerlink" href="#raw-disk-floor-l5" title="Permanent link">&para;</a></h2>
+<p>Isolated L5 disk I/O. Direct tokio::fs calls, no storage pipeline,
+no HTTP, no hashing, no EC. This is the filesystem ceiling. Nothing
+in the stack can write faster than this.</p>
+<p>Source: <code>abixio-ui bench --layers L5</code>,
+<code>bench-results/main-2026-04-18.json</code></p>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>write p50</th>
+<th>write+fsync p50</th>
+<th>read p50</th>
+<th>write MB/s</th>
+<th>read MB/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><code>262us</code></td>
+<td><code>2.6ms</code></td>
+<td><code>62us</code></td>
+<td><code>14.6</code></td>
+<td><code>61.3</code></td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><code>280us</code></td>
+<td><code>2.7ms</code></td>
+<td><code>71us</code></td>
+<td><code>208.8</code></td>
+<td><code>854.1</code></td>
+</tr>
+<tr>
+<td>10MB</td>
+<td><code>4.7ms</code></td>
+<td><code>14.1ms</code></td>
+<td><code>7.8ms</code></td>
+<td><code>2007.5</code></td>
+<td><code>1281.2</code></td>
+</tr>
+<tr>
+<td>100MB</td>
+<td><code>100.3ms</code></td>
+<td><code>102.5ms</code></td>
+<td><code>73.8ms</code></td>
+<td><code>942.6</code></td>
+<td><code>1336.4</code></td>
+</tr>
+<tr>
+<td>1GB</td>
+<td><code>1.02s</code></td>
+<td><code>893.2ms</code></td>
+<td><code>841.5ms</code></td>
+<td><code>1005.5</code></td>
+<td><code>1217.2</code></td>
+</tr>
+</tbody>
+</table>
+<p>Write without fsync goes to OS page cache (RAM). Write+fsync forces
+to physical disk. AbixIO does not fsync individual writes (same as
+MinIO and RustFS). At 1GB the two converge because the OS flushes
+dirty pages during the write.</p>
+<p>The gap between L5 write (262us at 4KB) and L3 file tier PUT (729us
+at 4KB) is the storage pipeline overhead: EC encoding, hashing,
+metadata serialization, mkdir, and multiple file creates per shard.</p>
+<h2 id="where-the-time-goes">Where the time goes<a class="headerlink" href="#where-the-time-goes" title="Permanent link">&para;</a></h2>
+<p>Isolated L3 tier comparison. Direct VolumePool API, no HTTP, no s3s.
+1 disk, ftt=0, no write cache, Defender-excluded tmp dir. All paths
+use the unified write path (streaming encode + tier-aware ShardWriter).</p>
+<p>PUT and GET are measured separately. After all PUTs complete, WAL
+pending entries are materialized and write cache is flushed before any
+timed GETs begin. This ensures GET measures read performance from
+the final storage location, not from transitional temp files.</p>
+<p>Source: <code>abixio-ui bench --layers L3 --write-paths file,wal</code>,
+<code>bench-results/main-2026-04-18.json</code></p>
+<h4 id="put-p50-latency-by-tier-10-fast-path">PUT p50 latency by tier (1+0 fast path)<a class="headerlink" href="#put-p50-latency-by-tier-10-fast-path" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>file</th>
+<th>wal</th>
+<th>best tier</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><code>729us</code></td>
+<td><strong><code>136us</code></strong></td>
+<td>wal</td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><code>858us</code></td>
+<td><strong><code>274us</code></strong></td>
+<td>wal</td>
+</tr>
+<tr>
+<td>10MB</td>
+<td><strong><code>23.9ms</code></strong></td>
+<td><code>26.9ms</code></td>
+<td>file</td>
+</tr>
+<tr>
+<td>100MB</td>
+<td><strong><code>232.7ms</code></strong></td>
+<td><code>315.9ms</code></td>
+<td>file</td>
+</tr>
+<tr>
+<td>1GB</td>
+<td><strong><code>2.36s</code></strong></td>
+<td><code>3.24s</code></td>
+<td>file</td>
+</tr>
+</tbody>
+</table>
+<h4 id="get-p50-latency-by-tier-buffered-mmap-page-cache-hot">GET p50 latency by tier (buffered, mmap, page-cache hot)<a class="headerlink" href="#get-p50-latency-by-tier-buffered-mmap-page-cache-hot" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>file</th>
+<th>wal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><code>444us</code></td>
+<td><code>491us</code></td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><code>455us</code></td>
+<td><code>507us</code></td>
+</tr>
+<tr>
+<td>10MB</td>
+<td><code>9.2ms</code></td>
+<td><code>8.6ms</code></td>
+</tr>
+<tr>
+<td>100MB</td>
+<td><code>87.2ms</code></td>
+<td><code>87.2ms</code></td>
+</tr>
+<tr>
+<td>1GB</td>
+<td><code>860.7ms</code></td>
+<td><code>849.4ms</code></td>
+</tr>
+</tbody>
+</table>
+<p>GET is sub-millisecond at small sizes because data sits in OS page
+cache. WAL GET reads from the segment mmap while pending, then
+falls through to file tier after materialization. At 10MB+ the two
+tiers converge because the mmap read path is the bottleneck.</p>
+<h4 id="tier-handoff">Tier handoff<a class="headerlink" href="#tier-handoff" title="Permanent link">&para;</a></h4>
+<ul>
+<li><strong>&lt;=64KB PUT</strong>: WAL wins big (5.4x faster than file at 4KB, 3.1x
+  at 64KB) because it appends directly to a writable mmap segment
+  instead of doing mkdir + File::create per object</li>
+<li><strong>&lt;=64KB GET</strong>: file tier and WAL are similar (~450-500us). The
+  LRU read cache closes this gap for hot objects. The read cache is
+  populated on every successful small-object PUT (warm-on-write), so
+  the first GET after a write hits RAM: L7 4KB GET p50 drops from
+  1.5ms to 807us when rc is enabled (see <code>benchmarks.md</code>)</li>
+<li><strong>10MB-1GB PUT</strong>: file wins. WAL above the 64KB threshold falls
+  back to file-tier materialization and adds buffering overhead</li>
+</ul>
+<p><strong>WAL is the recommended default for small writes.</strong> Below the
+threshold it is measurably faster with no GC, no permanent index,
+and bounded startup cost. Above the threshold file-tier takes over
+transparently.</p>
+<h2 id="how-other-docs-should-use-this-page">How other docs should use this page<a class="headerlink" href="#how-other-docs-should-use-this-page" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>architecture.md</code> should summarize the write path and link here.</li>
+<li><code>benchmarks.md</code> should keep measurements and link here for layer and
+  durability interpretation.</li>
+<li><code>write-wal.md</code> is the authoritative WAL design doc.</li>
+<li><code>write-cache.md</code> covers the RAM write cache design.</li>
+</ul>
+<h2 id="integration-s3-real-storage-l6">Integration: S3 + real storage (L6)<a class="headerlink" href="#integration-s3-real-storage-l6" title="Permanent link">&para;</a></h2>
+<p>L6 is NOT isolated. It combines L1 (HTTP) + L2 (S3 protocol) + L3
+(storage) into a single in-process stack. This is what the server
+itself costs per request, without SDK client overhead or TLS.</p>
+<p>Source: <code>abixio-ui bench --layers L6</code>,
+<code>bench-results/main-2026-04-18.json</code></p>
+<p>Drain and flush between PUT and GET. 1 disk, ftt=0, no write cache.</p>
+<h4 id="l6-put-p50-by-tier">L6 PUT p50 by tier<a class="headerlink" href="#l6-put-p50-by-tier" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>file</th>
+<th>wal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><code>675us</code></td>
+<td><strong><code>290us</code></strong></td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><code>802us</code></td>
+<td><strong><code>397us</code></strong></td>
+</tr>
+<tr>
+<td>10MB</td>
+<td><strong><code>31.0ms</code></strong></td>
+<td><code>46.3ms</code></td>
+</tr>
+<tr>
+<td>100MB</td>
+<td><strong><code>139.9ms</code></strong></td>
+<td><code>276.0ms</code></td>
+</tr>
+<tr>
+<td>1GB</td>
+<td><strong><code>1.54s</code></strong></td>
+<td><code>3.04s</code></td>
+</tr>
+</tbody>
+</table>
+<h4 id="l6-get-p50-by-tier">L6 GET p50 by tier<a class="headerlink" href="#l6-get-p50-by-tier" title="Permanent link">&para;</a></h4>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>file</th>
+<th>wal</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><code>537us</code></td>
+<td><code>616us</code></td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><code>683us</code></td>
+<td><code>673us</code></td>
+</tr>
+<tr>
+<td>10MB</td>
+<td><strong><code>9.2ms</code></strong></td>
+<td><code>9.1ms</code></td>
+</tr>
+<tr>
+<td>100MB</td>
+<td><code>78.4ms</code></td>
+<td><code>79.4ms</code></td>
+</tr>
+<tr>
+<td>1GB</td>
+<td><strong><code>955.4ms</code></strong></td>
+<td><code>918.1ms</code></td>
+</tr>
+</tbody>
+</table>
+<p>At 4KB the WAL is the fastest PUT path through the full S3 stack
+(2.3x faster than file). Above the 64KB threshold file wins; GET
+converges across tiers at medium+ sizes.</p>
+<h2 id="accuracy-report">Accuracy Report<a class="headerlink" href="#accuracy-report" title="Permanent link">&para;</a></h2>
+<p>Audited against the codebase on 2026-04-18. Timing tables refreshed
+from <code>bench-results/main-2026-04-18.json</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Claim</th>
+<th>Status</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>s3_service.rs::put_object</code> resolves versioning, <code>skip_md5</code>, and forwards <code>content_length</code> into <code>put_object_stream</code></td>
+<td>Verified</td>
+<td><code>src/s3_service.rs</code></td>
+</tr>
+<tr>
+<td><code>VolumePool::put_object_stream</code> uses the small-object buffered path only for non-versioned requests with declared <code>content_length &lt;= 64KB</code></td>
+<td>Verified</td>
+<td><code>src/storage/volume_pool.rs</code></td>
+</tr>
+<tr>
+<td>RAM write cache is tried before disk writes on the small-object path</td>
+<td>Verified</td>
+<td><code>src/storage/volume_pool.rs</code></td>
+</tr>
+<tr>
+<td>RAM-cache ack happens before disk persistence</td>
+<td>Verified</td>
+<td><code>src/storage/volume_pool.rs</code>, <code>src/storage/write_cache.rs</code></td>
+</tr>
+<tr>
+<td>RAM write cache currently relies on explicit <code>flush_write_cache()</code> rather than an automatic destage worker in this repo</td>
+<td>Verified</td>
+<td><code>src/storage/volume_pool.rs</code>, <code>src/admin/handlers.rs</code>, absence of any spawned cache flush task in <code>src/main.rs</code></td>
+</tr>
+<tr>
+<td>Local small non-versioned writes route to the WAL when enabled</td>
+<td>Verified</td>
+<td><code>src/storage/local_volume.rs</code>, <code>src/storage/wal.rs</code></td>
+</tr>
+<tr>
+<td>WAL writes ack before the materialize worker reaches the final destination path</td>
+<td>Verified</td>
+<td><code>src/storage/local_volume.rs</code>, <code>src/storage/wal.rs</code></td>
+</tr>
+<tr>
+<td>File-tier writes place the object in its final path before ack</td>
+<td>Verified</td>
+<td><code>src/storage/local_volume.rs</code></td>
+</tr>
+<tr>
+<td>Remote shard writes POST into <code>/_storage/v1/*</code> and then execute the target node's local <code>write_shard</code> path</td>
+<td>Verified</td>
+<td><code>src/storage/remote_volume.rs</code>, <code>src/storage/storage_server.rs</code></td>
+</tr>
+<tr>
+<td>Timing tables on this page are measured-only</td>
+<td>Verified</td>
+<td>All numeric timings here are sourced from existing benchmark or trace docs; no new estimated timings were added</td>
+</tr>
+<tr>
+<td>The specific timing values were independently re-run in this pass</td>
+<td>Verified</td>
+<td>All L1/L2/L3/L4/L5/L6 tables re-run on 2026-04-18 via <code>abixio-ui bench --servers abixio --clients sdk --write-paths file,wal --write-cache both</code></td>
+</tr>
+<tr>
+<td>Per-branch tier tables (B/C) carry full 5-size PUT and GET p50 plus throughput</td>
+<td>Verified</td>
+<td>Source: <code>bench-results/main-2026-04-18.json</code>. Throughput cells are derived from the same p50 measurements; MB = 1048576 bytes</td>
+</tr>
+<tr>
+<td>WAL wins at small sizes, file tier wins at large sizes</td>
+<td>Verified</td>
+<td>Tier matrix tables in "Where the time goes" show WAL winning &lt;=64KB PUT, file tier winning at 10MB+</td>
+</tr>
+</tbody>
+</table>
+<p>Verdict: the routing and ack/final-resting-place semantics on this page are grounded in the current code. The timing sections are as authoritative as the current benchmark corpus, but they remain benchmark-derived rather than freshly re-measured in this pass.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../architecture/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Architecture">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Architecture
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../cluster/" class="md-footer__link md-footer__link--next" aria-label="Next: Cluster">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Cluster
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      AbixIO Server &mdash; Erasure-coded storage with a steel-blue control-plane aesthetic
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/abix-/abixio" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "search.highlight", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>

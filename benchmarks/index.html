@@ -1,0 +1,1676 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="S3-compatible erasure-coded object storage server in Rust">
+      
+      
+      
+        <link rel="canonical" href="https://abix-.github.io/abixio/benchmarks/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Benchmarks - AbixIO Server</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#benchmarks" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="AbixIO Server" class="md-header__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AbixIO Server
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Benchmarks
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+    
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="AbixIO Server" class="md-nav__button md-logo" aria-label="AbixIO Server" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    AbixIO Server
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/abix-/abixio" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    abix-/abixio
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../write-path/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Write Path
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cluster/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Cluster
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../storage-layout/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../per-object-ec/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Per-Object EC
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../admin-api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multipart-upload/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multipart Upload
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../healing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Healing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../distributed-placement-testing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Distributed Testing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../versioning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Versioning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tagging/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tagging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../presigned-urls/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Presigned URLs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../conditional-requests/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Conditional Requests
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../error-responses/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Error Responses
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bucket-policy/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Bucket Policy
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../encryption/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Encryption
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../s3-compliance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    S3 Compliance
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../comparison/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Comparison
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security-review/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Review
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-abixio-stack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        The AbixIO stack
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#canonical-stack-wal-wc-rc" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Canonical stack: wal + wc + rc
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Canonical stack: wal + wc + rc">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#4kb-64kb-the-small-object-regime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4KB / 64KB (the small-object regime)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#10mb-1gb-the-file-tier-regime" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10MB / 1GB (the file-tier regime)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#competitive-canonical-stack-vs-rustfs-vs-minio" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Competitive (canonical stack vs RustFS vs MinIO)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Competitive (canonical stack vs RustFS vs MinIO)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#small-object-putget-mbs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Small-object PUT/GET (MB/s)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#large-object-putget-mbs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Large-object PUT/GET (MB/s)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#metadata-p50-latency" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Metadata (p50 latency)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ablation-what-each-layer-contributes" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ablation: what each layer contributes
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Ablation: what each layer contributes">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#read-cache-delta-at-4kb-l7-get-p50" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read cache delta at 4KB L7 GET p50
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#read-cache-delta-at-64kb-l7-get-p50" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Read cache delta at 64KB L7 GET p50
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#write-cache-delta-at-4kb-l7-put-p50-unsigned" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Write cache delta at 4KB L7 PUT p50 (unsigned)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#wal-delta-at-4kb-l3-put-p50" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        WAL delta at 4KB L3 PUT p50
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#layer-floors-l1-l5-on-the-canonical-stack" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Layer floors (L1-L5) on the canonical stack
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#where-to-look-next" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Where to look next
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#accuracy-report" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Accuracy Report
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="benchmarks">Benchmarks<a class="headerlink" href="#benchmarks" title="Permanent link">&para;</a></h1>
+<p>For methodology, fairness requirements, client/server specs, and how
+to run benchmarks, see
+<a href="../benchmark-requirements/">benchmark-requirements.md</a>.</p>
+<p>Measured 2026-04-18. Release build. 1 disk, Defender-excluded tmpdir
+at <code>C:\code\bench-tmp</code>. SDK client (aws-sdk-s3), HTTPS + SigV4,
+disk-backed PUT source / GET sink.</p>
+<h2 id="the-abixio-stack">The AbixIO stack<a class="headerlink" href="#the-abixio-stack" title="Permanent link">&para;</a></h2>
+<p>The stack is explicitly tuned for two object regimes:</p>
+<table>
+<thead>
+<tr>
+<th>Regime</th>
+<th>Path</th>
+<th>What handles it</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>&lt;=64KB</td>
+<td>RAM acceleration + WAL</td>
+<td>write cache (RAM PUT ack), read cache (RAM GETs, warm-on-write), WAL (durable append to mmap segment, materialize to file tier in background)</td>
+</tr>
+<tr>
+<td>&gt;64KB</td>
+<td>File tier</td>
+<td>direct mkdir + write, no RAM caching, no WAL buffering</td>
+</tr>
+</tbody>
+</table>
+<p>The write cache, read cache, and WAL all exist to make small-object
+PUT/GET fast. The file tier is the permanent home for everything
+and the direct path for anything above the cache/WAL thresholds.
+The canonical server config is <code>--write-tier wal --write-cache 256
+--read-cache 256</code> (all defaults) and the bench defaults now match.</p>
+<p>Result file: <code>bench-results/standard-2026-04-18.json</code>. Run:
+<code>abixio-ui bench --servers abixio --clients sdk --layers L3,L7
+--sizes 4KB,64KB,10MB,1GB --ops PUT,GET</code>.</p>
+<hr />
+<h2 id="canonical-stack-wal-wc-rc">Canonical stack: wal + wc + rc<a class="headerlink" href="#canonical-stack-wal-wc-rc" title="Permanent link">&para;</a></h2>
+<h3 id="4kb-64kb-the-small-object-regime">4KB / 64KB (the small-object regime)<a class="headerlink" href="#4kb-64kb-the-small-object-regime" title="Permanent link">&para;</a></h3>
+<p>L3 direct VolumePool:</p>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>PUT p50</th>
+<th>PUT MB/s</th>
+<th>GET p50</th>
+<th>GET MB/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><strong>141us</strong></td>
+<td>27.0</td>
+<td>521us</td>
+<td>7.4</td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><strong>276us</strong></td>
+<td><strong>141.5</strong></td>
+<td>520us</td>
+<td><strong>118.2</strong></td>
+</tr>
+</tbody>
+</table>
+<p>L7 end-to-end (TLS + SigV4 + SDK):</p>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>PUT p50</th>
+<th>PUT MB/s</th>
+<th>GET p50</th>
+<th>GET MB/s</th>
+<th>GET hot p50</th>
+<th>GET hot MB/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td><strong>1.0ms</strong></td>
+<td>3.2</td>
+<td>1.1ms</td>
+<td>3.4</td>
+<td><strong>861us</strong></td>
+<td><strong>4.5</strong></td>
+</tr>
+<tr>
+<td>64KB</td>
+<td><strong>1.2ms</strong></td>
+<td>43.1</td>
+<td>1.6ms</td>
+<td>35.1</td>
+<td><strong>1.3ms</strong></td>
+<td><strong>49.6</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Hot GET row reflects post-warm-on-write reads served from the LRU
+read cache. At the small-object scale the TLS + SigV4 floor
+dominates; raw storage work is microseconds.</p>
+<h3 id="10mb-1gb-the-file-tier-regime">10MB / 1GB (the file-tier regime)<a class="headerlink" href="#10mb-1gb-the-file-tier-regime" title="Permanent link">&para;</a></h3>
+<p>Once objects exceed 64KB, write cache and read cache are bypassed.
+WAL also bypasses (threshold 64KB). Writes go straight to the file
+tier; GETs mmap from disk.</p>
+<p>L3 direct VolumePool:</p>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>PUT p50</th>
+<th>PUT MB/s</th>
+<th>GET p50</th>
+<th>GET MB/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10MB</td>
+<td>27.1ms</td>
+<td><strong>366.4</strong></td>
+<td>11.2ms</td>
+<td><strong>883.2</strong></td>
+</tr>
+<tr>
+<td>1GB</td>
+<td>3.18s</td>
+<td>321.1</td>
+<td>1.20s</td>
+<td>863.7</td>
+</tr>
+</tbody>
+</table>
+<p>L7 end-to-end (unsigned PUT, SDK GET):</p>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>PUT p50</th>
+<th>PUT MB/s</th>
+<th>GET p50</th>
+<th>GET MB/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10MB</td>
+<td>27.0ms</td>
+<td>344.2</td>
+<td>42.2ms</td>
+<td>221.4</td>
+</tr>
+<tr>
+<td>1GB</td>
+<td>3.26s</td>
+<td>315.2</td>
+<td>4.51s</td>
+<td>233.6</td>
+</tr>
+</tbody>
+</table>
+<p>L7 signed PUT (SDK SHA-256s the body before send):</p>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>p50</th>
+<th>MB/s</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10MB</td>
+<td>102.6ms</td>
+<td>97.2</td>
+</tr>
+<tr>
+<td>1GB</td>
+<td>10.61s</td>
+<td>96.6</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="competitive-canonical-stack-vs-rustfs-vs-minio">Competitive (canonical stack vs RustFS vs MinIO)<a class="headerlink" href="#competitive-canonical-stack-vs-rustfs-vs-minio" title="Permanent link">&para;</a></h2>
+<p>Measured 2026-04-18 on the canonical stack (AbixIO = wal+wc+rc) with
+the streaming WAL-shard writer (promote-to-file at 1 MB buffered)
+AND the pipelined 1+0 large-PUT path (tokio::spawn'd writer task
+behind an mpsc(8) channel, gated on content_length &gt;= 1 MB).
+SDK client, HTTPS + SigV4. Results in
+<code>bench-results/competitive-2026-04-18-pipeline-gated.json</code>.</p>
+<h3 id="small-object-putget-mbs">Small-object PUT/GET (MB/s)<a class="headerlink" href="#small-object-putget-mbs" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Op</th>
+<th>AbixIO</th>
+<th>RustFS</th>
+<th>MinIO</th>
+<th>AbixIO vs best competitor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB PUT unsigned</td>
+<td><strong>2.6</strong></td>
+<td>1.4</td>
+<td>1.9</td>
+<td><strong>1.37x MinIO</strong></td>
+</tr>
+<tr>
+<td>4KB PUT signed</td>
+<td><strong>2.4</strong></td>
+<td>1.5</td>
+<td>2.0</td>
+<td><strong>1.20x MinIO</strong></td>
+</tr>
+<tr>
+<td>4KB GET cold</td>
+<td><strong>3.7</strong></td>
+<td>2.4</td>
+<td>3.6</td>
+<td>1.03x MinIO</td>
+</tr>
+<tr>
+<td>4KB GET hot</td>
+<td><strong>4.1</strong></td>
+<td>2.6</td>
+<td>3.7</td>
+<td><strong>1.11x MinIO</strong></td>
+</tr>
+<tr>
+<td>64KB PUT unsigned</td>
+<td><strong>28.5</strong></td>
+<td>20.7</td>
+<td>28.1</td>
+<td>1.01x MinIO</td>
+</tr>
+<tr>
+<td>64KB PUT signed</td>
+<td>21.3</td>
+<td>15.5</td>
+<td><strong>23.5</strong></td>
+<td>0.91x MinIO</td>
+</tr>
+<tr>
+<td>64KB GET cold</td>
+<td><strong>50.3</strong></td>
+<td>30.6</td>
+<td>43.6</td>
+<td><strong>1.15x MinIO</strong></td>
+</tr>
+<tr>
+<td>64KB GET hot</td>
+<td><strong>49.5</strong></td>
+<td>30.7</td>
+<td>48.0</td>
+<td>1.03x MinIO</td>
+</tr>
+</tbody>
+</table>
+<p>AbixIO wins or ties every small-object PUT/GET except 64KB signed
+(the MD5 bottleneck on signed writes is an SDK floor). Warm-on-write
+read cache keeps 4KB/64KB GET within a cache-hit, so MinIO's mmap
+scan advantage shrinks.</p>
+<h3 id="large-object-putget-mbs">Large-object PUT/GET (MB/s)<a class="headerlink" href="#large-object-putget-mbs" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Op</th>
+<th>AbixIO</th>
+<th>RustFS</th>
+<th>MinIO</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10MB PUT unsigned</td>
+<td>308.3</td>
+<td><strong>435.9</strong></td>
+<td>279.1</td>
+</tr>
+<tr>
+<td>10MB PUT signed</td>
+<td>103.6</td>
+<td>75.4</td>
+<td><strong>116.7</strong></td>
+</tr>
+<tr>
+<td>10MB GET</td>
+<td><strong>231.5</strong></td>
+<td>202.3</td>
+<td>222.7</td>
+</tr>
+<tr>
+<td>1GB PUT unsigned</td>
+<td><strong>449.2</strong></td>
+<td><strong>597.4</strong></td>
+<td>429.8</td>
+</tr>
+<tr>
+<td>1GB PUT signed</td>
+<td>107.4</td>
+<td>80.6</td>
+<td><strong>131.5</strong></td>
+</tr>
+<tr>
+<td>1GB GET</td>
+<td>248.5</td>
+<td><strong>259.5</strong></td>
+<td>236.3</td>
+</tr>
+</tbody>
+</table>
+<p>Large unsigned PUT: the streaming WAL + pipelined 1+0 fixes took
+1GB from 317 to 449 MB/s. AbixIO now <strong>beats MinIO (449 vs 430)</strong>
+and closed the RustFS gap from 1.87x to 1.33x. The remaining gap
+vs RustFS is the per-object EC pipeline cost (RS encode + per-shard
+blake3 + separate shard.dat + meta.json), which AbixIO pays even on
+1 disk / ftt=0. Known gap -- see
+[write-path.md::Design gap: unnecessary EC on single disk].</p>
+<p>Large signed PUT: AbixIO beats RustFS at both sizes; MinIO edges
+out at 1GB. Signed PUT is SDK-side MD5-bound (~100 MB/s floor).</p>
+<h3 id="metadata-p50-latency">Metadata (p50 latency)<a class="headerlink" href="#metadata-p50-latency" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Op</th>
+<th>AbixIO</th>
+<th>RustFS</th>
+<th>MinIO</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>HEAD</td>
+<td>575us</td>
+<td>578us</td>
+<td><strong>511us</strong></td>
+</tr>
+<tr>
+<td>LIST (100 obj)</td>
+<td>20.7ms</td>
+<td>28.2ms</td>
+<td><strong>6.8ms</strong></td>
+</tr>
+<tr>
+<td>DELETE</td>
+<td><strong>1.0ms</strong></td>
+<td>2.0ms</td>
+<td>1.3ms</td>
+</tr>
+</tbody>
+</table>
+<p>AbixIO wins DELETE and ties RustFS on HEAD (MinIO edges out HEAD by
+~60us). MinIO's 3x lead on LIST is the remaining metadata gap --
+its single-file metadata layout is a cheap scan for bucket listings
+where AbixIO walks a directory tree.</p>
+<hr />
+<h2 id="ablation-what-each-layer-contributes">Ablation: what each layer contributes<a class="headerlink" href="#ablation-what-each-layer-contributes" title="Permanent link">&para;</a></h2>
+<p>Run the ablation matrix with
+<code>abixio-ui bench --write-paths file,wal --write-cache both
+--read-cache both</code>. Results in
+<code>bench-results/rc-axis-2026-04-18.json</code>.</p>
+<h3 id="read-cache-delta-at-4kb-l7-get-p50">Read cache delta at 4KB L7 GET p50<a class="headerlink" href="#read-cache-delta-at-4kb-l7-get-p50" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th>rc off</th>
+<th>rc on</th>
+<th>Speedup</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>file</td>
+<td>1.3ms</td>
+<td>875us</td>
+<td>1.49x</td>
+</tr>
+<tr>
+<td>file+wc</td>
+<td>1.3ms</td>
+<td>891us</td>
+<td>1.46x</td>
+</tr>
+<tr>
+<td>wal</td>
+<td>1.4ms</td>
+<td>904us</td>
+<td>1.55x</td>
+</tr>
+<tr>
+<td>wal+wc</td>
+<td>1.5ms</td>
+<td><strong>807us</strong></td>
+<td><strong>1.86x</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="read-cache-delta-at-64kb-l7-get-p50">Read cache delta at 64KB L7 GET p50<a class="headerlink" href="#read-cache-delta-at-64kb-l7-get-p50" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th>rc off</th>
+<th>rc on</th>
+<th>Speedup</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>file</td>
+<td>1.8ms</td>
+<td>1.2ms</td>
+<td>1.50x</td>
+</tr>
+<tr>
+<td>file+wc</td>
+<td>1.7ms</td>
+<td>1.2ms</td>
+<td>1.42x</td>
+</tr>
+<tr>
+<td>wal</td>
+<td>1.8ms</td>
+<td>1.2ms</td>
+<td>1.50x</td>
+</tr>
+<tr>
+<td>wal+wc</td>
+<td>1.8ms</td>
+<td>1.2ms</td>
+<td>1.50x</td>
+</tr>
+</tbody>
+</table>
+<h3 id="write-cache-delta-at-4kb-l7-put-p50-unsigned">Write cache delta at 4KB L7 PUT p50 (unsigned)<a class="headerlink" href="#write-cache-delta-at-4kb-l7-put-p50-unsigned" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Config</th>
+<th>wc off</th>
+<th>wc on</th>
+<th>Speedup</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>file</td>
+<td>1.4ms</td>
+<td>824us</td>
+<td>1.70x</td>
+</tr>
+<tr>
+<td>wal</td>
+<td>1.2ms</td>
+<td>1.1ms</td>
+<td>1.09x</td>
+</tr>
+</tbody>
+</table>
+<p>Write cache helps most when the disk tier is slow (file tier
+mkdir+create). WAL already has a fast-ack path so the cache layered
+on top adds marginal value -- its main purpose in the wal+wc+rc
+stack is primary durability before the WAL's own ack (see
+<a href="../write-cache/">write-cache.md</a>).</p>
+<h3 id="wal-delta-at-4kb-l3-put-p50">WAL delta at 4KB L3 PUT p50<a class="headerlink" href="#wal-delta-at-4kb-l3-put-p50" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Tier</th>
+<th>p50</th>
+<th>Speedup over file</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>file</td>
+<td>729us</td>
+<td>1.0x</td>
+</tr>
+<tr>
+<td>wal</td>
+<td><strong>136us</strong></td>
+<td><strong>5.4x</strong></td>
+</tr>
+</tbody>
+</table>
+<p>The WAL appends a checksummed needle directly into an mmap segment
+(zero syscalls, zero allocation). At 4KB this is 5.4x the file
+tier; at 64KB it is 3.1x. Above 64KB the WAL is not in the path.</p>
+<hr />
+<h2 id="layer-floors-l1-l5-on-the-canonical-stack">Layer floors (L1-L5) on the canonical stack<a class="headerlink" href="#layer-floors-l1-l5-on-the-canonical-stack" title="Permanent link">&para;</a></h2>
+<p>These do not change with config; they set the physical upper
+bounds the small-object and file-tier regimes are competing
+against. See <code>bench-results/main-2026-04-18.json</code>.</p>
+<table>
+<thead>
+<tr>
+<th>Size</th>
+<th>L1 http_put</th>
+<th>L2 s3s_put</th>
+<th>L5 disk_write</th>
+<th>L5 disk_write_fsync</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>4KB</td>
+<td>41.0</td>
+<td>65.0</td>
+<td>14.6</td>
+<td>1.5</td>
+</tr>
+<tr>
+<td>64KB</td>
+<td>506.8</td>
+<td>617.9</td>
+<td>208.8</td>
+<td>23.2</td>
+</tr>
+<tr>
+<td>10MB</td>
+<td>514.5</td>
+<td>1637.9</td>
+<td>2007.5</td>
+<td>629.0</td>
+</tr>
+<tr>
+<td>1GB</td>
+<td>753.2</td>
+<td>1754.3</td>
+<td>1005.5</td>
+<td>1109</td>
+</tr>
+</tbody>
+</table>
+<p>All MB/s. The hyper + s3s floors are comfortably above even the
+1GB write tier. MD5 at 705 MB/s is the bottleneck for signed PUT
+above 10MB; blake3 (4273 MB/s) and RS encode (2813 MB/s) are
+invisible in the pipeline.</p>
+<hr />
+<h2 id="where-to-look-next">Where to look next<a class="headerlink" href="#where-to-look-next" title="Permanent link">&para;</a></h2>
+<ul>
+<li>End-to-end PUT path with tier attribution: <a href="../write-path/">write-path.md</a></li>
+<li>WAL internals + materialize worker: <a href="../write-wal/">write-wal.md</a></li>
+<li>RAM write cache design + peer replication:
+  <a href="../write-cache/">write-cache.md</a></li>
+<li>Architecture overview: <a href="../architecture/">architecture.md</a></li>
+<li>Optimization history (not a reference for current state):
+  <a href="../layer-optimization/">layer-optimization.md</a></li>
+</ul>
+<h2 id="accuracy-report">Accuracy Report<a class="headerlink" href="#accuracy-report" title="Permanent link">&para;</a></h2>
+<p>Audited against the codebase on 2026-04-18.</p>
+<ul>
+<li>Canonical wal+wc+rc numbers above measured 2026-04-18,
+  single-config run, 1000 iters per op, release build
+  (<code>bench-results/standard-2026-04-18.json</code>).</li>
+<li>Ablation matrix (8 configs) measured 2026-04-18 at 4KB/64KB
+  (<code>bench-results/rc-axis-2026-04-18.json</code>).</li>
+<li>Competitive (RustFS/MinIO) measured 2026-04-18 on the canonical
+  stack with the streaming WAL-shard writer AND the pipelined 1+0
+  large-PUT path
+  (<code>bench-results/competitive-2026-04-18-pipeline-gated.json</code>).
+  Prior runs archived as <code>competitive-2026-04-18-streaming-v2.json</code>
+  (streaming WAL only), <code>competitive-2026-04-18-canonical.json</code>
+  (pre-streaming canonical), and <code>competitive-2026-04-18.json</code>
+  (initial 8-config matrix) for ablation reference.</li>
+<li>All benchmarks live in <code>abixio-ui/src/bench/</code>. Run via
+  <code>abixio-ui bench</code>. Defaults now match the production server
+  stack (wal + wc + rc). Pass <code>--write-paths file,wal --write-cache
+  both --read-cache both</code> to run the ablation matrix.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      AbixIO Server &mdash; Erasure-coded storage with a steel-blue control-plane aesthetic
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/abix-/abixio" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+      <div class="md-progress" data-md-component="progress" role="progressbar"></div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["content.code.copy", "content.code.annotate", "content.tabs.link", "navigation.instant", "navigation.instant.progress", "navigation.sections", "navigation.expand", "navigation.top", "navigation.footer", "search.highlight", "search.suggest", "toc.follow"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
