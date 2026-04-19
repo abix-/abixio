@@ -640,6 +640,7 @@ impl VolumePool {
             opts,
             self.mrf.as_ref(),
             version_id,
+            content_length,
         )
         .await
     }

@@ -67,7 +67,97 @@ fn split_data_into(data: &[u8], count: usize, buffers: &mut [Vec<u8>]) {
 /// Block size for streaming encode (1MB).
 const STREAM_BLOCK_SIZE: usize = 1024 * 1024;
 
+/// Below this size, the 1+0 PUT path runs serially. tokio::spawn +
+/// channel round-trip overhead is larger than the overlap benefit
+/// for small objects. Above this, we pipeline body-recv / hash /
+/// disk-write across two tasks.
+const PIPELINE_MIN_BYTES: usize = 1024 * 1024;
+
 use super::ShardWriter;
+
+/// Serial 1+0 PUT path. Body chunks feed directly into the one
+/// writer with no cross-task hop. Used for PUTs where content_length
+/// is known and below `PIPELINE_MIN_BYTES`, because the task spawn
+/// overhead would cost more than it saves at those sizes.
+#[allow(clippy::too_many_arguments)]
+async fn encode_and_write_1plus0_serial<S>(
+    disk: &Box<dyn Backend>,
+    bucket: &str,
+    key: &str,
+    body: &mut S,
+    opts: &PutOptions,
+    version_id: Option<&str>,
+    placement: &crate::cluster::placement::PlacementRecord,
+    volume_ids: &[String],
+    content_type: &str,
+    created_at: u64,
+) -> Result<ObjectInfo, StorageError>
+where
+    S: futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin,
+{
+    use futures::StreamExt;
+    use md5::{Digest, Md5};
+
+    let mut writer = disk.open_shard_writer(bucket, key, version_id).await?;
+    let mut md5_hasher = if opts.skip_md5 { None } else { Some(Md5::new()) };
+    let mut xxh = xxhash_rust::xxh64::Xxh64::new(0);
+    let mut blake3_hasher = blake3::Hasher::new();
+    let mut total_size: u64 = 0;
+
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk.map_err(StorageError::Io)?;
+        if let Some(ref mut h) = md5_hasher { h.update(&chunk); }
+        xxh.update(&chunk);
+        blake3_hasher.update(&chunk);
+        total_size += chunk.len() as u64;
+        writer.write_chunk(&chunk).await?;
+    }
+
+    let etag = opts
+        .precomputed_etag
+        .clone()
+        .unwrap_or_else(|| match md5_hasher {
+            Some(h) => hex::encode(h.finalize()),
+            None => format!("{:016x}{:016x}", xxh.digest(), total_size),
+        });
+    let checksum = blake3_hasher.finalize().to_hex().to_string();
+    let vid_str = version_id.unwrap_or("").to_string();
+
+    let meta = ObjectMeta {
+        size: total_size,
+        etag: etag.clone(),
+        content_type: content_type.to_string(),
+        created_at,
+        erasure: ErasureMeta {
+            ftt: 0,
+            index: 0,
+            epoch_id: placement.epoch_id,
+            volume_ids: volume_ids.to_vec(),
+        },
+        checksum,
+        user_metadata: opts.user_metadata.clone(),
+        tags: opts.tags.clone(),
+        version_id: vid_str.clone(),
+        is_latest: true,
+        is_delete_marker: false,
+        parts: Vec::new(),
+        inline_data: None,
+    };
+    writer.finalize(&meta).await?;
+
+    Ok(ObjectInfo {
+        bucket: bucket.to_string(),
+        key: key.to_string(),
+        size: total_size,
+        etag,
+        content_type: content_type.to_string(),
+        created_at,
+        user_metadata: opts.user_metadata.clone(),
+        tags: opts.tags.clone(),
+        version_id: vid_str,
+        is_delete_marker: false,
+    })
+}
 
 /// Single encode path. Streams body through RS encode, writes via ShardWriter trait.
 /// Works for all backends (local, remote), versioned and unversioned.
@@ -83,6 +173,7 @@ pub async fn encode_and_write<S>(
     opts: PutOptions,
     mrf: Option<&Arc<MrfQueue>>,
     version_id: Option<&str>,
+    content_length: Option<usize>,
 ) -> Result<ObjectInfo, StorageError>
 where
     S: futures::Stream<Item = Result<bytes::Bytes, std::io::Error>> + Unpin,
@@ -113,15 +204,59 @@ where
         .collect();
 
     // 1+0 fast path: single disk, no parity, no RS encode.
-    // Stream body chunks directly to the one writer. No shard buffers,
-    // no split_data_into, no block accumulation. Just pass bytes through.
+    // Stream body chunks directly to the one writer.
+    //
+    // For large objects the writer runs on its own tokio task,
+    // connected to the main future by a bounded mpsc(8) channel.
+    // This overlaps three hot stages that would otherwise serialize:
+    //   - body.next()        (TLS + hyper receive)
+    //   - hash + xxh + blake3 (CPU on main task)
+    //   - writer.write_chunk (disk I/O on writer task)
+    // Matches the RustFS pattern (crates/ecstore/src/erasure_coding/
+    // encode.rs:179-236) and MinIO's ring-buffer-per-writer design
+    // (cmd/bitrot-streaming.go:111-131).
+    //
+    // Small objects skip the pipeline because tokio::spawn + channel
+    // overhead dominates the per-PUT time at <=1MB.
     if data_n == 1 && parity_n == 0 {
         let disk_idx = distribution[0];
-        let mut writer = disks[disk_idx].open_shard_writer(bucket, key, version_id).await?;
+        let pipeline_threshold = PIPELINE_MIN_BYTES;
+        let use_pipeline = content_length.map_or(true, |n| n >= pipeline_threshold);
+        if !use_pipeline {
+            return encode_and_write_1plus0_serial(
+                &disks[disk_idx],
+                bucket,
+                key,
+                &mut body,
+                &opts,
+                version_id,
+                &placement,
+                &volume_ids,
+                &content_type,
+                created_at,
+            )
+            .await;
+        }
+        let writer = disks[disk_idx]
+            .open_shard_writer(bucket, key, version_id)
+            .await?;
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<bytes::Bytes>(8);
+        let writer_task: tokio::task::JoinHandle<
+            Result<Box<dyn ShardWriter>, StorageError>,
+        > = tokio::spawn(async move {
+            let mut writer = writer;
+            while let Some(chunk) = rx.recv().await {
+                writer.write_chunk(&chunk).await?;
+            }
+            Ok(writer)
+        });
+
         let mut md5_hasher = if opts.skip_md5 { None } else { Some(Md5::new()) };
         let mut xxh = xxhash_rust::xxh64::Xxh64::new(0);
         let mut blake3_hasher = blake3::Hasher::new();
         let mut total_size: u64 = 0;
+        let mut send_err: Option<StorageError> = None;
 
         while let Some(chunk) = body.next().await {
             let chunk = chunk.map_err(StorageError::Io)?;
@@ -129,7 +264,27 @@ where
             xxh.update(&chunk);
             blake3_hasher.update(&chunk);
             total_size += chunk.len() as u64;
-            writer.write_chunk(&chunk).await?;
+            if let Err(_closed) = tx.send(chunk).await {
+                // writer task dropped the receiver; drain its join
+                // handle below to surface the real error.
+                send_err = Some(StorageError::Internal(
+                    "write pipeline: receiver closed".into(),
+                ));
+                break;
+            }
+        }
+        drop(tx);
+
+        let writer = match writer_task.await {
+            Ok(res) => res?,
+            Err(join_err) => {
+                return Err(StorageError::Internal(format!(
+                    "writer task join: {join_err}"
+                )));
+            }
+        };
+        if let Some(e) = send_err {
+            return Err(e);
         }
 
         let etag = opts
@@ -363,7 +518,12 @@ pub async fn encode_and_write_bytes(
         Ok::<bytes::Bytes, std::io::Error>(bytes::Bytes::copy_from_slice(data))
     });
     futures::pin_mut!(stream);
-    encode_and_write(disks, planner, data_n, parity_n, bucket, key, stream, opts, mrf, version_id).await
+    let len = data.len();
+    encode_and_write(
+        disks, planner, data_n, parity_n, bucket, key, stream, opts, mrf, version_id,
+        Some(len),
+    )
+    .await
 }
 
 /// Write one RS-encoded block to all shard writers sequentially.
