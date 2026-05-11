@@ -2,7 +2,7 @@
 //!
 //! Writes go to a DashMap in RAM, ack immediately. Background flush
 //! destages to disk asynchronously. No disk I/O on the write hot path.
-//! Design derived from our own latency measurements -- the disk write
+//! Design derived from our own latency measurements. The disk write
 //! is microseconds, but the filesystem call path is hundreds of
 //! microseconds. See docs/write-cache.md for the request trace.
 
@@ -23,7 +23,7 @@ type CacheKey = (Arc<str>, Arc<str>);
 /// Shards stored as Bytes (ref-counted) for zero-copy GET responses.
 ///
 /// `primary_node_id` identifies the node that owns this entry. Only the
-/// primary flushes to disk -- peers hold replicas in RAM for crash
+/// primary flushes to disk. Peers hold replicas in RAM for crash
 /// fallback but never flush, because their `distribution` indexes point
 /// into the primary's `VolumePool`, not their own.
 #[derive(Clone, Serialize, Deserialize)]
