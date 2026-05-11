@@ -68,7 +68,7 @@ streaming-promote threshold is fixed at 1 MB
 
 Objects in the WAL pending map are served from the segment's mmap.
 Objects that have been materialized are served from the file tier.
-The transition is seamless -- once materialized, the pending entry
+The transition is seamless. Once materialized, the pending entry
 is removed, and subsequent reads go to the file tier.
 
 ### Background materialize worker
@@ -123,7 +123,7 @@ Three optimizations brought the WAL from 197us to 147us at 4KB:
 Replaced `file.seek() + file.write_all()` (two syscalls per append)
 with `mmap[offset..].copy_from_slice()` (zero syscalls, memcpy only).
 The pre-allocated segment file is mmap'd as writable (`MmapMut`).
-Reads and writes use the same mmap -- no coherence issues.
+Reads and writes use the same mmap. No coherence issues.
 
 Impact: ~10-15us saved per append on Windows.
 
@@ -144,7 +144,7 @@ Impact: ~1-2us at 4KB, ~5-10us at 64KB (proportional to data size).
 
 Replaced `channel.send(req).await` with `channel.try_send(req)`.
 The data is durable in the WAL segment after `wal.append()`. The
-materialize request is best-effort -- if the channel is full, recovery
+materialize request is best-effort. If the channel is full, recovery
 picks it up on restart. `try_send` avoids the `.await` entirely.
 
 Impact: removes async yield point from hot path.
