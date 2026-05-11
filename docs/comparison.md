@@ -126,7 +126,7 @@ closest architectural match.
 Small objects (<= 64KB) are written as checksummed needles directly
 into a writable mmap segment (zero syscalls, zero allocation). A
 background worker materializes each entry to its final file-per-object
-location (shard.dat + meta.json). The WAL is ephemeral -- entries are
+location (shard.dat + meta.json). The WAL is ephemeral. Entries are
 deleted after materialization. No GC, no compaction, no permanent
 in-memory index. 4KB PUT: 3us in release-mode head-to-head, 136us
 through the full VolumePool pipeline (L3 benchmark, 2026-04-18).
@@ -135,7 +135,7 @@ See [write-wal.md](write-wal.md).
 MinIO and RustFS mitigate small-object overhead by inlining data into
 their metadata files. AbixIO goes further by eliminating the per-object
 file creation from the hot path entirely. A 4KB PUT appends one needle
-to the mmap -- no mkdir, no file create, no syscalls.
+to the mmap. No mkdir, no file create, no syscalls.
 
 ### Per-object erasure coding
 
@@ -335,7 +335,7 @@ Specific upstream claims this page is anchored to:
 | Weakness | Reality today |
 |---|---|
 | Production credibility | None yet |
-| Benchmarks | Published cross-server matrix at [benchmarks.md::Comprehensive matrix](benchmarks.md#comprehensive-matrix) (3 servers x 3 clients x 3 sizes, HTTPS + SigV4 + UNSIGNED-PAYLOAD, single node, NTFS). Per-tier internal comparison at [write-path.md::Where the time goes](write-path.md#where-the-time-goes). L1-L7 layer ceilings at [layer-optimization.md](layer-optimization.md). Numbers are not duplicated here -- read those docs for the current measured story. |
+| Benchmarks | Published cross-server matrix at [benchmarks.md::Comprehensive matrix](benchmarks.md#comprehensive-matrix) (3 servers x 3 clients x 3 sizes, HTTPS + SigV4 + UNSIGNED-PAYLOAD, single node, NTFS). Per-tier internal comparison at [write-path.md::Where the time goes](write-path.md#where-the-time-goes). L1-L7 layer ceilings at [layer-optimization.md](layer-optimization.md). Numbers are not duplicated here. Read those docs for the current measured story. |
 | Failure injection / long-haul testing | Not there yet |
 | Packaging / deployment story | Not there yet |
 | S3 surface completeness | Incomplete |
