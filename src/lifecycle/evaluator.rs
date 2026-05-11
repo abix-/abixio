@@ -301,7 +301,7 @@ mod tests {
 
     #[test]
     fn abort_multipart_field_parses_and_is_accessible() {
-        // We don't enforce AbortIncompleteMultipartUpload in the evaluator -- that
+        // We don't enforce AbortIncompleteMultipartUpload in the evaluator. That
         // runs over the multipart temp dir in the engine. Test the rule shape here.
         let mut rule = enabled_rule();
         rule.abort_incomplete_multipart_upload = Some(AbortIncompleteMultipartUpload {
