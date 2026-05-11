@@ -10,7 +10,7 @@ use serde_json::Value;
 /// Matches MinIO's xl.meta pattern.
 ///
 /// `bucket` and `key` are the object's identity. They were added so
-/// the write pool's temp meta files are self-describing -- the rename
+/// the write pool's temp meta files are self-describing. The rename
 /// worker (and crash recovery) can find the destination from the file
 /// alone, without an in-RAM index. Backward-compatible with old
 /// meta.json files via `#[serde(default)]`: existing files have empty
@@ -48,7 +48,7 @@ pub struct ObjectMeta {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parts: Vec<PartEntry>,
     /// Inline shard data for small objects (base64 encoded).
-    /// When present, shard.dat does not exist -- data is in meta.json.
+    /// When present, shard.dat does not exist. Data is in meta.json.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inline_data: Option<String>,
 }
@@ -135,14 +135,14 @@ pub struct PutOptions {
     pub skip_md5: bool,
 }
 
-// -- versioning --
+//. Versioning.
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct VersioningConfig {
     pub status: String, // "Enabled", "Suspended", or absent
 }
 
-// -- consolidated bucket settings --
+//. Consolidated bucket settings.
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct BucketSettings {
