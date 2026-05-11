@@ -56,7 +56,7 @@ The current implementation provides:
 
 The current implementation does **not** provide:
 
-- ~~Raft or another real distributed consensus log~~ — the openraft
+- ~~Raft or another real distributed consensus log~~. The openraft
   control plane is integrated behind `--raft-enable` (off by
   default). Single-node bootstrap works end-to-end; multi-node
   runtime is implemented but not yet exercised by an integration
@@ -254,7 +254,7 @@ Item 3 is designed and documented in [raft.md](raft.md). Short
 version: `openraft` will own cluster membership, placement epoch,
 and bucket settings; object shards and per-object metadata stay on
 disk via erasure coding. User-facing terminology is
-**primary / secondary / observer** — never "leader" or "master".
+**primary / secondary / observer**. Never "leader" or "master".
 
 The current cluster layer should be treated as the minimal safe operating model
 and the scaffold those features would build on.
