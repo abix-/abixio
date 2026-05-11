@@ -179,7 +179,7 @@ async fn bitrot_two_shards_with_ftt2_recovers() {
         .await
         .unwrap();
 
-    // corrupt 2 of 4 shards -- within FTT=2 tolerance
+    // corrupt 2 of 4 shards. Within FTT=2 tolerance
     for i in 0..2 {
         let shard = paths[i].join("b").join("key").join("shard.dat");
         if shard.exists() {
