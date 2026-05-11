@@ -65,7 +65,7 @@ pub trait ShardWriter: Send {
 }
 
 /// Backend is the per-disk storage interface. Each erasure "disk" implements
-/// this -- whether it is a local directory, a cloud drive, or anything else.
+/// this. Whether it is a local directory, a cloud drive, or anything else.
 #[async_trait::async_trait]
 pub trait Backend: Send + Sync {
     /// Open a streaming shard writer. For local volumes this opens a file;
@@ -289,13 +289,13 @@ pub trait Store: Send + Sync {
         prefix: &str,
     ) -> Result<Vec<(String, Vec<ObjectMeta>)>, StorageError>;
 
-    // -- per-bucket FTT --
+    //. Per-bucket FTT.
 
     async fn get_ftt(&self, bucket: &str) -> Result<Option<usize>, StorageError>;
 
     async fn set_ftt(&self, bucket: &str, ftt: usize) -> Result<(), StorageError>;
 
-    // -- bucket settings --
+    //. Bucket settings.
 
     async fn get_bucket_settings(
         &self,
