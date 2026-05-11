@@ -115,7 +115,7 @@ Response: 200 OK
 ```
 
 Reqwest keep-alive pools connections per peer. Peer only inserts into
-its own `DashMap` -- no disk write on the peer side. Pure RAM on both
+its own `DashMap`. No disk write on the peer side. Pure RAM on both
 sides of a normal replicate.
 
 ## When the RAM cache wins
