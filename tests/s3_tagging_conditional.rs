@@ -153,7 +153,7 @@ async fn object_tagging_put_get_delete() {
         .await
         .unwrap();
 
-    // get tags on fresh object -- should return empty TagSet
+    // get tags on fresh object. Should return empty TagSet
     let resp = client
         .get(url(&addr, "/tbk/obj?tagging"))
         .send()
