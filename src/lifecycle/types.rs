@@ -62,7 +62,7 @@ pub struct ObjectOpts {
 
 impl ObjectOpts {
     /// True when this version is the only one left and it is a delete
-    /// marker -- safe to reap under lifecycle expiration rules.
+    /// marker. Safe to reap under lifecycle expiration rules.
     pub fn expired_object_delete_marker(&self) -> bool {
         self.is_delete_marker && self.num_versions == 1
     }
@@ -80,7 +80,7 @@ pub fn unix_now_secs() -> u64 {
 
 /// Compute the unix-seconds instant at which an object becomes
 /// eligible for action given its mod time and a `days` threshold.
-/// Uses the simple "mod_time + days * 86400" rule -- tests set `now`
+/// Uses the simple "mod_time + days * 86400" rule. Tests set `now`
 /// accordingly.
 pub fn expected_expiry(mod_time_unix_secs: u64, days: i32) -> u64 {
     if days <= 0 {
