@@ -48,7 +48,7 @@ impl Policy {
 }
 
 fn stmt_matches(stmt: &Statement, args: &Args, resource: &str) -> bool {
-    // Conditions are unsupported -- if present, treat as non-matching.
+    // Conditions are unsupported. If present, treat as non-matching.
     if stmt.condition.is_some() {
         return false;
     }
