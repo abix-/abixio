@@ -47,7 +47,7 @@ pub fn split_data(data: &[u8], count: usize) -> Vec<Vec<u8>> {
     shards
 }
 
-/// Split data into pre-allocated shard buffers. Zero allocation -- reuses existing Vecs.
+/// Split data into pre-allocated shard buffers. Zero allocation. Reuses existing Vecs.
 /// `buffers` must have at least `count` entries. Each buffer is cleared and filled.
 fn split_data_into(data: &[u8], count: usize, buffers: &mut [Vec<u8>]) {
     let shard_size = data.len().div_ceil(count).max(1);
@@ -362,7 +362,7 @@ where
         (0..total).map(|_| blake3::Hasher::new()).collect();
     let mut total_size: u64 = 0;
 
-    // pre-allocate shard buffers (reused across all blocks -- zero alloc per block)
+    // pre-allocate shard buffers (reused across all blocks. Zero alloc per block)
     let shard_capacity = STREAM_BLOCK_SIZE.div_ceil(data_n).max(1);
     let mut shard_bufs: Vec<Vec<u8>> = (0..total)
         .map(|_| Vec::with_capacity(shard_capacity))
