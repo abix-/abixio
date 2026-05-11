@@ -28,7 +28,7 @@ pub enum HealResult {
 enum ShardStatus {
     /// Shard + meta present and checksum valid.
     Good,
-    /// Shard missing, corrupt, or meta mismatch -- needs repair.
+    /// Shard missing, corrupt, or meta mismatch. Needs repair.
     NeedsRepair,
 }
 
@@ -437,7 +437,7 @@ mod tests {
 
         let disks = make_backends(&paths);
         let result = heal_object(&disks, "test", "key").await;
-        // either Unrecoverable or ReadQuorum error -- both mean "can't heal"
+        // either Unrecoverable or ReadQuorum error. Both mean "can't heal"
         match result {
             Ok(HealResult::Unrecoverable) => {}
             Err(StorageError::ReadQuorum) => {}
