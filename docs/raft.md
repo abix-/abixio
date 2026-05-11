@@ -64,16 +64,16 @@ sync, core-only). We chose **openraft** for these reasons:
 
 - async/tokio-native, dropping into our stack without impedance
 - trait-based scaffolding (`RaftLogStorage`, `RaftStateMachine`,
-  `RaftNetwork`) — less glue than raft-rs
+  `RaftNetwork`). Less glue than raft-rs
 - production usage at Databend, CnosDB, RobustMQ, and **Helyim** (a
-  Rust SeaweedFS-style object store — our exact peer group)
+  Rust SeaweedFS-style object store. Our exact peer group)
 - actively released in 2026
 
 Known caveats:
 
 - openraft is pre-1.0; upgrades may require migration work
 - joint-consensus membership changes only (the correct design)
-- upstream chaos testing is incomplete — we add our own fault
+- upstream chaos testing is incomplete. We add our own fault
   injection
 
 We do **not** use raft-rs because it is sync and ships only the core
@@ -141,10 +141,10 @@ Anything that is "data" is not in Raft; anything that is
 
 User-facing code, docs, and CLI use:
 
-- **primary** — the current Raft leader; accepts writes to cluster
+- **primary**. The current Raft leader; accepts writes to cluster
   state
-- **secondary** — other voters, replicating the log
-- **observer** — non-voting read replica (future)
+- **secondary**. Other voters, replicating the log
+- **observer**. Non-voting read replica (future)
 
 Never "leader" or "master" in user-facing surfaces.
 `openraft::RaftMetrics.current_leader` exists internally and we read
@@ -156,17 +156,17 @@ from it; we just do not print it verbatim.
 
 `src/raft/fsm/` holds the state machine and its operations.
 
-- `fsm/mod.rs` — `AbixioStateMachine` implementing
+- `fsm/mod.rs`. `AbixioStateMachine` implementing
   `openraft::RaftStateMachine`. In-memory `RwLock` over the three
   tables plus an applied-index cursor. Snapshot serialization is
   msgpack; restore replaces the state atomically.
-- `fsm/ops.rs` — `Op` enum:
+- `fsm/ops.rs`. `Op` enum:
   - `AddNode { node_id, advertise_s3, advertise_cluster, voter_kind }`
   - `RemoveNode { node_id }`
   - `SetPlacementEpoch { epoch_id, volumes }`
   - `SetBucketSettings { bucket, settings }`
   - `DeleteBucketSettings { bucket }`
-- `fsm/query.rs` — pure read helpers: `bucket_settings(bucket)`,
+- `fsm/query.rs`. Pure read helpers: `bucket_settings(bucket)`,
   `placement_snapshot()`, `member(node_id)`. Reads take a shared
   lock; no Raft round trip unless linearizability is requested.
 
@@ -186,12 +186,12 @@ Each node persists its own Raft state under:
 └── vote.json        # current term + voted-for, fsynced on update
 ```
 
-- `storage/log.rs` — `RaftLogStore` implementing
+- `storage/log.rs`. `RaftLogStore` implementing
   `openraft::RaftLogStorage`. Mirrors the segment mmap pattern in
   `src/storage/segment.rs`. Truncates on snapshot install.
-- `storage/snapshot.rs` — snapshot read/write. Atomic rename. Keep
+- `storage/snapshot.rs`. Snapshot read/write. Atomic rename. Keep
   the last two snapshots to tolerate mid-install crashes.
-- `storage/meta.rs` — `HardState` (term + voted-for) as a small JSON
+- `storage/meta.rs`. `HardState` (term + voted-for) as a small JSON
   file, fsynced on update.
 
 The first local disk is chosen to avoid requiring Raft state on
@@ -237,9 +237,9 @@ probe loop.
 `src/raft/singleton.rs` exposes `is_primary()` by reading
 `openraft::RaftMetrics.state`. Existing background loops become:
 
-- `lifecycle_loop` — skip tick when `!is_primary()`
-- `scanner_loop` — skip tick when `!is_primary()`
-- `mrf_drain_worker` — per-disk drain stays on every node (heal is
+- `lifecycle_loop`. Skip tick when `!is_primary()`
+- `scanner_loop`. Skip tick when `!is_primary()`
+- `mrf_drain_worker`. Per-disk drain stays on every node (heal is
   per-disk); whole-cluster scrub scheduling becomes primary-only in
   a follow-up
 
@@ -293,7 +293,7 @@ heartbeat timeouts (default ~300ms).
 Fencing now reads Raft state:
 
 - If Raft reports this node is not in the voter set, fence the data
-  plane — return `503 ServiceUnavailable` on S3 writes and mutating
+  plane. Return `503 ServiceUnavailable` on S3 writes and mutating
   admin requests.
 - If Raft has no primary for longer than a configurable timeout
   (default 10s), fence mutating operations but keep serving reads
@@ -307,9 +307,9 @@ Fencing now reads Raft state:
 `Store::get_bucket_settings` / `set_bucket_settings` route through
 Raft:
 
-- `get_bucket_settings(bucket)` — read from local FSM under a
+- `get_bucket_settings(bucket)`. Read from local FSM under a
   shared lock. No round trip. On a secondary this is ≤1μs.
-- `set_bucket_settings(bucket, new)` — if `is_primary()`, submit
+- `set_bucket_settings(bucket, new)`. If `is_primary()`, submit
   `SetBucketSettings` op and await commit (single LAN round trip to
   majority). If secondary, HTTP-forward to the primary using the
   existing `_storage/v1/*` channel.
@@ -354,8 +354,8 @@ Raft:
   but only `Voter` is instantiated)
 - Graceful leader transfer on drain
 - Vault-style autopilot (stabilization window, dead-server cleanup,
-  redundancy zones) — separate landing after openraft is live
-- Snapshot compression or incremental snapshots — full-state msgpack
+  redundancy zones). Separate landing after openraft is live
+- Snapshot compression or incremental snapshots. Full-state msgpack
   is fine until the FSM grows past a few MB
 
 ## Open questions (to resolve during implementation)
@@ -368,7 +368,7 @@ Raft:
    security policies propagate fast enough that one-commit staleness
    is a non-issue.
 2. **Per-object FTT write latency.** Placement epoch advances per
-   FTT change — expected to be rare. But if per-object FTT means
+   FTT change. Expected to be rare. But if per-object FTT means
    the placement table grows unbounded over time, we may want to
    snapshot the FSM on a time schedule as well as a size threshold.
 3. **Raft log location on all-new-disk installs.** First-disk
@@ -380,17 +380,17 @@ Raft:
 
 - [openraft (databendlabs)](https://github.com/databendlabs/openraft)
 - [openraft docs](https://databendlabs.github.io/openraft/)
-- Helyim — Rust SeaweedFS using openraft in production
-- [cluster.md](cluster.md) — the current probe-based clustering
-- [per-object-ec.md](per-object-ec.md) — the placement shape Raft
+- Helyim. Rust SeaweedFS using openraft in production
+- [cluster.md](cluster.md). The current probe-based clustering
+- [per-object-ec.md](per-object-ec.md). The placement shape Raft
   will own
-- [status.md](status.md) — tracking score changes as landings ship
+- [status.md](status.md). Tracking score changes as landings ship
 
 ## What is actually shipped today
 
 Landed over several commits between `c87ffe0` and `fa98f06`:
 
-**Data model** — `src/raft/fsm/ops.rs`, `src/raft/fsm/mod.rs`,
+**Data model**. `src/raft/fsm/ops.rs`, `src/raft/fsm/mod.rs`,
 `src/raft/fsm/query.rs`
 - `Op` enum (AddNode / RemoveNode / SetPlacementEpoch /
   SetBucketSettings / DeleteBucketSettings)
@@ -400,7 +400,7 @@ Landed over several commits between `c87ffe0` and `fa98f06`:
 - 10 unit tests covering apply, snapshot install, bincode + msgpack
   round-trips, epoch-regression rejection
 
-**Persistence** — `src/raft/storage/{log,meta,snapshot}.rs`
+**Persistence**. `src/raft/storage/{log,meta,snapshot}.rs`
 - `LogStore`: append-only file at `<dir>/log.dat`, in-memory
   (index -> offset + term) map rebuilt on open, `append` /
   `read` / `read_range` / `truncate_after` / `purge_before`,
@@ -411,7 +411,7 @@ Landed over several commits between `c87ffe0` and `fa98f06`:
 - 15 unit tests covering round-trip, reopen-rebuild, truncate,
   purge, overwrite, empty-dir load, prune behavior
 
-**openraft type config + adapters** — `src/raft/types.rs`,
+**openraft type config + adapters**. `src/raft/types.rs`,
 `src/raft/adapter/{log,fsm,network}.rs`
 - `TypeConfig` declared via `openraft::declare_raft_types!` with
   `NodeId = u64`, `Node = AbixioNode`, `D = Op`, `R = AppResponse`
@@ -426,7 +426,7 @@ Landed over several commits between `c87ffe0` and `fa98f06`:
   existing internode JWT; routes are
   `POST /_storage/v1/raft/{append-entries,vote,install-snapshot}`
 
-**Runtime handle** — `src/raft/runtime.rs`
+**Runtime handle**. `src/raft/runtime.rs`
 - `AbixioRaft::open(node_id, dir, creds)` builds the full stack
   and returns a handle holding the `Raft<TypeConfig>` + the
   state-machine `Arc`
@@ -437,7 +437,7 @@ Landed over several commits between `c87ffe0` and `fa98f06`:
   bootstrap → wait for primary → submit `AddNode` op → assert
   FSM member visible, passes in the lib test suite
 
-**Receive-side routes** — `src/storage/storage_server.rs`,
+**Receive-side routes**. `src/storage/storage_server.rs`,
 `src/admin/handlers.rs`
 - Storage: `POST /_storage/v1/raft/{append-entries,vote,install-snapshot}`
   bincode in, bincode out, JWT-authenticated via existing
@@ -447,7 +447,7 @@ Landed over several commits between `c87ffe0` and `fa98f06`:
   with primary-side `add_learner` + `change_membership` wired in
   for join, symmetric shrink for leave, manual snapshot trigger
 
-**Main wiring** — `src/main.rs`, `src/config.rs`
+**Main wiring**. `src/main.rs`, `src/config.rs`
 - Flags: `--raft-enable` (off by default), `--raft-bootstrap`,
   `--raft-id` (0 = derive via blake3), `--raft-dir` (blank = first
   volume's `.abixio.sys/raft`)
