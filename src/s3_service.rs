@@ -57,7 +57,7 @@ where
 
 /// Pre-built byte chunks for GET responses. Implements ByteStream with exact
 /// remaining_length so s3s/hyper use Content-Length instead of chunked encoding.
-/// poll_next is a simple VecDeque::pop_front -- zero async overhead per frame.
+/// poll_next is a simple VecDeque::pop_front. Zero async overhead per frame.
 struct ChunkedBytes {
     queue: std::collections::VecDeque<bytes::Bytes>,
     remaining: usize,
@@ -316,7 +316,7 @@ fn check_conditionals(
 
 #[async_trait::async_trait]
 impl S3 for AbixioS3 {
-    // -- bucket operations --
+    //. Bucket operations.
 
     async fn create_bucket(
         &self,
@@ -371,7 +371,7 @@ impl S3 for AbixioS3 {
         }))
     }
 
-    // -- object operations --
+    //. Object operations.
 
     async fn put_object(
         &self,
@@ -701,7 +701,7 @@ impl S3 for AbixioS3 {
         }))
     }
 
-    // -- list operations --
+    //. List operations.
 
     async fn list_objects(
         &self,
@@ -812,7 +812,7 @@ impl S3 for AbixioS3 {
         }))
     }
 
-    // -- tagging --
+    //. Tagging.
 
     async fn get_object_tagging(
         &self,
@@ -931,7 +931,7 @@ impl S3 for AbixioS3 {
         Ok(S3Response::new(DeleteBucketTaggingOutput::default()))
     }
 
-    // -- versioning --
+    //. Versioning.
 
     async fn get_bucket_location(
         &self,
@@ -1043,7 +1043,7 @@ impl S3 for AbixioS3 {
         }))
     }
 
-    // -- multipart --
+    //. Multipart.
 
     async fn create_multipart_upload(
         &self,
@@ -1214,7 +1214,7 @@ impl S3 for AbixioS3 {
         }))
     }
 
-    // -- policy --
+    //. Policy.
 
     async fn get_bucket_policy(
         &self,
@@ -1283,7 +1283,7 @@ impl S3 for AbixioS3 {
         Ok(S3Response::new(DeleteBucketPolicyOutput::default()))
     }
 
-    // -- lifecycle --
+    //. Lifecycle.
 
     async fn get_bucket_lifecycle_configuration(
         &self,
@@ -1350,7 +1350,7 @@ impl S3 for AbixioS3 {
         Ok(S3Response::new(DeleteBucketLifecycleOutput::default()))
     }
 
-    // -- notification stubs --
+    //. Notification stubs.
 
     async fn get_bucket_notification_configuration(
         &self,
@@ -1366,7 +1366,7 @@ impl S3 for AbixioS3 {
         Ok(S3Response::new(PutBucketNotificationConfigurationOutput::default()))
     }
 
-    // -- CORS stubs --
+    //. CORS stubs.
 
     async fn get_bucket_cors(
         &self,
@@ -1389,7 +1389,7 @@ impl S3 for AbixioS3 {
         Err(s3_error!(NotImplemented))
     }
 
-    // -- ACL stubs --
+    //. ACL stubs.
 
     async fn put_bucket_acl(
         &self,
@@ -1452,7 +1452,7 @@ impl S3 for AbixioS3 {
     }
 }
 
-// -- helpers --
+//. Helpers.
 
 fn parse_copy_source(source: &CopySource) -> S3Result<(String, String)> {
     match source {
