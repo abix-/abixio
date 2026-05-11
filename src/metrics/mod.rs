@@ -47,13 +47,13 @@ impl StatusClass {
 pub struct Metrics {
     pub registry: Registry,
 
-    // -- request path --
+    //. Request path.
     pub s3_requests: IntCounterVec,
     pub s3_request_duration: HistogramVec,
     pub s3_bytes_sent: IntCounterVec,
     pub s3_bytes_received: IntCounterVec,
 
-    // -- caches --
+    //. Caches.
     pub write_cache_hits: IntCounter,
     pub write_cache_replicate_success: IntCounter,
     pub write_cache_replicate_fail: IntCounter,
@@ -64,12 +64,12 @@ pub struct Metrics {
     pub read_cache_bytes: IntGauge,
     pub read_cache_entries: IntGauge,
 
-    // -- WAL --
+    //. WAL.
     pub wal_materialized: IntCounter,
     pub wal_materialize_failed: IntCounter,
     pub wal_pending: IntGaugeVec,
 
-    // -- background workers --
+    //. Background workers.
     pub heal_repaired: IntCounter,
     pub heal_unrecoverable: IntCounter,
     pub mrf_queue_depth: IntGauge,
@@ -81,12 +81,12 @@ pub struct Metrics {
     pub lifecycle_multipart_aborted: IntCounter,
     pub lifecycle_last_pass_seconds: IntGauge,
 
-    // -- storage --
+    //. Storage.
     pub disk_total_bytes: IntGaugeVec,
     pub disk_used_bytes: IntGaugeVec,
     pub disk_free_bytes: IntGaugeVec,
 
-    // -- cluster --
+    //. Cluster.
     pub cluster_state: IntGaugeVec,
     pub cluster_reachable_voters: IntGauge,
     pub cluster_quorum: IntGauge,
