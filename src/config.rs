@@ -95,7 +95,7 @@ pub struct Config {
     pub metrics_enable: bool,
 
     /// Start a Raft control-plane instance on this node. Off by
-    /// default while Raft integration is rolling out -- the
+    /// default while Raft integration is rolling out. The
     /// existing probe-based clustering keeps working when off.
     #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     pub raft_enable: bool,
