@@ -73,7 +73,7 @@ pub async fn resolve_identity(
     };
 
     // step 2: standalone or cluster?
-    // nodes list includes self -- filter to just remote nodes
+    // nodes list includes self. Filter to just remote nodes
     let remote_nodes: Vec<&String> = nodes
         .iter()
         .filter(|n| {
@@ -103,7 +103,7 @@ pub async fn resolve_identity(
         });
     }
 
-    // step 3: cluster -- already finalized from previous boot?
+    // step 3: cluster. Already finalized from previous boot?
     if let (Some(cluster_id), Some(cluster)) = (&formats[0].cluster_id, &formats[0].cluster) {
         let cluster_id = cluster_id.clone();
         let members = cluster.members.clone();
@@ -125,7 +125,7 @@ pub async fn resolve_identity(
         });
     }
 
-    // step 4: first boot cluster -- exchange identity with remote nodes
+    // step 4: first boot cluster. Exchange identity with remote nodes
     let client = Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -265,7 +265,7 @@ fn build_node_volumes_from_members(
         });
     }
 
-    // remote nodes -- match by position in the sorted node list
+    // remote nodes. Match by position in the sorted node list
     // we don't know remote paths from persisted state, so we use volume_id as placeholder
     for (nid, vol_ids) in &by_node {
         if nid == local_node_id {
