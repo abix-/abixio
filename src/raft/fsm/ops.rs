@@ -96,7 +96,7 @@ pub struct Placement {
 
 /// Error returned by `Op::apply` when the op cannot be committed to
 /// the provided state. The Raft log never contains invalid ops in
-/// steady state — the primary rejects malformed submissions. This
+/// steady state. The primary rejects malformed submissions. This
 /// error is for defensive programming + tests.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ApplyError {
@@ -109,7 +109,7 @@ pub enum ApplyError {
 }
 
 impl Op {
-    /// Apply this op to `state` in-place. Pure — no IO, no async.
+    /// Apply this op to `state` in-place. Pure. No IO, no async.
     /// Returns on first validation failure; the caller never sees a
     /// half-applied state because every variant mutates at most one
     /// table in one step.
