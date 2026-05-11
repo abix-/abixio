@@ -363,7 +363,7 @@ async fn per_object_ec_survives_disk_failures() {
 
 #[tokio::test]
 async fn per_object_ec_default_uses_pool_subset() {
-    // 6 disks, default EC 2+2 -- should only use 4 of 6 disks
+    // 6 disks, default EC 2+2. Should only use 4 of 6 disks
     let (_base, paths) = setup_n(6);
     let (addr, _handle) = start_server_pool(&paths).await;
     let client = reqwest::Client::new();
@@ -523,7 +523,7 @@ async fn ftt_object_survives_expected_failures() {
 }
 
 // =============================================================================
-// Security tests -- comprehensive exploitation coverage
+// Security tests. Comprehensive exploitation coverage
 // Derived from RustFS security fixes and OWASP top 10 for object storage
 // =============================================================================
 
