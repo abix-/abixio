@@ -544,7 +544,7 @@ impl ClusterManager {
 
         let probed = peer_summaries.unwrap_or_default();
         for remote in &self.config.nodes {
-            // skip self -- already added above
+            // skip self. Already added above
             if remote.trim_end_matches('/') == self.config.advertise_s3.trim_end_matches('/')
                 || remote.trim_end_matches('/') == self.config.advertise_cluster.trim_end_matches('/')
             {
