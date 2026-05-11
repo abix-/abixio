@@ -336,7 +336,7 @@ async fn put_rejects_null_byte_in_key() {
     let client = reqwest::Client::new();
     client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    // null byte in URL path -- hyper may reject this before reaching handler
+    // null byte in URL path. Hyper may reject this before reaching handler
     // or it may pass through as %00. Either rejection or 400 is acceptable.
     let raw = format!("http://{}/tbk/a%00b", addr);
     let result = client.put(&raw).body("data").send().await;
@@ -493,7 +493,7 @@ async fn multipart_rejects_hostile_part_numbers() {
     let body = resp.text().await.unwrap();
     let upload_id = extract_xml_value(&body, "UploadId");
 
-    // part 0 -- below valid range
+    // part 0. Below valid range
     let resp = client
         .put(url_with_query(
             &addr,
@@ -527,7 +527,7 @@ async fn multipart_rejects_hostile_part_numbers() {
         resp.status()
     );
 
-    // part 10001 -- above S3 max
+    // part 10001. Above S3 max
     let resp = client
         .put(url_with_query(
             &addr,
