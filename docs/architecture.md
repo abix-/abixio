@@ -62,7 +62,7 @@ cluster-control direction.
     each entry to its final file-per-object location (shard.dat +
     meta.json). Once materialized, the WAL entry is deleted. When all
     entries in a segment are materialized, the segment file is deleted.
-    The WAL is ephemeral -- it is a landing zone, not permanent storage.
+    The WAL is ephemeral. It is a landing zone, not permanent storage.
     No GC, no compaction, no permanent in-memory index, bounded startup
     cost. 4KB PUT: 136us (5.4x faster than file tier, measured
     2026-04-18). Head-to-head release-mode unit test: WAL 3us vs
