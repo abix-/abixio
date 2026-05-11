@@ -1,4 +1,4 @@
-//! `AbixioRaft` — high-level handle that owns the openraft instance,
+//! `AbixioRaft`. High-level handle that owns the openraft instance,
 //! the log + snapshot + vote stores, and the state machine. Built
 //! once per node at startup, cloned into everything that needs to
 //! call out to Raft (admin endpoints, storage server RPC handlers,
