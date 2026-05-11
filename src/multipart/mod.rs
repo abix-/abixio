@@ -204,7 +204,7 @@ pub async fn list_parts(
 }
 
 /// Complete a multipart upload. Moves part shards into the final object
-/// directory and writes metadata. No data reassembly -- like MinIO.
+/// directory and writes metadata. No data reassembly. Like MinIO.
 pub async fn complete_upload(
     disks: &[Box<dyn Backend>],
     _data_n: usize,
@@ -403,7 +403,7 @@ pub async fn list_uploads(
     Ok(uploads)
 }
 
-// -- helpers --
+//. Helpers.
 
 fn upload_dir(
     disk: &Box<dyn Backend>,
