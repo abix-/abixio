@@ -150,7 +150,7 @@ impl VolumePool {
 
     /// Return the shared Arc of backend disks for use by the heal
     /// scanner and MRF drain worker. Sharing this Arc is what gives
-    /// the heal path visibility into WAL-pending entries -- the
+    /// the heal path visibility into WAL-pending entries. The
     /// LocalVolume instances inside have WAL enabled when the server
     /// is started with `--write-tier=wal`.
     pub fn heal_backends(&self) -> Arc<Vec<Box<dyn Backend>>> {
@@ -624,7 +624,7 @@ impl VolumePool {
 
         // large object or versioned: streaming encode path (existing).
         // Single span covers the whole encode_and_write which interleaves
-        // body reads with shard writes -- we can't cleanly attribute the
+        // body reads with shard writes. We can't cleanly attribute the
         // sub-phases without instrumenting the streaming encode helper.
         let _stream_span = crate::timing::Span::new("encode_and_write");
         let (data_n, parity_n) = self.resolve_ec(bucket, &opts).await?;
@@ -1164,7 +1164,7 @@ impl Store for VolumePool {
         self.put_object_tags(bucket, key, std::collections::HashMap::new()).await
     }
 
-    // -- versioning --
+    //. Versioning.
 
     async fn put_object_versioned(
         &self,
@@ -1195,7 +1195,7 @@ impl Store for VolumePool {
             Some(version_id),
         ).await;
         // A new version changes the latest bytes callers would see via
-        // GetObject -- drop any cached copy of the unversioned view.
+        // GetObject. Drop any cached copy of the unversioned view.
         if let Some(ref cache) = self.read_cache {
             cache.invalidate(bucket, key);
         }
@@ -1334,7 +1334,7 @@ impl Store for VolumePool {
             versions.insert(0, marker.clone());
             let _ = disk.write_meta_versions(bucket, key, &versions).await;
         }
-        // latest is now a delete marker -- drop any cached unversioned view
+        // latest is now a delete marker. Drop any cached unversioned view
         if let Some(ref cache) = self.read_cache {
             cache.invalidate(bucket, key);
         }
@@ -1386,7 +1386,7 @@ impl Store for VolumePool {
         Ok(result)
     }
 
-    // -- per-bucket FTT --
+    //. Per-bucket FTT.
 
     async fn get_ftt(&self, bucket: &str) -> Result<Option<usize>, StorageError> {
         pathing::validate_bucket_name(bucket)?;
@@ -1498,14 +1498,14 @@ mod tests {
         VolumePool::new(make_backends(paths)).unwrap()
     }
 
-    // -- construction tests --
+    //. Construction tests.
 
     #[tokio::test]
     async fn new_empty_disks_fails() {
         assert!(VolumePool::new(Vec::new()).is_err());
     }
 
-    // -- put + get round-trip across configs --
+    //. Put + get round-trip across configs.
 
     struct TestConfig {
         data: usize,
@@ -1570,7 +1570,7 @@ mod tests {
         }
     }
 
-    // -- per-object EC in a larger pool --
+    //. Per-object EC in a larger pool.
 
     async fn make_wal_backends(paths: &[std::path::PathBuf]) -> Vec<Box<dyn Backend>> {
         let mut out: Vec<Box<dyn Backend>> = Vec::new();
@@ -1678,7 +1678,7 @@ mod tests {
         };
         set.put_object("test", "critical", payload, opts).await.unwrap();
 
-        // delete 4 of 6 disks' object data -- should still be readable (FTT=5)
+        // delete 4 of 6 disks' object data. Should still be readable (FTT=5)
         for i in 0..4 {
             let obj_dir = paths[i].join("test").join("critical");
             if obj_dir.exists() {
@@ -1707,7 +1707,7 @@ mod tests {
         let loaded = set.get_ftt("test").await.unwrap().unwrap();
         assert_eq!(loaded, 3);
 
-        // write object -- should use bucket FTT=3 -> 3+3
+        // write object. Should use bucket FTT=3 -> 3+3
         let payload = b"bucket ec test";
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
@@ -1757,7 +1757,7 @@ mod tests {
         assert!(set.set_ftt("test", 3).await.is_ok());
     }
 
-    // -- FTT mapping --
+    //. FTT mapping.
 
     #[tokio::test]
     async fn ftt_to_ec_mapping() {
@@ -1813,7 +1813,7 @@ mod tests {
         // set bucket config with FTT=2 on 6 disks -> 4+2
         set.set_ftt("test", 2).await.unwrap();
 
-        // write with no per-object EC -- should use bucket config 4+2
+        // write with no per-object EC. Should use bucket config 4+2
         let opts = PutOptions {
             content_type: "text/plain".to_string(),
             ..Default::default()
@@ -1823,7 +1823,7 @@ mod tests {
         assert_eq!(meta, (4, 2));
     }
 
-    // -- erasure resilience --
+    //. Erasure resilience.
 
     #[tokio::test]
     async fn resilience_survives_parity_failures() {
@@ -1893,7 +1893,7 @@ mod tests {
         }
     }
 
-    // -- bitrot detection --
+    //. Bitrot detection.
 
     #[tokio::test]
     async fn bitrot_one_corrupt_shard_recovers() {
@@ -1943,7 +1943,7 @@ mod tests {
         ));
     }
 
-    // -- bucket operations --
+    //. Bucket operations.
 
     #[tokio::test]
     async fn make_bucket_creates_on_all_disks() {
@@ -1993,7 +1993,7 @@ mod tests {
         }
     }
 
-    // -- list operations --
+    //. List operations.
 
     #[tokio::test]
     async fn list_objects_returns_all() {
@@ -2071,7 +2071,7 @@ mod tests {
         assert_eq!(result.objects[0].key, "root");
     }
 
-    // -- quorum enforcement --
+    //. Quorum enforcement.
 
     #[tokio::test]
     async fn write_quorum_failure() {
