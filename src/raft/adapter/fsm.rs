@@ -127,7 +127,7 @@ impl RaftStateMachine<TypeConfig> for AbixioFsmAdapter {
                     // Blank entries advance the log without touching
                     // FSM data. openraft emits them at leader startup
                     // and for no-op heartbeats. Bump last_applied
-                    // only -- our FSM has no "noop" op and does not
+                    // only. Our FSM has no "noop" op and does not
                     // need to record blanks.
                 }
                 EntryPayload::Normal(ref op) => {
