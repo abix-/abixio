@@ -34,9 +34,9 @@ pub enum Effect {
 
 #[derive(Clone, Debug)]
 pub enum Principal {
-    /// `"Principal": "*"` -- everyone, including anonymous callers.
+    /// `"Principal": "*"`. Everyone, including anonymous callers.
     Anyone,
-    /// `{"AWS": ["...", "..."]}` -- explicit list. Strings are matched
+    /// `{"AWS": ["...", "..."]}`. Explicit list. Strings are matched
     /// literally or by the tail segment after `user/` for ARN shapes.
     Aws(Vec<String>),
 }
