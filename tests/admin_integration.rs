@@ -215,7 +215,7 @@ fn url_with_query(addr: &SocketAddr, path: &str, params: &[(&str, &str)]) -> req
     url
 }
 
-// -- status endpoint --
+//. Status endpoint.
 
 #[tokio::test]
 async fn admin_status_returns_json() {
@@ -359,7 +359,7 @@ async fn fenced_cluster_rejects_mutating_admin_calls() {
     assert_eq!(resp.status(), 503);
 }
 
-// -- disks endpoint --
+//. Disks endpoint.
 
 #[tokio::test]
 async fn admin_disks_returns_all_disks() {
@@ -424,7 +424,7 @@ async fn admin_disks_counts_buckets_and_objects() {
     }
 }
 
-// -- heal status endpoint --
+//. Heal status endpoint.
 
 #[tokio::test]
 async fn admin_heal_status_returns_scanner_info() {
@@ -447,7 +447,7 @@ async fn admin_heal_status_returns_scanner_info() {
     assert!(body["scanner"]["heal_interval"].as_str().is_some());
 }
 
-// -- object inspect endpoint --
+//. Object inspect endpoint.
 
 #[tokio::test]
 async fn admin_inspect_object_shows_all_shards() {
@@ -526,7 +526,7 @@ async fn admin_inspect_missing_params_returns_400() {
     assert_eq!(resp.status(), 400);
 }
 
-// -- manual heal endpoint --
+//. Manual heal endpoint.
 
 #[tokio::test]
 async fn admin_heal_healthy_object_returns_healthy() {
@@ -721,7 +721,7 @@ async fn admin_rejects_percent_encoded_traversal() {
     let (addr, _handle) = start_server(&paths).await;
     let client = reqwest::Client::new();
 
-    // build raw URL so %2e%2e is not double-encoded -- the server's query
+    // build raw URL so %2e%2e is not double-encoded. The server's query
     // parser decodes this to ".." which the validator must reject
     let raw = format!(
         "http://{}/_admin/object?bucket=testbucket&key=%2e%2e%2fescape.txt",
@@ -735,7 +735,7 @@ async fn admin_rejects_percent_encoded_traversal() {
     assert_eq!(resp.status(), 400);
 }
 
-// -- unknown admin endpoint --
+//. Unknown admin endpoint.
 
 #[tokio::test]
 async fn admin_unknown_endpoint_returns_404() {
@@ -751,7 +751,7 @@ async fn admin_unknown_endpoint_returns_404() {
     assert_eq!(resp.status(), 404);
 }
 
-// -- admin endpoints don't break S3 --
+//. Admin endpoints don't break S3.
 
 #[tokio::test]
 async fn s3_still_works_with_admin_enabled() {
@@ -789,7 +789,7 @@ async fn s3_still_works_with_admin_enabled() {
     assert!(body.contains("mybucket"));
 }
 
-// -- bucket EC config --
+//. Bucket EC config.
 
 #[tokio::test]
 async fn admin_get_ec_config_returns_server_default() {
@@ -800,7 +800,7 @@ async fn admin_get_ec_config_returns_server_default() {
     // create bucket
     client.put(url(&addr, "/ecbucket")).send().await.unwrap();
 
-    // get EC config -- should return server defaults
+    // get EC config. Should return server defaults
     let resp = client
         .get(url(&addr, "/_admin/bucket/ecbucket/ftt"))
         .send()
@@ -909,7 +909,7 @@ async fn admin_bucket_ec_config_affects_new_objects() {
     );
     client.put(set_url).send().await.unwrap();
 
-    // write object (no per-object EC headers -- should use bucket default)
+    // write object (no per-object EC headers. Should use bucket default)
     client
         .put(url(&addr, "/ecobj/mykey"))
         .body("x".repeat(100_000))
@@ -1024,7 +1024,7 @@ async fn admin_set_bucket_ec_ftt_exceeding_disks_returns_400() {
 }
 
 // =============================================================================
-// Security tests -- admin endpoint exploitation coverage
+// Security tests. Admin endpoint exploitation coverage
 // =============================================================================
 
 #[tokio::test]
