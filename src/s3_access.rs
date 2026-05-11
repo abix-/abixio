@@ -47,7 +47,7 @@ impl S3Access for AbixioAccess {
         let creds = cx.credentials();
         let access_key = creds.map(|c| c.access_key.as_str()).unwrap_or("");
         // Empty owner_access_key means "no auth configured at server
-        // startup" -- treat every caller as owner so bucket policy
+        // startup". Treat every caller as owner so bucket policy
         // doesn't fence out anonymous test harnesses. When an owner
         // is explicitly configured, match exact (and only non-empty)
         // access keys against it.
@@ -76,7 +76,7 @@ impl S3Access for AbixioAccess {
         };
 
         let Some(policy) = Policy::from_json(&policy_json) else {
-            // Unparseable policy: fail closed -- safer than ignoring.
+            // Unparseable policy: fail closed. Safer than ignoring.
             return Err(s3_error!(AccessDenied, "bucket policy unparseable"));
         };
 
