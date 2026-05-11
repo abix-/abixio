@@ -41,7 +41,7 @@ impl BufPool {
         if let Ok(mut bufs) = self.bufs.try_lock() {
             bufs.push(buf);
         }
-        // if lock contended (rare), buf is just dropped -- no leak, no block
+        // if lock contended (rare), buf is just dropped. No leak, no block
     }
 }
 
@@ -138,7 +138,7 @@ pub async fn read_and_decode(
 
 /// Streaming decode using mmap: returns metadata + a stream of decoded chunks.
 /// Fast path (all shards healthy): yields shard slices directly from mmap as
-/// Bytes -- zero copy, zero allocation. Each shard slice is a ref-counted view.
+/// Bytes. Zero copy, zero allocation. Each shard slice is a ref-counted view.
 /// Slow path (missing shards): allocates Vecs for RS reconstruct.
 pub async fn read_and_decode_stream(
     disks: &[Box<dyn Backend>],
