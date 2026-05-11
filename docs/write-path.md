@@ -214,7 +214,7 @@ places for different reasons.
 
 | Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
 |---     |---      |---             |---           |---     |
-| validation + bucket existence | not isolated | -- | not isolated | included inside §2 dispatch cost; no standalone benchmark exists |
+| validation + bucket existence | not isolated |. | not isolated | included inside §2 dispatch cost; no standalone benchmark exists |
 
 Before any data write, `VolumePool::put_object_stream` validates:
 
@@ -229,7 +229,7 @@ If the bucket does not exist, the write stops here.
 
 | Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
 |---     |---      |---             |---           |---     |
-| small-object branch decision + collect body into `Vec<u8>` | `~20us` | -- | not isolated; only runs for `<=64KB` non-versioned | synthesized 4KB trace, originally in `write-cache.md::Request trace` (now removed); not from a benchmark |
+| small-object branch decision + collect body into `Vec<u8>` | `~20us` |. | not isolated; only runs for `<=64KB` non-versioned | synthesized 4KB trace, originally in `write-cache.md::Request trace` (now removed); not from a benchmark |
 
 For non-versioned requests with a declared `content_length <= 64KB`,
 the body stream is fully collected into a `Vec<u8>`. This is what makes
@@ -278,9 +278,9 @@ instead of the small buffered path.
 
 | Metric | 4KB p50 | 4KB throughput | larger sizes | Source |
 |---     |---      |---             |---           |---     |
-| `DashMap.insert` primitive | `~1us` | -- | `1M+ obj/s` primitive rate | not from a benchmark; primitive measurement |
-| end-to-end RAM-cache PUT branch | not published | -- | not published | no isolated end-to-end bench exists for this branch yet; the SDK matrix bench in `benchmarks.md` does not exercise it because the harness boots abixio without the cache enabled |
-| end-to-end RAM-cache GET branch | not published | -- | not published | same -- the harness does not enable the cache |
+| `DashMap.insert` primitive | `~1us` |. | `1M+ obj/s` primitive rate | not from a benchmark; primitive measurement |
+| end-to-end RAM-cache PUT branch | not published |. | not published | no isolated end-to-end bench exists for this branch yet; the SDK matrix bench in `benchmarks.md` does not exercise it because the harness boots abixio without the cache enabled |
+| end-to-end RAM-cache GET branch | not published |. | not published | same. The harness does not enable the cache |
 
 Synthesized 4KB request trace (not from a benchmark, just a model
 showing where the time goes when the cache *is* enabled):
@@ -302,7 +302,7 @@ Floor:    ~370us  (~99.7% of total) -- hyper + s3s + protocol work
 The point of this trace is that the storage primitive is invisible
 under the protocol floor at 4KB. Cf. the SDK-matrix bench finding in
 `benchmarks.md::Comprehensive matrix`: file/wal tier choices are
-within 4% of each other at 4KB sdk PUT for exactly the same reason --
+within 4% of each other at 4KB sdk PUT for exactly the same reason.
 the protocol floor dominates.
 
 Run `abixio-ui bench --layers L3` to see the
