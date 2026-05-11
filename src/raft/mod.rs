@@ -2,11 +2,11 @@
 //!
 //! This landing ships the data model only:
 //!
-//! - `fsm::Op` — the typed mutation enum that would land in the
+//! - `fsm::Op`. The typed mutation enum that would land in the
 //!   Raft log
-//! - `fsm::AbixioStateMachine` — in-memory state + applied-index
+//! - `fsm::AbixioStateMachine`. In-memory state + applied-index
 //!   cursor with apply/snapshot/install helpers
-//! - `fsm::query` — read helpers over the state
+//! - `fsm::query`. Read helpers over the state
 //!
 //! The openraft integration (log store, network, runtime) lands in
 //! subsequent commits. Until those arrive, nothing in this module
