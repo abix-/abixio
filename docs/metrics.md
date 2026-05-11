@@ -44,15 +44,15 @@ histogram_quantile(0.99, sum(rate(abixio_s3_request_duration_seconds_bucket[5m])
 
 | Name | Type | Labels | Meaning |
 |---|---|---|---|
-| `abixio_write_cache_hits_total` | Counter | — | GET/HEAD served from the RAM write cache. |
-| `abixio_write_cache_bytes` | Gauge | — | Bytes in the write cache. |
-| `abixio_write_cache_entries` | Gauge | — | Entries in the write cache. |
-| `abixio_write_cache_replicate_success_total` | Counter | — | Successful peer cache replications. |
-| `abixio_write_cache_replicate_fail_total` | Counter | — | Peer cache replication failures (fell through to disk). |
-| `abixio_read_cache_hits_total` | Counter | — | GETs served from the LRU read cache. |
-| `abixio_read_cache_misses_total` | Counter | — | GETs that missed the LRU read cache and went to disk. |
-| `abixio_read_cache_bytes` | Gauge | — | Bytes in the read cache. |
-| `abixio_read_cache_entries` | Gauge | — | Entries in the read cache. |
+| `abixio_write_cache_hits_total` | Counter |. | GET/HEAD served from the RAM write cache. |
+| `abixio_write_cache_bytes` | Gauge |. | Bytes in the write cache. |
+| `abixio_write_cache_entries` | Gauge |. | Entries in the write cache. |
+| `abixio_write_cache_replicate_success_total` | Counter |. | Successful peer cache replications. |
+| `abixio_write_cache_replicate_fail_total` | Counter |. | Peer cache replication failures (fell through to disk). |
+| `abixio_read_cache_hits_total` | Counter |. | GETs served from the LRU read cache. |
+| `abixio_read_cache_misses_total` | Counter |. | GETs that missed the LRU read cache and went to disk. |
+| `abixio_read_cache_bytes` | Gauge |. | Bytes in the read cache. |
+| `abixio_read_cache_entries` | Gauge |. | Entries in the read cache. |
 
 ```promql
 # read cache hit rate over 5m
@@ -65,8 +65,8 @@ rate(abixio_read_cache_hits_total[5m]) /
 | Name | Type | Labels | Meaning |
 |---|---|---|---|
 | `abixio_wal_pending_entries` | Gauge | `disk` | Un-materialized entries in the WAL on each disk. |
-| `abixio_wal_materialized_total` | Counter | — | WAL entries written to the file tier. |
-| `abixio_wal_materialize_failed_total` | Counter | — | WAL materialize attempts that errored. |
+| `abixio_wal_materialized_total` | Counter |. | WAL entries written to the file tier. |
+| `abixio_wal_materialize_failed_total` | Counter |. | WAL materialize attempts that errored. |
 
 ### Storage
 
@@ -80,25 +80,25 @@ rate(abixio_read_cache_hits_total[5m]) /
 
 | Name | Type | Labels | Meaning |
 |---|---|---|---|
-| `abixio_heal_repaired_total` | Counter | — | Objects repaired by the heal worker. |
-| `abixio_heal_unrecoverable_total` | Counter | — | Objects the heal worker could not reconstruct. |
-| `abixio_mrf_queue_depth` | Gauge | — | Pending heal requests in the MRF queue. |
-| `abixio_scanner_objects_checked_total` | Counter | — | Objects inspected by the integrity scanner. |
-| `abixio_scanner_last_pass_seconds` | Gauge | — | Wall-clock seconds of the last scanner pass. |
-| `abixio_lifecycle_deleted_total` | Counter | — | Objects deleted (or delete-markered) by lifecycle. |
-| `abixio_lifecycle_deleted_versions_total` | Counter | — | Noncurrent versions deleted by lifecycle. |
-| `abixio_lifecycle_delete_markers_reaped_total` | Counter | — | Expired delete markers cleaned up by lifecycle. |
-| `abixio_lifecycle_multipart_aborted_total` | Counter | — | Incomplete multipart uploads aborted by lifecycle. |
-| `abixio_lifecycle_last_pass_seconds` | Gauge | — | Wall-clock seconds of the last lifecycle pass. |
+| `abixio_heal_repaired_total` | Counter |. | Objects repaired by the heal worker. |
+| `abixio_heal_unrecoverable_total` | Counter |. | Objects the heal worker could not reconstruct. |
+| `abixio_mrf_queue_depth` | Gauge |. | Pending heal requests in the MRF queue. |
+| `abixio_scanner_objects_checked_total` | Counter |. | Objects inspected by the integrity scanner. |
+| `abixio_scanner_last_pass_seconds` | Gauge |. | Wall-clock seconds of the last scanner pass. |
+| `abixio_lifecycle_deleted_total` | Counter |. | Objects deleted (or delete-markered) by lifecycle. |
+| `abixio_lifecycle_deleted_versions_total` | Counter |. | Noncurrent versions deleted by lifecycle. |
+| `abixio_lifecycle_delete_markers_reaped_total` | Counter |. | Expired delete markers cleaned up by lifecycle. |
+| `abixio_lifecycle_multipart_aborted_total` | Counter |. | Incomplete multipart uploads aborted by lifecycle. |
+| `abixio_lifecycle_last_pass_seconds` | Gauge |. | Wall-clock seconds of the last lifecycle pass. |
 
 ### Cluster
 
 | Name | Type | Labels | Meaning |
 |---|---|---|---|
 | `abixio_cluster_state` | Gauge | `state` | One series per state (`Ready`, `SyncingEpoch`, `Fenced`, `Joining`), 1 for current, 0 otherwise. |
-| `abixio_cluster_reachable_voters` | Gauge | — | Voters reachable from this node including self. |
-| `abixio_cluster_quorum` | Gauge | — | Voters required for quorum. |
-| `abixio_cluster_epoch_id` | Gauge | — | Current cluster epoch id. |
+| `abixio_cluster_reachable_voters` | Gauge |. | Voters reachable from this node including self. |
+| `abixio_cluster_quorum` | Gauge |. | Voters required for quorum. |
+| `abixio_cluster_epoch_id` | Gauge |. | Current cluster epoch id. |
 
 ## Not (yet) covered
 
