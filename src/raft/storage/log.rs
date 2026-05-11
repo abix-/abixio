@@ -8,7 +8,7 @@
 //! ```
 //! Entries are bincode-serialized `Op` values from
 //! `crate::raft::fsm::ops::Op`, but the log store is agnostic to
-//! the payload — it just stores opaque bytes. `LogEntry` holds the
+//! the payload. It just stores opaque bytes. `LogEntry` holds the
 //! raw bytes so the caller decodes after read.
 //!
 //! Design notes:
