@@ -123,7 +123,7 @@ Large unsigned PUT: the streaming WAL + pipelined 1+0 fixes took
 and closed the RustFS gap from 1.87x to 1.33x. The remaining gap
 vs RustFS is the per-object EC pipeline cost (RS encode + per-shard
 blake3 + separate shard.dat + meta.json), which AbixIO pays even on
-1 disk / ftt=0. Known gap -- see
+1 disk / ftt=0. Known gap. See
 [write-path.md::Design gap: unnecessary EC on single disk].
 
 Large signed PUT: AbixIO beats RustFS at both sizes; MinIO edges
@@ -138,7 +138,7 @@ out at 1GB. Signed PUT is SDK-side MD5-bound (~100 MB/s floor).
 | DELETE | **1.0ms** | 2.0ms | 1.3ms |
 
 AbixIO wins DELETE and ties RustFS on HEAD (MinIO edges out HEAD by
-~60us). MinIO's 3x lead on LIST is the remaining metadata gap --
+~60us). MinIO's 3x lead on LIST is the remaining metadata gap.
 its single-file metadata layout is a cheap scan for bucket listings
 where AbixIO walks a directory tree.
 
@@ -178,7 +178,7 @@ Run the ablation matrix with
 
 Write cache helps most when the disk tier is slow (file tier
 mkdir+create). WAL already has a fast-ack path so the cache layered
-on top adds marginal value -- its main purpose in the wal+wc+rc
+on top adds marginal value. Its main purpose in the wal+wc+rc
 stack is primary durability before the WAL's own ack (see
 [write-cache.md](write-cache.md)).
 
