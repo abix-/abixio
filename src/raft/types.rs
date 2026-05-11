@@ -2,10 +2,10 @@
 //!
 //! The three app-specific types are:
 //!
-//! - `NodeId = String` — we already use string UUIDs for node ids
-//! - `AbixioNode` — advertise addresses + voter kind
-//! - `Op` — the app-data enum from `fsm::ops`
-//! - `AppResponse` — returned from `apply`; carries the applied
+//! - `NodeId = String`. We already use string UUIDs for node ids
+//! - `AbixioNode`. Advertise addresses + voter kind
+//! - `Op`. The app-data enum from `fsm::ops`
+//! - `AppResponse`. Returned from `apply`; carries the applied
 //!   index or an apply-time error string for defensive logging
 //!
 //! The snapshot body is a plain in-memory buffer (`Cursor<Vec<u8>>`)
