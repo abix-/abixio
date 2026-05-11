@@ -556,7 +556,7 @@ async fn bucket_policy_delete_idempotent() {
     let client = reqwest::Client::new();
     client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    // delete when no policy exists -- should still return 204
+    // delete when no policy exists. Should still return 204
     let resp = client
         .delete(url(&addr, "/tbk?policy"))
         .send()
@@ -573,5 +573,5 @@ async fn bucket_policy_delete_idempotent() {
     assert_eq!(resp.status(), 204);
 }
 
-// -- per-object erasure coding --
+//. Per-object erasure coding.
 
