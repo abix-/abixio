@@ -14,7 +14,7 @@
 //! get serialized into the response header.
 //!
 //! Background spawned tasks (rename worker, scanner, heal worker) do NOT
-//! inherit the task-local. That's intentional -- they run after ack and
+//! inherit the task-local. That's intentional. They run after ack and
 //! are not on the response path.
 
 use std::sync::{Arc, Mutex};
