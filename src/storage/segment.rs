@@ -108,7 +108,7 @@ impl ActiveSegment {
             return Ok(None); // segment full
         }
 
-        // write directly into mmap -- zero allocation, zero syscalls
+        // write directly into mmap. Zero allocation, zero syscalls
         needle.serialize_into(&mut self.mmap[self.write_offset..self.write_offset + total]);
 
         let needle_offset = self.write_offset as u32;
@@ -139,7 +139,7 @@ impl ActiveSegment {
     }
 
     /// Read bytes from the active segment mmap.
-    /// Writes and reads use the same MmapMut -- no coherence issues.
+    /// Writes and reads use the same MmapMut. No coherence issues.
     pub fn read_at(&self, offset: usize, len: usize) -> Result<Vec<u8>, StorageError> {
         if offset + len > self.write_offset {
             return Err(StorageError::Internal("read beyond write offset".into()));
