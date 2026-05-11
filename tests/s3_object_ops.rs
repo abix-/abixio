@@ -690,7 +690,7 @@ async fn delete_nonexistent_object_does_not_crash() {
     let client = reqwest::Client::new();
     client.put(url(&addr, "/tbk")).send().await.unwrap();
 
-    // DELETE nonexistent object -- AbixIO returns 404 (not S3-compliant 204,
+    // DELETE nonexistent object. AbixIO returns 404 (not S3-compliant 204,
     // but the important thing is it doesn't crash or return 500)
     let resp = client
         .delete(url(&addr, "/tbk/does-not-exist"))
