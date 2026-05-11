@@ -6,7 +6,7 @@
 //! materialized to shard.dat + meta.json by a background worker. Objects
 //! above the threshold go straight to the file tier.
 //!
-//! The WAL is ephemeral -- entries are deleted after materialization.
+//! The WAL is ephemeral. Entries are deleted after materialization.
 //! No GC, no compaction, no permanent in-memory index.
 
 use std::collections::HashMap;
@@ -36,7 +36,7 @@ pub struct WalEntry {
 }
 
 /// Lightweight request sent to the background materialize worker.
-/// Contains only identity and offsets -- no data copies, no heap
+/// Contains only identity and offsets. No data copies, no heap
 /// allocations (Arc<str> is ref-counted from the WAL pending map).
 /// The worker reads data from the segment mmap.
 ///
@@ -113,7 +113,7 @@ impl Wal {
                     if wal.segment_pending_counts.get(&seg_id).copied().unwrap_or(0) > 0 {
                         wal.sealed.push(seg);
                     } else {
-                        // fully materialized -- delete the segment file
+                        // fully materialized. Delete the segment file
                         let seg_path = seg.path().to_path_buf();
                         drop(seg);
                         let _ = std::fs::remove_file(&seg_path);
@@ -197,7 +197,7 @@ impl Wal {
             return Ok(entry);
         }
 
-        // active segment full -- rotate and retry
+        // active segment full. Rotate and retry
         self.rotate_active()?;
 
         if let Some(loc) = self.active.append(needle)? {
@@ -410,7 +410,7 @@ impl MaterializeDispatch {
 
     /// Non-blocking send. Returns Err if the channel is full or closed.
     /// Data is already durable in the WAL segment, so dropping the
-    /// request is safe -- recovery will re-send on restart.
+    /// request is safe. Recovery will re-send on restart.
     pub fn try_send(
         &self,
         req: MaterializeRequest,
@@ -677,7 +677,7 @@ mod tests {
             wal.append(&needle).unwrap();
         }
 
-        // should have rotated -- sealed segments exist
+        // should have rotated. Sealed segments exist
         assert!(!wal.sealed.is_empty());
         assert_eq!(wal.pending_count(), 10);
 
@@ -707,7 +707,7 @@ mod tests {
         }
         // drop WAL, simulate restart
 
-        // reopen -- should find no pending entries (already materialized)
+        // reopen. Should find no pending entries (already materialized)
         let wal = Wal::open(&wal_dir, 1024 * 1024, root).unwrap();
         assert_eq!(wal.pending_count(), 0);
     }
@@ -730,7 +730,7 @@ mod tests {
             std::fs::create_dir_all(&bucket_dir).unwrap();
         }
 
-        // reopen -- all 3 should be pending
+        // reopen. All 3 should be pending
         let wal = Wal::open(&wal_dir, 1024 * 1024, root).unwrap();
         assert_eq!(wal.pending_count(), 3);
         assert!(wal.contains("b", "k0"));
@@ -917,7 +917,7 @@ mod tests {
 
     /// Head-to-head: full write_shard path for WAL vs log vs file tier,
     /// same process, same disk, same iteration loop, interleaved.
-    /// Run with: cargo test --lib wal::tests::bench_write_shard_head_to_head -- --ignored --nocapture
+    /// Run with: cargo test --lib wal::tests::bench_write_shard_head_to_head. --ignored --nocapture
     #[tokio::test]
     #[ignore]
     async fn bench_write_shard_head_to_head() {
