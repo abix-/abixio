@@ -149,15 +149,15 @@ Numbers measured 2026-04-18, SDK client, 1 disk, release build. See
 
 ## What blocks a v0.1.0 release
 
-1. **Binary release** -- Dockerfile + GitHub release with Windows binary
-2. **CHANGELOG** -- release notes
+1. **Binary release**. Dockerfile + GitHub release with Windows binary
+2. **CHANGELOG**. Release notes
 
 ## What blocks production use
 
 Everything above, plus:
 
 1. **Encryption at rest** (SSE-S3 or equivalent)
-2. **Partition / slow-disk failure injection** -- shard corruption and missing-shard paths are covered; network partitions and slow disks are not
-3. **Live topology changes** -- cannot add/remove nodes without restart
-4. **Concurrent client testing** -- all benchmarks are sequential single-client
-5. **Monitoring integration** -- prometheus or opentelemetry
+2. **Partition / slow-disk failure injection**. Shard corruption and missing-shard paths are covered; network partitions and slow disks are not
+3. **Live topology changes**. Cannot add/remove nodes without restart
+4. **Concurrent client testing**. All benchmarks are sequential single-client
+5. **Monitoring integration**. Prometheus or opentelemetry
